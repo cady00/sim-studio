@@ -7,8 +7,8 @@ src/core        场景图、变换、单位、网格、拾取、文案目录
 src/io          STEP / OBJ、.simproj
 src/render      轨道相机与 OpenGL 视口
 src/app         Qt 主窗口、导入线程、命令行
-src/physics     IPhysicsEngine，目前是空实现
-src/scripting   IScriptHost，目前是空实现
+src/physics     IPhysicsEngine，当前实现是 Bullet 3
+src/scripting   IScriptHost，当前实现是嵌入的 CPython + pybind11
 ```
 
 内部单位是毫米，上方向是 +Z，与 NX / Process Simulate 一致。变换是平移 + 四元数 + 缩放，矩阵列主序。属性面板的欧拉角是内旋 XYZ（与 three.js 分量公式一致）。
@@ -17,7 +17,9 @@ src/scripting   IScriptHost，目前是空实现
 
 `Scene` 拥有根节点 `World`（id `root`，界面显示「世界」）。子节点用 `shared_ptr`，父节点用 `weak_ptr`。网格按 id 共享，两个引用同一几何的实例只细分一次。
 
-`ChangeKind` 区分结构、变换和选择。批量导入时 `beginEdit` / `endEdit` 合并通知。后台线程导入完成后，`steal()` 把那棵场景移到界面场景上，并只发一次结构通知。
+`ChangeKind` 区分结构、变换、选择和仿真。仿真通知刷新视口和信号表，不把项目标成已修改。批量导入时 `beginEdit` / `endEdit` 合并通知。后台线程导入完成后，`steal()` 把那棵场景移到界面场景上，并只发一次结构通知。
+
+每个节点有一份 `Mech`。关节、传感器、发生器和销毁器都挂在节点上，属性面板和 `.simproj` 读写同一份数据。信号表是场景上的命名值（bool / int / real），传感器和脚本写入，界面只读显示。这张表是 Phase 5 PLC / OPC UA 要接的缝，适配器只需要读写 `Scene::signals`，不必碰 Bullet。
 
 ## STEP
 
@@ -42,15 +44,52 @@ src/scripting   IScriptHost，目前是空实现
 
 `ViewportWidget` 是 OpenGL 3.3 Core 的 `QOpenGLWidget`（MSAA 4x）。选择用 CPU 射线与三角形相交（Möller–Trumbore），不读像素。网格法线在 CPU 上由三角形计算。
 
+## 物理
+
+`createPhysicsEngine()` 返回 `BulletPhysicsEngine`。场景单位是毫米，Bullet 用米（×0.001）。重力为 −Z、9.81 m/s²。固定步长 1/60 s。界面计时器约 16 ms 调一次 `Simulation::tick`，乘以速度倍率（0–16）后最多补 240 步。
+
+| 操作 | 行为 |
+| --- | --- |
+| 运行 | 从停止进入时记下非临时节点的初始局部变换，建立物理世界，调用 `on_start` |
+| 暂停 | 世界保留，时间不走 |
+| 停止 / 复位 | 调用 `on_stop`，拆掉世界，删除临时节点，恢复初始变换，时间归零 |
+
+没有选 PhysX 5。vcpkg 基线里的 PhysX 端口来自 NVIDIA Omniverse，要编译整套 SDK，而且不是 NVIDIA 支持的发行方式。Ubuntu 24.04 没有可直接安装的 PhysX 包，Linux CI 不能为它再走一遍源码编译。Bullet 在两边都有现成包（发行版 `libbullet-dev`，vcpkg `bullet3`），并且已经藏在 `IPhysicsEngine` 后面，以后可以换实现。
+
+近似，不要当成 NX MCD 的求解器：
+
+- 输送面是运动学刚体。接触时把动态刚体的水平速度设成带速，保留竖直速度。这不是表面材质。
+- 移动副的 Bullet 约束轴与作者写的轴相反，建立约束时取了反。转动副保持原轴，限位和电机目标取反，这样正目标对应世界坐标里的正向转角。
+- 位置驱动把速度夹在最大速度和加速度之内。移动副电机力固定 4000 N，转动副冲量固定 80，都不是由加速度换算出来的真实力或力矩。
+- 光栅和距离传感器是沿局部轴的最近射线。光栅被挡住时布尔信号为真。碰撞传感器是 ghost，与锚点以外的物体重叠即为真。
+- 销毁器只删临时刚体，并且用轴对齐盒子判断，忽略销毁器自身的旋转。
+- 属性面板的轴是 X/Y/Z 下拉框。保存时输送方向写成所选轴，任意方向向量不能在界面里编辑。
+
+## 脚本
+
+`PythonScriptHost` 进程内初始化一次解释器，不在退出时 `Py_Finalize`（pybind11 嵌入模块不适合反复初始化）。模块名 `simstudio`，脚本里 `import simstudio as sim` 已由宿主注入。回调是 `on_start()`、`on_step(dt)`、`on_stop()`。异常记入脚本日志并停用该回调。
+
+| 函数 | 作用 |
+| --- | --- |
+| `get_bool` / `set_bool` | 布尔信号。不存在则按该类型创建 |
+| `get_int` / `set_int` | 整数信号 |
+| `get_real` / `set_real` | 实数信号 |
+| `set_joint_target(name, value)` | 位置目标。驱动为「无」时改成位置驱动 |
+| `set_joint_speed(name, value)` | 速度驱动，目标即速度 |
+| `get_transform(name)` | `(tx, ty, tz, qw, qx, qy, qz)`，毫米 |
+| `set_transform(name, x, y, z)` | 只改平移 |
+| `spawn(name)` | 按该节点当前位姿克隆，返回新名字 |
+| `delete(name)` | 先释放刚体再删节点 |
+
+Windows 安装包把标准库放在 exe 旁的 `Lib/`，并写 `python3xx._pth`。程序在创建解释器之前，若发现这个目录，会设置 `PYTHONHOME`。Linux 使用系统 Python，不改 `PYTHONHOME`。
+
 ## 后续阶段怎么接
 
 | 阶段 | 接入点 |
 | --- | --- |
-| Phase 2 物理 | 实现 `IPhysicsEngine`，由 `createPhysicsEngine()` 返回。场景节点已有变换和网格，可生成刚体和输送线。界面「物理引擎」对话框只展示 `backendName()`。 |
-| Phase 2 脚本 | 实现 `IScriptHost`，嵌入 pybind11。脚本看到的是场景图和物理句柄，不直接碰 Qt。 |
-| Phase 3 机器人 | 在装配节点上增加关节定义。KR 6 根产品 `394.088-10.104.00` 下的五个子零件是待映射的连杆实体。关节轴、零位和限位来自机器人模型，不从 STEP 文件名推断。碰撞查询走物理或专用网格。 |
+| Phase 3 机器人 | 在装配节点上增加关节定义。KR 6 根产品 `394.088-10.104.00` 下的五个子零件 `394.088-10.105.10`、`.104.20`、`.105.30`、`.105.40`、`.104.50` 是待映射的连杆实体。关节轴、零位和限位来自机器人模型，不从 STEP 文件名推断。碰撞查询走现有刚体。 |
 | Phase 4 节拍 | 在场景之上加产线时钟和工位，不改 STEP 导入。 |
-| Phase 5 虚拟调试 | 独立 I/O 适配器（OPC UA、S7、PLCSIM Advanced）驱动场景信号。Python API 复用 `IScriptHost`。 |
+| Phase 5 虚拟调试 | 独立 I/O 适配器（OPC UA、S7、PLCSIM Advanced）读写场景信号。Python API 继续走 `IScriptHost`。 |
 
 ## 依赖策略
 

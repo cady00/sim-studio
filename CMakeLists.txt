@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(SimStudio
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Sim Studio — private automotive production-line simulation"
     LANGUAGES CXX)
 
@@ -65,6 +65,9 @@ endif()
 add_executable(simstudio_stepgen tools/generate_sample_step.cpp)
 target_link_libraries(simstudio_stepgen PRIVATE sim_io)
 target_include_directories(simstudio_stepgen SYSTEM PRIVATE "${OpenCASCADE_INCLUDE_DIR}")
+
+add_executable(simstudio_demogen tools/generate_demo.cpp)
+target_link_libraries(simstudio_demogen PRIVATE sim_io)
 
 include(GNUInstallDirs)
 if(TARGET simstudio)

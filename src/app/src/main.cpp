@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
 #include <QFile>
 #include <QFont>
 #include <QFontDatabase>
@@ -75,18 +76,31 @@ int main(int argc, char* argv[]) {
     applyDarkPalette(application);
     applyCjkFont(application);
 
+#ifdef _WIN32
+    // A shipped zip keeps the CPython standard library in Lib/ next to the exe.
+    // python3xx._pth (written by the packager) takes precedence; PYTHONHOME covers a bare layout.
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (QDir(appDir + QStringLiteral("/Lib")).exists()) {
+        qputenv("PYTHONHOME", QDir::toNativeSeparators(appDir).toLocal8Bit());
+    }
+#endif
+
     QCommandLineParser parser;
-    parser.setApplicationDescription("Sim Studio phase 1");
+    parser.setApplicationDescription("Sim Studio");
     parser.addHelpOption();
     parser.addVersionOption();
     QCommandLineOption importStep("import", "Import a STEP file on startup.", "file");
     QCommandLineOption openProject("open", "Open a .simproj file.", "file");
     QCommandLineOption screenshot("screenshot", "Save a window image and exit.", "png");
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
+    QCommandLineOption play("play", "Start the simulation after opening a project.");
+    QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
     parser.addOption(language);
+    parser.addOption(play);
+    parser.addOption(simSeconds);
     parser.process(application);
 
     sim::MainWindow window(parser.value(language));
@@ -97,8 +111,13 @@ int main(int argc, char* argv[]) {
     if (parser.isSet(screenshot)) {
         window.setScreenshotPath(parser.value(screenshot));
     }
+    if (parser.isSet(simSeconds)) {
+        window.setHeadlessSeconds(parser.value(simSeconds).toDouble());
+    }
     if (parser.isSet(importStep)) {
         window.importStepAsync(parser.value(importStep));
+    } else if (parser.isSet(play)) {
+        window.beginHeadlessPlayback();
     } else if (parser.isSet(screenshot)) {
         QTimer::singleShot(400, &window, [&window] { window.captureScreenshot(); });
     }

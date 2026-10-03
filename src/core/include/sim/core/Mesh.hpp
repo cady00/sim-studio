@@ -3,6 +3,7 @@
 #include "sim/core/Math.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace sim {
@@ -18,5 +19,7 @@ struct MeshData {
     std::size_t triangleCount() const { return indices.size() / 3; }
     void recomputeBounds();
 };
+
+std::shared_ptr<MeshData> makeBoxMesh(Vec3 halfExtents);
 
 }  // namespace sim

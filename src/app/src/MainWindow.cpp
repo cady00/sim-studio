@@ -12,8 +12,13 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QDebug>
+#include <QComboBox>
 #include <QDockWidget>
 #include <QEventLoop>
+#include <QPlainTextEdit>
+#include <QScrollArea>
+#include <QTableWidget>
+#include <QTimer>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
@@ -42,6 +47,11 @@
 #include <cmath>
 #include <functional>
 
+// Qt defines `signals` as a macro. The scene stores named I/O signals under that member.
+#ifdef signals
+#undef signals
+#endif
+
 namespace sim {
 namespace {
 
@@ -59,6 +69,10 @@ QDoubleSpinBox* makeSpin(double minValue, double maxValue, int decimals) {
 MainWindow::MainWindow(QString locale) {
     physics_ = createPhysicsEngine();
     scripting_ = createScriptHost();
+    simulation_ = std::make_unique<Simulation>(scene_, *physics_);
+    scripting_->bind(&scene_);
+    scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
+                                [this](const std::string& id) { physics_->releaseBody(id); });
     QSettings settings;
     if (locale.isEmpty()) {
         locale = settings.value("locale", QString::fromLatin1(I18nCatalog::kDefaultLocale)).toString();
@@ -85,6 +99,9 @@ MainWindow::MainWindow(QString locale) {
 }
 
 MainWindow::~MainWindow() {
+    if (simulation_) {
+        simulation_->stop();
+    }
     alive_->store(false);
     cancelImport_.store(true);
     if (importThread_.joinable()) {
@@ -138,10 +155,88 @@ void MainWindow::buildUi() {
     form->addRow("rz", rotation_[2]);
     form->addRow("verts", vertexLabel_);
     form->addRow("tris", triangleLabel_);
+    mechCombo_ = new QComboBox;
+    massSpin_ = makeSpin(0, 1.0e6, 3);
+    autoMassBox_ = new QCheckBox;
+    kinematicBox_ = new QCheckBox;
+    shapeCombo_ = new QComboBox;
+    for (QDoubleSpinBox*& spin : extentSpin_) {
+        spin = makeSpin(0.1, 1.0e6, 2);
+    }
+    radiusSpin_ = makeSpin(0.1, 1.0e6, 2);
+    heightSpin_ = makeSpin(0.1, 1.0e6, 2);
+    otherEdit_ = new QLineEdit;
+    axisCombo_ = new QComboBox;
+    limitedBox_ = new QCheckBox;
+    lowerSpin_ = makeSpin(-1.0e6, 1.0e6, 2);
+    upperSpin_ = makeSpin(-1.0e6, 1.0e6, 2);
+    driveCombo_ = new QComboBox;
+    targetSpin_ = makeSpin(-1.0e6, 1.0e6, 2);
+    maxSpeedSpin_ = makeSpin(0, 1.0e6, 2);
+    accelSpin_ = makeSpin(0, 1.0e7, 2);
+    beltSpeedSpin_ = makeSpin(-1.0e6, 1.0e6, 2);
+    rangeSpin_ = makeSpin(1, 1.0e6, 1);
+    signalEdit_ = new QLineEdit;
+    valueSignalEdit_ = new QLineEdit;
+    intervalSpin_ = makeSpin(0.05, 3600, 2);
+    prototypeEdit_ = new QLineEdit;
+    form->addRow("mech", mechCombo_);
+    form->addRow("mass", massSpin_);
+    form->addRow("autoMass", autoMassBox_);
+    form->addRow("kinematic", kinematicBox_);
+    form->addRow("shape", shapeCombo_);
+    form->addRow("hx", extentSpin_[0]);
+    form->addRow("hy", extentSpin_[1]);
+    form->addRow("hz", extentSpin_[2]);
+    form->addRow("radius", radiusSpin_);
+    form->addRow("height", heightSpin_);
+    form->addRow("other", otherEdit_);
+    form->addRow("axis", axisCombo_);
+    form->addRow("limited", limitedBox_);
+    form->addRow("lower", lowerSpin_);
+    form->addRow("upper", upperSpin_);
+    form->addRow("drive", driveCombo_);
+    form->addRow("target", targetSpin_);
+    form->addRow("maxSpeed", maxSpeedSpin_);
+    form->addRow("accel", accelSpin_);
+    form->addRow("belt", beltSpeedSpin_);
+    form->addRow("range", rangeSpin_);
+    form->addRow("signal", signalEdit_);
+    form->addRow("valueSignal", valueSignalEdit_);
+    form->addRow("interval", intervalSpin_);
+    form->addRow("prototype", prototypeEdit_);
+    auto* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(formHost);
     propertyDock_ = new QDockWidget(this);
-    propertyDock_->setWidget(formHost);
-    propertyDock_->setMinimumWidth(280);
+    propertyDock_->setWidget(scroll);
+    propertyDock_->setMinimumWidth(300);
     addDockWidget(Qt::RightDockWidgetArea, propertyDock_);
+
+    signalTable_ = new QTableWidget(0, 3);
+    signalTable_->horizontalHeader()->setStretchLastSection(true);
+    auto* signalDock = new QDockWidget(this);
+    signalDock->setObjectName("dock.signals");
+    signalDock->setWidget(signalTable_);
+    addDockWidget(Qt::BottomDockWidgetArea, signalDock);
+
+    scriptCombo_ = new QComboBox;
+    scriptEdit_ = new QPlainTextEdit;
+    scriptEdit_->setPlaceholderText("def on_step(dt):\n    pass");
+    scriptLog_ = new QPlainTextEdit;
+    scriptLog_->setReadOnly(true);
+    scriptLog_->setMaximumHeight(120);
+    auto* scriptHost = new QWidget;
+    auto* scriptLayout = new QVBoxLayout(scriptHost);
+    scriptLayout->setContentsMargins(6, 6, 6, 6);
+    scriptLayout->addWidget(scriptCombo_);
+    scriptLayout->addWidget(scriptEdit_, 1);
+    scriptLayout->addWidget(scriptLog_);
+    auto* scriptDock = new QDockWidget(this);
+    scriptDock->setObjectName("dock.script");
+    scriptDock->setWidget(scriptHost);
+    addDockWidget(Qt::BottomDockWidgetArea, scriptDock);
+    splitDockWidget(signalDock, scriptDock, Qt::Horizontal);
 
     newAction_ = new QAction(this);
     openAction_ = new QAction(this);
@@ -158,6 +253,10 @@ void MainWindow::buildUi() {
     physicsAction_ = new QAction(this);
     scriptAction_ = new QAction(this);
     aboutAction_ = new QAction(this);
+    playAction_ = new QAction(this);
+    pauseAction_ = new QAction(this);
+    stopAction_ = new QAction(this);
+    resetAction_ = new QAction(this);
     moveAction_->setCheckable(true);
     rotateAction_->setCheckable(true);
     moveAction_->setChecked(true);
@@ -232,6 +331,17 @@ void MainWindow::buildUi() {
     toolbar->addSeparator();
     toolbar->addAction(moveAction_);
     toolbar->addAction(rotateAction_);
+    toolbar->addSeparator();
+    toolbar->addAction(playAction_);
+    toolbar->addAction(pauseAction_);
+    toolbar->addAction(stopAction_);
+    toolbar->addAction(resetAction_);
+    speedSpin_ = makeSpin(0, 16, 2);
+    speedSpin_->setValue(1);
+    speedSpin_->setPrefix("x");
+    toolbar->addWidget(speedSpin_);
+    timeLabel_ = new QLabel("0.00 s");
+    toolbar->addWidget(timeLabel_);
 
     statusLabel_ = new QLabel;
     unitLabel_ = new QLabel;
@@ -275,13 +385,72 @@ void MainWindow::buildUi() {
     for (QDoubleSpinBox* spin : rotation_) {
         connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::applyProperties);
     }
+    const auto connectMech = [this](auto* widget) {
+        if (auto* spin = qobject_cast<QDoubleSpinBox*>(widget)) {
+            connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::applyProperties);
+        } else if (auto* box = qobject_cast<QCheckBox*>(widget)) {
+            connect(box, &QCheckBox::toggled, this, &MainWindow::applyProperties);
+        } else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
+            connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this, &MainWindow::applyProperties);
+        } else if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
+            connect(edit, &QLineEdit::editingFinished, this, &MainWindow::applyProperties);
+        }
+    };
+    connectMech(mechCombo_);
+    connectMech(massSpin_);
+    connectMech(autoMassBox_);
+    connectMech(kinematicBox_);
+    connectMech(shapeCombo_);
+    for (QDoubleSpinBox* spin : extentSpin_) {
+        connectMech(spin);
+    }
+    connectMech(radiusSpin_);
+    connectMech(heightSpin_);
+    connectMech(otherEdit_);
+    connectMech(axisCombo_);
+    connectMech(limitedBox_);
+    connectMech(lowerSpin_);
+    connectMech(upperSpin_);
+    connectMech(driveCombo_);
+    connectMech(targetSpin_);
+    connectMech(maxSpeedSpin_);
+    connectMech(accelSpin_);
+    connectMech(beltSpeedSpin_);
+    connectMech(rangeSpin_);
+    connectMech(signalEdit_);
+    connectMech(valueSignalEdit_);
+    connectMech(intervalSpin_);
+    connectMech(prototypeEdit_);
+    connect(playAction_, &QAction::triggered, this, &MainWindow::playSimulation);
+    connect(pauseAction_, &QAction::triggered, this, &MainWindow::pauseSimulation);
+    connect(stopAction_, &QAction::triggered, this, &MainWindow::stopSimulation);
+    connect(resetAction_, &QAction::triggered, this, &MainWindow::resetSimulation);
+    connect(speedSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::onSpeedChanged);
+    connect(scriptCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, &MainWindow::onScriptChanged);
+    simTimer_ = new QTimer(this);
+    simTimer_->setInterval(16);
+    connect(simTimer_, &QTimer::timeout, this, &MainWindow::onSimTick);
+    simTimer_->start();
 }
 
 void MainWindow::bindScene() {
     scene_.onChanged = [this](ChangeKind kind) {
+        if (kind == ChangeKind::Simulation) {
+            viewport_->update();
+            refreshSignals();
+            refreshProperties();
+            if (timeLabel_ != nullptr && simulation_) {
+                timeLabel_->setText(trk("status.simTime").arg(simulation_->time(), 0, 'f', 2));
+            }
+            return;
+        }
         if (kind == ChangeKind::Structure) {
             rebuildTree();
             refreshProperties();
+            refreshSignals();
+            if (scriptCombo_ != nullptr && scriptCombo_->count() != static_cast<int>(scene_.scripts.size())) {
+                loadScriptEditor(-1);
+            }
         } else if (kind == ChangeKind::Selection) {
             refreshProperties();
             if (tree_->currentItem() == nullptr ||
@@ -335,14 +504,34 @@ void MainWindow::retranslate() {
     physicsAction_->setText(trk("action.physics"));
     scriptAction_->setText(trk("action.script"));
     aboutAction_->setText(trk("action.about"));
+    playAction_->setText(trk("action.play"));
+    pauseAction_->setText(trk("action.pause"));
+    stopAction_->setText(trk("action.stop"));
+    resetAction_->setText(trk("action.reset"));
+    if (auto* dock = findChild<QDockWidget*>("dock.signals")) {
+        dock->setWindowTitle(trk("dock.signals"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.script")) {
+        dock->setWindowTitle(trk("dock.script"));
+    }
+    signalTable_->setHorizontalHeaderLabels({trk("signal.name"), trk("signal.type"), trk("signal.value")});
+    fillMechCombos();
     treeDock_->setWindowTitle(trk("dock.tree"));
     propertyDock_->setWindowTitle(trk("dock.properties"));
     tree_->setHeaderLabels({trk("tree.name"), trk("tree.kind")});
     cancelButton_->setText(trk("action.cancelImport"));
-    if (auto* form = qobject_cast<QFormLayout*>(propertyDock_->widget()->layout())) {
-        const char* labels[] = {"prop.empty", "prop.name", "prop.kind", "prop.visible", "prop.color", "prop.tx",
-                                "prop.ty", "prop.tz", "prop.rx", "prop.ry", "prop.rz", "prop.vertices", "prop.triangles"};
-        for (int i = 0; i < form->rowCount() && i < 13; ++i) {
+    if (auto* form = propertyDock_->findChild<QFormLayout*>()) {
+        const char* labels[] = {"prop.empty",     "prop.name",       "prop.kind",      "prop.visible",
+                                "prop.color",     "prop.tx",         "prop.ty",        "prop.tz",
+                                "prop.rx",        "prop.ry",         "prop.rz",        "prop.vertices",
+                                "prop.triangles", "mech.kind",       "mech.mass",      "mech.autoMass",
+                                "mech.kinematic", "mech.shape",      "mech.hx",        "mech.hy",
+                                "mech.hz",        "mech.radius",     "mech.height",    "mech.other",
+                                "mech.axis",      "mech.limited",    "mech.lower",     "mech.upper",
+                                "mech.drive",     "mech.target",     "mech.maxSpeed",  "mech.accel",
+                                "mech.belt",      "mech.range",      "mech.signal",    "mech.valueSignal",
+                                "mech.interval",  "mech.prototype"};
+        for (int i = 0; i < form->rowCount() && i < 38; ++i) {
             auto* item = form->itemAt(i, QFormLayout::FieldRole);
             if (item == nullptr || item->widget() == nullptr) {
                 continue;
@@ -381,7 +570,9 @@ void MainWindow::rebuildTree() {
         const QString name = (node->id == "root" && node->name == "World") ? trk("tree.world")
                                                                            : QString::fromUtf8(node->name.c_str());
         item->setText(0, name);
-        item->setText(1, node->kind == NodeKind::Assembly ? trk("kind.assembly") : trk("kind.part"));
+        item->setText(1, node->mech.kind == MechKind::None
+                             ? (node->kind == NodeKind::Assembly ? trk("kind.assembly") : trk("kind.part"))
+                             : mechLabel(node->mech.kind));
         item->setData(0, Qt::UserRole, QString::fromStdString(node->id));
         item->setExpanded(true);
         for (const auto& child : node->children) {
@@ -489,6 +680,39 @@ void MainWindow::refreshProperties() {
     const auto mesh = scene_.mesh(node->meshId);
     vertexLabel_->setText(mesh ? QString::number(mesh->vertexCount()) : QString("-"));
     triangleLabel_->setText(mesh ? QString::number(mesh->triangleCount()) : QString("-"));
+    const int mechIndex = mechCombo_->findData(static_cast<int>(node->mech.kind));
+    mechCombo_->setCurrentIndex(std::max(0, mechIndex));
+    massSpin_->setValue(node->mech.mass);
+    autoMassBox_->setChecked(node->mech.autoMass);
+    kinematicBox_->setChecked(node->mech.kinematic);
+    const int shapeIndex = shapeCombo_->findData(static_cast<int>(node->mech.shape));
+    shapeCombo_->setCurrentIndex(std::max(0, shapeIndex));
+    extentSpin_[0]->setValue(node->mech.halfExtents.x);
+    extentSpin_[1]->setValue(node->mech.halfExtents.y);
+    extentSpin_[2]->setValue(node->mech.halfExtents.z);
+    radiusSpin_->setValue(node->mech.radius);
+    heightSpin_->setValue(node->mech.height);
+    otherEdit_->setText(QString::fromUtf8(node->mech.other.c_str()));
+    int axisIndex = 0;
+    if (std::abs(node->mech.axis.y) > std::abs(node->mech.axis.x) && std::abs(node->mech.axis.y) >= std::abs(node->mech.axis.z)) {
+        axisIndex = 1;
+    } else if (std::abs(node->mech.axis.z) > std::abs(node->mech.axis.x)) {
+        axisIndex = 2;
+    }
+    axisCombo_->setCurrentIndex(axisIndex);
+    limitedBox_->setChecked(node->mech.limited);
+    lowerSpin_->setValue(node->mech.lower);
+    upperSpin_->setValue(node->mech.upper);
+    driveCombo_->setCurrentIndex(std::max(0, driveCombo_->findData(static_cast<int>(node->mech.drive))));
+    targetSpin_->setValue(node->mech.target);
+    maxSpeedSpin_->setValue(node->mech.maxSpeed);
+    accelSpin_->setValue(node->mech.maxAccel);
+    beltSpeedSpin_->setValue(node->mech.speed);
+    rangeSpin_->setValue(node->mech.range);
+    signalEdit_->setText(QString::fromUtf8(node->mech.signal.c_str()));
+    valueSignalEdit_->setText(QString::fromUtf8(node->mech.valueSignal.c_str()));
+    intervalSpin_->setValue(node->mech.interval);
+    prototypeEdit_->setText(QString::fromUtf8(node->mech.prototype.c_str()));
     refreshing_ = false;
 }
 
@@ -508,6 +732,42 @@ void MainWindow::applyProperties() {
     node->local.translation = {translation_[0]->value(), translation_[1]->value(), translation_[2]->value()};
     node->local.rotation = Quat::fromEulerXYZ(deg2rad(rotation_[0]->value()), deg2rad(rotation_[1]->value()),
                                               deg2rad(rotation_[2]->value()));
+    if (mechCombo_->currentData().isValid()) {
+        node->mech.kind = static_cast<MechKind>(mechCombo_->currentData().toInt());
+    }
+    node->mech.mass = massSpin_->value();
+    node->mech.autoMass = autoMassBox_->isChecked();
+    node->mech.kinematic = kinematicBox_->isChecked();
+    if (shapeCombo_->currentData().isValid()) {
+        node->mech.shape = static_cast<CollisionShape>(shapeCombo_->currentData().toInt());
+    }
+    node->mech.halfExtents = {extentSpin_[0]->value(), extentSpin_[1]->value(), extentSpin_[2]->value()};
+    node->mech.radius = radiusSpin_->value();
+    node->mech.height = heightSpin_->value();
+    node->mech.other = otherEdit_->text().toUtf8().toStdString();
+    if (axisCombo_->currentIndex() == 1) {
+        node->mech.axis = {0, 1, 0};
+    } else if (axisCombo_->currentIndex() == 2) {
+        node->mech.axis = {0, 0, 1};
+    } else {
+        node->mech.axis = {1, 0, 0};
+    }
+    node->mech.limited = limitedBox_->isChecked();
+    node->mech.lower = lowerSpin_->value();
+    node->mech.upper = upperSpin_->value();
+    if (driveCombo_->currentData().isValid()) {
+        node->mech.drive = static_cast<DriveMode>(driveCombo_->currentData().toInt());
+    }
+    node->mech.target = targetSpin_->value();
+    node->mech.maxSpeed = maxSpeedSpin_->value();
+    node->mech.maxAccel = accelSpin_->value();
+    node->mech.speed = beltSpeedSpin_->value();
+    node->mech.direction = node->mech.axis;
+    node->mech.range = rangeSpin_->value();
+    node->mech.signal = signalEdit_->text().toUtf8().toStdString();
+    node->mech.valueSignal = valueSignalEdit_->text().toUtf8().toStdString();
+    node->mech.interval = intervalSpin_->value();
+    node->mech.prototype = prototypeEdit_->text().toUtf8().toStdString();
     scene_.notify(ChangeKind::Transform);
     if (auto* item = tree_->currentItem()) {
         item->setText(0, node->id == "root" && node->name == "World" ? trk("tree.world")
@@ -553,6 +813,9 @@ void MainWindow::newProject() {
     if (!confirmDiscard()) {
         return;
     }
+    if (simulation_) {
+        simulation_->stop();
+    }
     scene_.clear();
     projectPath_.clear();
     viewport_->fitAll();
@@ -569,6 +832,9 @@ void MainWindow::openProjectInteractive() {
 }
 
 void MainWindow::openProject(const QString& path) {
+    if (simulation_) {
+        simulation_->stop();
+    }
     const ProjectResult result = ProjectStore::load(path.toStdString(), scene_);
     if (!result.ok) {
         QMessageBox::warning(this, trk("action.open"), trk("msg.openFail").arg(QString::fromStdString(result.message)));
@@ -676,6 +942,9 @@ void MainWindow::importStepAsync(const QString& path) {
                     return;
                 }
                 if (ok && scene) {
+                    if (simulation_) {
+                        simulation_->stop();
+                    }
                     scene_.steal(*scene);
                 }
                 onImportFinished(ok, error, nodes, meshes, triangles, elapsed);
@@ -786,6 +1055,229 @@ void MainWindow::captureScreenshot() {
     const QImage& output = window.isNull() ? view : window;
     const bool saved = !output.isNull() && output.save(screenshotPath_);
     QApplication::exit(saved ? 0 : 2);
+}
+
+QString MainWindow::mechLabel(MechKind kind) const {
+    switch (kind) {
+        case MechKind::None: return trk("mech.none");
+        case MechKind::Rigid: return trk("mech.rigid");
+        case MechKind::Collision: return trk("mech.collision");
+        case MechKind::FixedJoint: return trk("mech.fixed");
+        case MechKind::Hinge: return trk("mech.hinge");
+        case MechKind::Slider: return trk("mech.slider");
+        case MechKind::Conveyor: return trk("mech.conveyor");
+        case MechKind::CollisionSensor: return trk("mech.collisionSensor");
+        case MechKind::DistanceSensor: return trk("mech.distanceSensor");
+        case MechKind::LightBarrier: return trk("mech.lightBarrier");
+        case MechKind::Source: return trk("mech.source");
+        case MechKind::Sink: return trk("mech.sink");
+    }
+    return trk("mech.none");
+}
+
+void MainWindow::fillMechCombos() {
+    refreshing_ = true;
+    const auto fill = [](QComboBox* combo, const QList<QPair<QString, int>>& items) {
+        const int current = combo->currentData().toInt();
+        combo->clear();
+        for (const auto& item : items) {
+            combo->addItem(item.first, item.second);
+        }
+        const int index = combo->findData(current);
+        combo->setCurrentIndex(index < 0 ? 0 : index);
+    };
+    fill(mechCombo_, {{trk("mech.none"), static_cast<int>(MechKind::None)},
+                      {trk("mech.rigid"), static_cast<int>(MechKind::Rigid)},
+                      {trk("mech.collision"), static_cast<int>(MechKind::Collision)},
+                      {trk("mech.fixed"), static_cast<int>(MechKind::FixedJoint)},
+                      {trk("mech.hinge"), static_cast<int>(MechKind::Hinge)},
+                      {trk("mech.slider"), static_cast<int>(MechKind::Slider)},
+                      {trk("mech.conveyor"), static_cast<int>(MechKind::Conveyor)},
+                      {trk("mech.collisionSensor"), static_cast<int>(MechKind::CollisionSensor)},
+                      {trk("mech.distanceSensor"), static_cast<int>(MechKind::DistanceSensor)},
+                      {trk("mech.lightBarrier"), static_cast<int>(MechKind::LightBarrier)},
+                      {trk("mech.source"), static_cast<int>(MechKind::Source)},
+                      {trk("mech.sink"), static_cast<int>(MechKind::Sink)}});
+    fill(shapeCombo_, {{trk("shape.box"), static_cast<int>(CollisionShape::Box)},
+                       {trk("shape.sphere"), static_cast<int>(CollisionShape::Sphere)},
+                       {trk("shape.capsule"), static_cast<int>(CollisionShape::Capsule)},
+                       {trk("shape.convex"), static_cast<int>(CollisionShape::ConvexHull)}});
+    axisCombo_->clear();
+    axisCombo_->addItems({trk("axis.x"), trk("axis.y"), trk("axis.z")});
+    fill(driveCombo_, {{trk("drive.none"), static_cast<int>(DriveMode::None)},
+                       {trk("drive.position"), static_cast<int>(DriveMode::Position)},
+                       {trk("drive.speed"), static_cast<int>(DriveMode::Speed)}});
+    refreshing_ = false;
+    refreshSignals();
+    loadScriptEditor(-1);
+}
+
+void MainWindow::refreshSignals() {
+    if (signalTable_ == nullptr) {
+        return;
+    }
+    signalTable_->setRowCount(static_cast<int>(scene_.signals.size()));
+    for (int row = 0; row < signalTable_->rowCount(); ++row) {
+        const Signal& signal = scene_.signals[static_cast<std::size_t>(row)];
+        auto ensure = [&](int column, const QString& text) {
+            if (signalTable_->item(row, column) == nullptr) {
+                signalTable_->setItem(row, column, new QTableWidgetItem);
+            }
+            signalTable_->item(row, column)->setText(text);
+        };
+        ensure(0, QString::fromUtf8(signal.name.c_str()));
+        ensure(1, QString::fromUtf8(signalTypeName(signal.type)));
+        QString value;
+        if (signal.type == SignalType::Bool) {
+            value = signal.flag ? trk("signal.true") : trk("signal.false");
+        } else if (signal.type == SignalType::Int) {
+            value = QString::number(signal.integer);
+        } else {
+            value = QString::number(signal.real, 'f', 2);
+        }
+        ensure(2, value);
+    }
+}
+
+void MainWindow::commitScriptEditor() {
+    if (scriptIndex_ < 0 || scriptIndex_ >= static_cast<int>(scene_.scripts.size()) || scriptEdit_ == nullptr) {
+        return;
+    }
+    ProjectScript& script = scene_.scripts[static_cast<std::size_t>(scriptIndex_)];
+    const std::string next = scriptEdit_->toPlainText().toUtf8().toStdString();
+    if (script.source == next) {
+        return;
+    }
+    script.source = next;
+    scene_.notify(ChangeKind::Transform);
+}
+
+void MainWindow::loadScriptEditor(int index) {
+    if (scriptCombo_ == nullptr) {
+        return;
+    }
+    refreshing_ = true;
+    if (scriptCombo_->count() != static_cast<int>(scene_.scripts.size())) {
+        scriptCombo_->clear();
+        for (const ProjectScript& script : scene_.scripts) {
+            scriptCombo_->addItem(QString::fromUtf8(script.name.c_str()));
+        }
+        scriptIndex_ = -1;
+    }
+    if (scene_.scripts.empty()) {
+        scriptEdit_->clear();
+        scriptIndex_ = -1;
+        refreshing_ = false;
+        return;
+    }
+    int resolved = index;
+    if (resolved < 0) {
+        resolved = 0;
+        for (int i = 0; i < static_cast<int>(scene_.scripts.size()); ++i) {
+            if (scene_.scripts[static_cast<std::size_t>(i)].name == scene_.activeScript) {
+                resolved = i;
+                break;
+            }
+        }
+    }
+    scriptCombo_->setCurrentIndex(resolved);
+    scriptIndex_ = resolved;
+    scriptEdit_->setPlainText(QString::fromUtf8(scene_.scripts[static_cast<std::size_t>(resolved)].source.c_str()));
+    refreshing_ = false;
+}
+
+void MainWindow::onScriptChanged(int index) {
+    if (refreshing_ || index < 0) {
+        return;
+    }
+    commitScriptEditor();
+    loadScriptEditor(index);
+    if (scriptIndex_ >= 0 && scriptIndex_ < static_cast<int>(scene_.scripts.size())) {
+        const std::string& name = scene_.scripts[static_cast<std::size_t>(scriptIndex_)].name;
+        if (scene_.activeScript != name) {
+            scene_.activeScript = name;
+            scene_.notify(ChangeKind::Transform);
+        }
+    }
+}
+
+void MainWindow::playSimulation() {
+    commitScriptEditor();
+    if (scriptIndex_ >= 0 && scriptIndex_ < static_cast<int>(scene_.scripts.size())) {
+        scene_.activeScript = scene_.scripts[static_cast<std::size_t>(scriptIndex_)].name;
+    }
+    std::string source;
+    for (const ProjectScript& script : scene_.scripts) {
+        if (script.name == scene_.activeScript || source.empty()) {
+            source = script.source;
+            if (script.name == scene_.activeScript) {
+                break;
+            }
+        }
+    }
+    std::string error;
+    if (!scripting_->load(source, error)) {
+        scriptLog_->appendPlainText(QString::fromStdString(error));
+    }
+    simulation_->setHooks([this] { scripting_->onStart(); }, [this](double dt) { scripting_->onStep(dt); },
+                          [this] { scripting_->onStop(); });
+    simulation_->play();
+    if (!simulation_->lastError().empty()) {
+        statusLabel_->setText(QString::fromStdString(simulation_->lastError()));
+    }
+}
+
+void MainWindow::pauseSimulation() { simulation_->pause(); }
+
+void MainWindow::stopSimulation() {
+    simulation_->stop();
+    if (timeLabel_ != nullptr) {
+        timeLabel_->setText(trk("status.simTime").arg(0.0, 0, 'f', 2));
+    }
+    refreshSignals();
+}
+
+void MainWindow::resetSimulation() { stopSimulation(); }
+
+void MainWindow::onSimTick() {
+    if (simulation_ == nullptr || simulation_->state() != SimState::Playing) {
+        return;
+    }
+    simulation_->tick(0.016);
+    const std::string log = scripting_->takeLog();
+    if (!log.empty() && scriptLog_ != nullptr) {
+        scriptLog_->appendPlainText(QString::fromStdString(log));
+    }
+}
+
+void MainWindow::onSpeedChanged(double speed) {
+    if (simulation_) {
+        simulation_->setSpeed(speed);
+    }
+}
+
+void MainWindow::runScriptSnippet() {}
+
+void MainWindow::beginHeadlessPlayback() {
+    QTimer::singleShot(200, this, [this] {
+        resizeDocks({treeDock_, propertyDock_}, {280, 300}, Qt::Horizontal);
+        if (auto* signals = findChild<QDockWidget*>("dock.signals")) {
+            if (auto* scripts = findChild<QDockWidget*>("dock.script")) {
+                resizeDocks({signals, scripts}, {380, 720}, Qt::Horizontal);
+            }
+        }
+        viewport_->setStandardView(StandardView::Iso);
+        viewport_->fitAll();
+        if (const auto pusher = scene_.findByName("Pusher")) {
+            scene_.setSelected(pusher->id);
+        }
+        playSimulation();
+        if (screenshotPath_.isEmpty()) {
+            return;
+        }
+        const int delay = static_cast<int>(std::max(headlessSeconds_, 0.2) * 1000.0) + 400;
+        QTimer::singleShot(delay, this, &MainWindow::captureScreenshot);
+    });
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

@@ -3,7 +3,9 @@ add_library(sim_core
     src/Transform.cpp
     src/Units.cpp
     src/Mesh.cpp
+    src/Mech.cpp
     src/Scene.cpp
+    src/DemoScene.cpp
     src/Pick.cpp
     src/I18n.cpp
 )

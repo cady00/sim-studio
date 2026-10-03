@@ -13,13 +13,17 @@
 
 class QAction;
 class QCloseEvent;
+class QComboBox;
 class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QCheckBox;
+class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
+class QTableWidget;
+class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -39,6 +43,8 @@ public:
     void openProject(const QString& path);
     void setScreenshotPath(const QString& path);
     void captureScreenshot();
+    void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
+    void beginHeadlessPlayback();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -61,6 +67,14 @@ private slots:
     void showPhysics();
     void showScripting();
     void setLocale(const QString& locale);
+    void playSimulation();
+    void pauseSimulation();
+    void stopSimulation();
+    void resetSimulation();
+    void onSimTick();
+    void onSpeedChanged(double speed);
+    void onScriptChanged(int index);
+    void runScriptSnippet();
 
 private:
     void buildUi();
@@ -69,6 +83,11 @@ private:
     void rebuildTree();
     void refreshProperties();
     void refreshStatus();
+    void refreshSignals();
+    void commitScriptEditor();
+    void loadScriptEditor(int index);
+    void fillMechCombos();
+    QString mechLabel(MechKind kind) const;
     void selectNode(const QString& id, bool fromTree);
     bool confirmDiscard();
     bool saveProject(const QString& path);
@@ -79,6 +98,8 @@ private:
     I18nCatalog i18n_;
     std::unique_ptr<IPhysicsEngine> physics_;
     std::unique_ptr<IScriptHost> scripting_;
+    std::unique_ptr<Simulation> simulation_;
+    QTimer* simTimer_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
     QTreeWidget* tree_ = nullptr;
     QLineEdit* nameEdit_ = nullptr;
@@ -90,6 +111,37 @@ private:
     QLabel* vertexLabel_ = nullptr;
     QLabel* triangleLabel_ = nullptr;
     QLabel* emptyLabel_ = nullptr;
+    QComboBox* mechCombo_ = nullptr;
+    QDoubleSpinBox* massSpin_ = nullptr;
+    QCheckBox* autoMassBox_ = nullptr;
+    QCheckBox* kinematicBox_ = nullptr;
+    QComboBox* shapeCombo_ = nullptr;
+    QDoubleSpinBox* extentSpin_[3] = {};
+    QDoubleSpinBox* radiusSpin_ = nullptr;
+    QDoubleSpinBox* heightSpin_ = nullptr;
+    QLineEdit* otherEdit_ = nullptr;
+    QComboBox* axisCombo_ = nullptr;
+    QCheckBox* limitedBox_ = nullptr;
+    QDoubleSpinBox* lowerSpin_ = nullptr;
+    QDoubleSpinBox* upperSpin_ = nullptr;
+    QComboBox* driveCombo_ = nullptr;
+    QDoubleSpinBox* targetSpin_ = nullptr;
+    QDoubleSpinBox* maxSpeedSpin_ = nullptr;
+    QDoubleSpinBox* accelSpin_ = nullptr;
+    QDoubleSpinBox* beltSpeedSpin_ = nullptr;
+    QDoubleSpinBox* rangeSpin_ = nullptr;
+    QLineEdit* signalEdit_ = nullptr;
+    QLineEdit* valueSignalEdit_ = nullptr;
+    QDoubleSpinBox* intervalSpin_ = nullptr;
+    QLineEdit* prototypeEdit_ = nullptr;
+    QTableWidget* signalTable_ = nullptr;
+    QComboBox* scriptCombo_ = nullptr;
+    QPlainTextEdit* scriptEdit_ = nullptr;
+    QPlainTextEdit* scriptLog_ = nullptr;
+    QLabel* timeLabel_ = nullptr;
+    QDoubleSpinBox* speedSpin_ = nullptr;
+    int scriptIndex_ = -1;
+    double headlessSeconds_ = 0;
     QLabel* statusLabel_ = nullptr;
     QLabel* unitLabel_ = nullptr;
     QLabel* nodeLabel_ = nullptr;
@@ -119,6 +171,10 @@ private:
     QAction* physicsAction_ = nullptr;
     QAction* scriptAction_ = nullptr;
     QAction* aboutAction_ = nullptr;
+    QAction* playAction_ = nullptr;
+    QAction* pauseAction_ = nullptr;
+    QAction* stopAction_ = nullptr;
+    QAction* resetAction_ = nullptr;
     QDockWidget* treeDock_ = nullptr;
     QDockWidget* propertyDock_ = nullptr;
 };

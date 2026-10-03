@@ -95,6 +95,9 @@ void Scene::clear() {
     name = "Untitled";
     units = "mm";
     sourceFiles.clear();
+    signals.clear();
+    scripts.clear();
+    activeScript.clear();
     dirty_ = false;
     ++structureRevision_;
     if (!mute_ && onChanged) {
@@ -119,10 +122,16 @@ void Scene::steal(Scene& other) {
     name = std::move(other.name);
     units = other.units.empty() ? std::string("mm") : other.units;
     sourceFiles = std::move(other.sourceFiles);
+    signals = std::move(other.signals);
+    scripts = std::move(other.scripts);
+    activeScript = std::move(other.activeScript);
     selected_.clear();
     other.root_.reset();
     other.meshes_.clear();
     other.sourceFiles.clear();
+    other.signals.clear();
+    other.scripts.clear();
+    other.activeScript.clear();
     if (!root_) {
         clear();
         return;
@@ -145,6 +154,104 @@ void Scene::setSelected(const std::string& id) {
     }
     selected_ = id;
     notify(ChangeKind::Selection);
+}
+
+std::shared_ptr<SceneNode> Scene::findByName(const std::string& nodeName) const {
+    if (!root_ || nodeName.empty()) {
+        return {};
+    }
+    std::vector<std::shared_ptr<SceneNode>> stack{root_};
+    while (!stack.empty()) {
+        auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        if (node->name == nodeName) {
+            return node;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+    }
+    return {};
+}
+
+std::shared_ptr<SceneNode> Scene::spawnClone(const std::shared_ptr<SceneNode>& prototype, const Transform& worldPose) {
+    if (!prototype || !root_) {
+        return {};
+    }
+    auto copy = std::make_shared<SceneNode>();
+    copy->id = "n" + std::to_string(nextNode_++);
+    copy->name = prototype->name + "_" + std::to_string(nextNode_);
+    copy->kind = NodeKind::Part;
+    copy->local = worldPose;
+    copy->meshId = prototype->meshId;
+    copy->color = prototype->color;
+    copy->visible = true;
+    copy->transient = true;
+    copy->mech = prototype->mech;
+    copy->mech.kind = MechKind::Rigid;
+    copy->mech.kinematic = false;
+    copy->mech.drive = DriveMode::None;
+    if (!mechCreatesBody(prototype->mech.kind) && prototype->mech.kind != MechKind::Rigid) {
+        copy->mech.kind = MechKind::Rigid;
+        copy->mech.shape = CollisionShape::Box;
+    }
+    addChild(root_, copy);
+    return copy;
+}
+
+bool Scene::removeNode(const std::string& id) {
+    auto node = find(id);
+    if (!node || node == root_) {
+        return false;
+    }
+    auto parent = node->parent.lock();
+    if (!parent) {
+        return false;
+    }
+    auto& children = parent->children;
+    const auto it = std::find(children.begin(), children.end(), node);
+    if (it == children.end()) {
+        return false;
+    }
+    children.erase(it);
+    if (selected_ == id) {
+        selected_.clear();
+    }
+    notify(ChangeKind::Structure);
+    return true;
+}
+
+Signal* Scene::findSignal(const std::string& signalName) {
+    for (Signal& signal : signals) {
+        if (signal.name == signalName) {
+            return &signal;
+        }
+    }
+    return nullptr;
+}
+
+const Signal* Scene::findSignal(const std::string& signalName) const {
+    for (const Signal& signal : signals) {
+        if (signal.name == signalName) {
+            return &signal;
+        }
+    }
+    return nullptr;
+}
+
+Signal& Scene::upsertSignal(const std::string& signalName, SignalType type) {
+    if (Signal* existing = findSignal(signalName)) {
+        existing->type = type;
+        return *existing;
+    }
+    Signal created;
+    created.name = signalName;
+    created.type = type;
+    signals.push_back(created);
+    return signals.back();
 }
 
 std::shared_ptr<SceneNode> Scene::find(const std::string& id) const {
@@ -227,6 +334,9 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     name = std::move(projectName);
     units = "mm";
     sourceFiles = std::move(sources);
+    signals.clear();
+    scripts.clear();
+    activeScript.clear();
     selected_.clear();
     adoptIds();
     dirty_ = false;
@@ -289,7 +399,7 @@ void Scene::notify(ChangeKind kind) {
     if (kind == ChangeKind::Structure) {
         ++structureRevision_;
     }
-    if (kind != ChangeKind::Selection) {
+    if (kind != ChangeKind::Selection && kind != ChangeKind::Simulation) {
         dirty_ = true;
     }
     if (!mute_ && onChanged) {

@@ -1,2 +1,5 @@
 add_library(sim_scripting src/ScriptHost.cpp)
 target_include_directories(sim_scripting PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+find_package(pybind11 CONFIG REQUIRED)
+target_link_libraries(sim_scripting PUBLIC sim_core pybind11::embed)

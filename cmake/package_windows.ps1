@@ -93,7 +93,58 @@ foreach ($rel in @("platforms", "styles", "imageformats")) {
 Plugins = plugins
 "@ | Set-Content -Encoding ascii (Join-Path $OutDir "qt.conf")
 
-$zip = Join-Path "dist" "SimStudio-0.1.0-win64.zip"
+# Embedded CPython looks for Lib/ (and python3xx._pth) beside the executable.
+$pythonLib = Join-Path $installed "tools/python3/Lib"
+$pythonDlls = Join-Path $installed "tools/python3/DLLs"
+if (Test-Path $pythonLib) {
+    Copy-Item $pythonLib (Join-Path $OutDir "Lib") -Recurse
+}
+if (Test-Path $pythonDlls) {
+    $dllDest = Join-Path $OutDir "DLLs"
+    New-Item -ItemType Directory -Force -Path $dllDest | Out-Null
+    Copy-Item (Join-Path $pythonDlls "*") $dllDest -Recurse -Force
+    Get-ChildItem $dllDest -Filter *.pyd -Recurse | ForEach-Object {
+        $queue.Enqueue($_.FullName)
+    }
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        $lines = & $dumpbin /dependents $current
+        foreach ($line in $lines) {
+            if ($line -match "^\s+(\S+\.dll)\s*$") {
+                $name = $Matches[1]
+                if ($seen.ContainsKey($name)) { continue }
+                $seen[$name] = $true
+                $source = Join-Path $binDir $name
+                if (Test-Path $source) {
+                    Copy-Item $source (Join-Path $OutDir $name)
+                    $queue.Enqueue((Join-Path $OutDir $name))
+                }
+            }
+        }
+    }
+}
+$pyDll = Get-ChildItem $OutDir -Filter "python3*.dll" |
+    Where-Object { $_.Name -match "^python3\d+\.dll$" } |
+    Select-Object -First 1
+if ($pyDll) {
+    $pthName = [System.IO.Path]::GetFileNameWithoutExtension($pyDll.Name) + "._pth"
+    @"
+Lib
+DLLs
+.
+import site
+"@ | Set-Content -Encoding ascii (Join-Path $OutDir $pthName)
+}
+
+$version = "0.2.0"
+$versionHeader = Join-Path $root "src/core/include/sim/core/Version.hpp"
+if (Test-Path $versionHeader) {
+    $versionText = Get-Content $versionHeader -Raw
+    if ($versionText -match 'kVersion = "([^"]+)"') {
+        $version = $Matches[1]
+    }
+}
+$zip = Join-Path "dist" "SimStudio-$version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path $OutDir -DestinationPath $zip
 Write-Host "Wrote $zip"

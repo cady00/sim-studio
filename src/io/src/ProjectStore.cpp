@@ -110,9 +110,12 @@ nlohmann::json writeNode(const SceneNode& node) {
     if (!node.meshId.empty()) {
         json["mesh"] = node.meshId;
     }
+    if (node.mech.kind != MechKind::None) {
+        json["mech"] = mechToJson(node.mech);
+    }
     json["children"] = nlohmann::json::array();
     for (const auto& child : node.children) {
-        if (child) {
+        if (child && !child->transient) {
             json["children"].push_back(writeNode(*child));
         }
     }
@@ -153,6 +156,9 @@ std::shared_ptr<SceneNode> readNode(const nlohmann::json& json, std::string& err
     if (json.contains("mesh")) {
         node->meshId = json.at("mesh").get<std::string>();
     }
+    if (json.contains("mech")) {
+        mechFromJson(json.at("mech"), node->mech);
+    }
     if (json.contains("children")) {
         for (const auto& childJson : json.at("children")) {
             auto child = readNode(childJson, error);
@@ -182,6 +188,15 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     json["units"] = scene.units;
     json["upAxis"] = "Z";
     json["sources"] = scene.sourceFiles;
+    json["activeScript"] = scene.activeScript;
+    json["signals"] = nlohmann::json::array();
+    for (const Signal& signal : scene.signals) {
+        json["signals"].push_back(signalToJson(signal));
+    }
+    json["scripts"] = nlohmann::json::array();
+    for (const ProjectScript& script : scene.scripts) {
+        json["scripts"].push_back(nlohmann::json{{"name", script.name}, {"source", script.source}});
+    }
     json["root"] = writeNode(*scene.root());
 
     std::vector<ZipEntry> entries;
@@ -232,7 +247,8 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
         result.message = "not a Sim Studio project";
         return result;
     }
-    if (json.value("version", 0) != kProjectFormatVersion) {
+    const int version = json.value("version", 0);
+    if (version < 1 || version > kProjectFormatVersion) {
         result.message = "unsupported project version";
         return result;
     }
@@ -280,6 +296,29 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     scene.reset(std::move(root), std::move(meshMap), json.value("name", std::string("Untitled")), std::move(sources));
     if (json.contains("units") && json.at("units").is_string()) {
         scene.units = json.at("units").get<std::string>();
+    }
+    scene.activeScript = json.value("activeScript", std::string{});
+    if (json.contains("signals") && json.at("signals").is_array()) {
+        for (const auto& item : json.at("signals")) {
+            Signal signal;
+            signalFromJson(item, signal);
+            if (!signal.name.empty()) {
+                scene.signals.push_back(signal);
+            }
+        }
+    }
+    if (json.contains("scripts") && json.at("scripts").is_array()) {
+        for (const auto& item : json.at("scripts")) {
+            if (!item.is_object()) {
+                continue;
+            }
+            ProjectScript script;
+            script.name = item.value("name", std::string{});
+            script.source = item.value("source", std::string{});
+            if (!script.name.empty()) {
+                scene.scripts.push_back(std::move(script));
+            }
+        }
     }
     result.ok = true;
     result.message.clear();
