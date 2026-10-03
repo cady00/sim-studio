@@ -1,0 +1,9 @@
+<RCC>
+  <qresource prefix="/">
+    <file>branding/logo.png</file>
+    <file>branding/logo.svg</file>
+    <file>branding/app.ico</file>
+    <file>i18n/zh_CN.json</file>
+    <file>i18n/en.json</file>
+  </qresource>
+</RCC>

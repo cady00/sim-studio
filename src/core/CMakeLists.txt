@@ -1,0 +1,11 @@
+add_library(sim_core
+    src/Math.cpp
+    src/Transform.cpp
+    src/Units.cpp
+    src/Mesh.cpp
+    src/Scene.cpp
+    src/Pick.cpp
+    src/I18n.cpp
+)
+target_include_directories(sim_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(sim_core PUBLIC nlohmann_json::nlohmann_json)
