@@ -743,10 +743,16 @@ std::shared_ptr<MeshData> meshFromUrdfFile(const std::string& path, double scale
 
 AssetImportResult importUrdfText(const std::string& text, Scene& scene, const std::string& baseDir) {
     AssetImportResult result;
-    result.format = "urdf";
+    result.format = text.find("xacro:") == std::string::npos ? "urdf" : "xacro";
+    std::string expanded = text;
+    std::string expandError;
+    if (!expandXacroDocument(text, baseDir, expanded, expandError)) {
+        result.message = expandError.empty() ? "xacro was not expanded" : expandError;
+        return result;
+    }
     XmlNode root;
     std::string error;
-    if (!parseXml(text, root, error)) {
+    if (!parseXml(expanded, root, error)) {
         result.message = error.empty() ? "urdf was not read" : error;
         return result;
     }
@@ -1017,7 +1023,25 @@ AssetImportResult importUrdfText(const std::string& text, Scene& scene, const st
             if (limit->attributes.count("velocity")) {
                 joint.maxSpeed = std::stod(limit->attributes.at("velocity")) * scale;
             }
+            if (limit->attributes.count("effort")) {
+                joint.effort = std::stod(limit->attributes.at("effort"));
+            }
             joint.limited = type != "continuous";
+        }
+        const bool hasInertia = [&] {
+            for (const KinLink& link : resource.links) {
+                if (link.name == childName && link.hasInertia && link.mass > 0) {
+                    return true;
+                }
+            }
+            return false;
+        }();
+        if (joint.effort > 0 && hasInertia) {
+            joint.accelSource = "dynamics";
+            joint.maxAccel = 0;
+        } else {
+            joint.accelSource = "velocity";
+            joint.maxAccel = 0;
         }
         resource.joints.push_back(std::move(joint));
     }
@@ -1130,8 +1154,10 @@ public:
 class UrdfImporter final : public IAssetImporter {
 public:
     const char* format() const override { return "urdf"; }
-    std::vector<std::string> extensions() const override { return {"urdf"}; }
-    bool probeContent(const std::string& head) const override { return head.find("<robot") != std::string::npos; }
+    std::vector<std::string> extensions() const override { return {"urdf", "xacro"}; }
+    bool probeContent(const std::string& head) const override {
+        return head.find("<robot") != std::string::npos || head.find("xacro:") != std::string::npos;
+    }
     AssetImportResult importFile(const std::string& path, Scene& scene) const override {
         std::string error;
         const std::string bytes = readFile(path, error);

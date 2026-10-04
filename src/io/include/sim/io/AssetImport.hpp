@@ -8,6 +8,9 @@
 
 namespace sim {
 
+// Expands xacro includes, properties, macros, and ${} expressions. A plain URDF is returned unchanged.
+bool expandXacroDocument(const std::string& text, const std::string& baseDir, std::string& expanded, std::string& error);
+
 struct AssetImportResult {
     bool ok = false;
     std::string message;

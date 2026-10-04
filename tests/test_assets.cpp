@@ -456,3 +456,76 @@ TEST_CASE("a collision sensor measures an inspect operation", "[assets]") {
     REQUIRE(scene.operations.front().seconds < 3.0);
     REQUIRE(scene.operations.front().seconds != Approx(6));
 }
+
+TEST_CASE("xacro import builds a robot resource and a mesh", "[assets]") {
+    const auto dir = std::filesystem::temp_directory_path() / "simstudio_xacro_robot";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream stl(dir / "link.stl");
+        stl << "solid link\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 0.02 0 0\nvertex 0 0.01 0\nendloop\nendfacet\nendsolid link\n";
+    }
+    {
+        std::ofstream macro(dir / "arm_macro.xacro");
+        macro << R"(<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="arm_macro">
+  <xacro:macro name="arm" params="prefix">
+    <link name="${prefix}base">
+      <visual><geometry><box size="0.1 0.1 0.1"/></geometry></visual>
+    </link>
+    <link name="${prefix}tool">
+      <inertial>
+        <origin xyz="0.2 0 0"/>
+        <mass value="2"/>
+        <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <visual><geometry><mesh filename="link.stl"/></geometry></visual>
+    </link>
+    <joint name="${prefix}j1" type="revolute">
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <parent link="${prefix}base"/>
+      <child link="${prefix}tool"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="${radians(-90)}" upper="${radians(90)}" velocity="1.0" effort="10"/>
+    </joint>
+  </xacro:macro>
+</robot>
+)";
+    }
+    const auto top = dir / "cell.xacro";
+    {
+        std::ofstream out(top);
+        out << R"(<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="cell">
+  <xacro:include filename="arm_macro.xacro"/>
+  <xacro:arm prefix="r_"/>
+</robot>
+)";
+    }
+    sim::Scene scene;
+    const sim::AssetImportResult imported = sim::createBuiltinRegistry()->importPath(top.string(), scene);
+    REQUIRE(imported.ok);
+    REQUIRE(imported.format == "xacro");
+    REQUIRE(imported.meshCount >= 1);
+    REQUIRE(scene.resources.size() == 1);
+    const sim::KinematicResource& resource = scene.resources.front();
+    REQUIRE(resource.name == "cell");
+    REQUIRE(resource.joints.size() == 1);
+    const sim::KinJoint& joint = resource.joints.front();
+    REQUIRE(joint.name == "r_j1");
+    REQUIRE(joint.childLink == "r_tool");
+    REQUIRE(joint.effort == Approx(10));
+    REQUIRE(joint.lower == Approx(-90));
+    REQUIRE(joint.upper == Approx(90));
+    REQUIRE(joint.accelSource == "dynamics");
+    const sim::JointAccelLimit limit = sim::jointAccelLimit(resource, joint);
+    REQUIRE(limit.source == "dynamics");
+    REQUIRE(limit.value > 1);
+    bool sawMesh = false;
+    for (const auto& [id, mesh] : scene.meshes()) {
+        (void)id;
+        if (mesh && mesh->triangleCount() > 0) {
+            sawMesh = true;
+        }
+    }
+    REQUIRE(sawMesh);
+}

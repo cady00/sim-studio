@@ -7,6 +7,7 @@ add_library(sim_io
     src/StepImporter.cpp
     src/ObjImporter.cpp
     src/AssetImport.cpp
+    src/Xacro.cpp
     src/OcctCadImport.cpp
     src/OpcUa.cpp
     src/OpcUaCrypto.cpp
