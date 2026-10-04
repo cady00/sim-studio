@@ -143,6 +143,7 @@ void MotionPanel::buildUi() {
     auto* kinForm = new QFormLayout;
     resourceCombo_ = new QComboBox;
     resourceName_ = new QLineEdit;
+    resourceName_->setObjectName("motion.resourceName");
     linkName_ = new QLineEdit;
     parentCombo_ = new QComboBox;
     childCombo_ = new QComboBox;

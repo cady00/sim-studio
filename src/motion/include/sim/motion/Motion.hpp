@@ -167,7 +167,10 @@ std::string pathFingerprint(const RobotPath& path, const KinematicResource* reso
 MeasureResult measureOperationTimes(Scene& scene, bool force);
 // Cubic Hermite on u in [0, 1]. Slopes are dq/du so a zone can match the joint velocity on both sides.
 double zoneBlend(double u, double q0, double q1, double slope0, double slope1);
-std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource);
+// `maxDistance` keeps pairs at least this deep. 1e-4 treats a touch as a hit. A negative value
+// ignores grazing tessellation and keeps only penetrations past that many millimetres.
+std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource,
+                                                                double maxDistance = 1e-4);
 void highlightCollisions(Scene& scene, const KinematicResource& resource,
                          const std::vector<std::pair<std::string, std::string>>& pairs);
 // Continuous check along joint-space samples. The bound is the summed joint travel of every point.

@@ -98,5 +98,7 @@ std::vector<int> orderWeldSpots(const std::vector<Vec3>& points);
 
 // Orders reachable spots, plans a collision-free joint tour, and stores it as path "weld_tour".
 int planExampleWeldTour(Scene& scene);
+// Records a weld station and a task whose path is weld_tour when the project has none.
+void attachWeldLine(Scene& scene);
 
 }  // namespace sim

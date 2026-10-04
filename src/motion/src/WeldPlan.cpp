@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <sstream>
 
 namespace sim {
@@ -284,12 +285,25 @@ void prepareExampleWelds(Scene& scene) {
 std::vector<SpotReach> checkWeldReach(Scene* scene, KinematicResource& resource, std::vector<WeldSpot>& spots, bool checkCollision) {
     std::vector<SpotReach> report;
     const std::vector<double> saved = jointVector(resource);
+    std::set<std::pair<std::string, std::string>> resting;
+    if (checkCollision && scene != nullptr) {
+        applyResource(*scene, resource);
+        for (const auto& hit : collidingPairs(*scene, resource, -2.0)) {
+            resting.insert(hit);
+        }
+    }
     for (WeldSpot& spot : spots) {
         SpinSearch aligned = searchWeldSpin(nullptr, resource, spot, 12, false);
         if (checkCollision && scene != nullptr && aligned.ok) {
             setJointVector(resource, aligned.joints);
             applyResource(*scene, resource);
-            aligned.collision = !collidingPairs(*scene, resource).empty();
+            aligned.collision = false;
+            for (const auto& hit : collidingPairs(*scene, resource, -2.0)) {
+                if (resting.find(hit) == resting.end()) {
+                    aligned.collision = true;
+                    break;
+                }
+            }
         }
         spot.checked = true;
         spot.margin = aligned.margin;
@@ -702,6 +716,54 @@ int planExampleWeldTour(Scene& scene) {
     const int count = static_cast<int>(tour.points.size());
     scene.robotPaths.push_back(std::move(tour));
     return count;
+}
+
+void attachWeldLine(Scene& scene) {
+    bool hasStation = false;
+    for (const Station& station : scene.layout.stations) {
+        if (station.id == "st_weld") {
+            hasStation = true;
+            break;
+        }
+    }
+    if (!hasStation) {
+        Station station;
+        station.id = "st_weld";
+        station.name = "焊接";
+        station.kind = StationKind::Robot;
+        station.resource = "kr420";
+        station.width = 2000;
+        station.depth = 1800;
+        scene.layout.stations.push_back(station);
+    }
+    if (scene.layout.title.empty()) {
+        scene.layout.title = "焊装";
+    }
+    const bool hasLine = std::any_of(scene.operations.begin(), scene.operations.end(),
+                                     [](const Operation& operation) { return operation.id == "line"; });
+    bool createdLine = false;
+    if (!hasLine && scene.operations.empty()) {
+        Operation line;
+        line.id = "line";
+        line.name = "节拍";
+        line.kind = OpKind::Sequence;
+        scene.operations.push_back(std::move(line));
+        createdLine = true;
+    }
+    for (const Operation& operation : scene.operations) {
+        if (operation.path == "weld_tour") {
+            return;
+        }
+    }
+    Operation weld;
+    weld.id = "weld_tour";
+    weld.name = "焊接";
+    weld.parent = (hasLine || createdLine) ? "line" : "";
+    weld.kind = OpKind::Task;
+    weld.station = "st_weld";
+    weld.path = "weld_tour";
+    weld.seconds = 0;
+    scene.operations.push_back(std::move(weld));
 }
 
 namespace {

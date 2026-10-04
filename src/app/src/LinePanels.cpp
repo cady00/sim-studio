@@ -2,6 +2,7 @@
 
 #include "sim/core/LineModel.hpp"
 #include "sim/core/Scene.hpp"
+#include "sim/motion/Motion.hpp"
 
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -552,6 +553,7 @@ OperationTreeView::OperationTreeView(Scene& scene, QWidget* parent) : QWidget(pa
     layout->setContentsMargins(6, 6, 6, 6);
     badge_ = new QLabel(this);
     tree_ = new QTreeWidget(this);
+    tree_->setObjectName("line.operations");
     tree_->setColumnCount(8);
     tree_->setHeaderLabels({QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("工位"), QStringLiteral("秒"),
                             QStringLiteral("来源"), QStringLiteral("路径"), QStringLiteral("逻辑"), QStringLiteral("前置")});
@@ -591,6 +593,17 @@ GanttView::GanttView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(sc
     auto* row = new QHBoxLayout;
     auto* csv = new QPushButton(QStringLiteral("CSV"), this);
     auto* xlsx = new QPushButton(QStringLiteral("XLSX"), this);
+    auto* measure = new QPushButton(QStringLiteral("测算节拍"), this);
+    measure->setObjectName("line.measure");
+    auto* note = new QLabel(this);
+    note->setObjectName("line.measureNote");
+    note->setWordWrap(true);
+    QObject::connect(measure, &QPushButton::clicked, this, [this, note] {
+        const MeasureResult result = measureOperationTimes(scene_, false);
+        note->setText(QString::fromStdString(result.note));
+        scene_.notify(ChangeKind::Structure);
+        reload();
+    });
     QObject::connect(csv, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("CSV"), {}, QStringLiteral("CSV (*.csv)"));
         if (path.isEmpty()) {
@@ -607,9 +620,10 @@ GanttView::GanttView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(sc
         std::string error;
         exportScheduleXlsx(scheduleOperations(scene_.operations, scene_.layout), path.toStdString(), error);
     });
+    row->addWidget(measure);
     row->addWidget(csv);
     row->addWidget(xlsx);
-    row->addStretch(1);
+    row->addWidget(note, 1);
     layout->addLayout(row);
     canvas_ = new GanttCanvas(scene_, this);
     layout->addWidget(canvas_, 1);
@@ -624,6 +638,9 @@ void GanttView::setDark(bool dark) {
 void GanttView::setZh(bool zh) {
     if (auto* canvas = static_cast<GanttCanvas*>(canvas_)) {
         canvas->setZh(zh);
+    }
+    if (auto* button = findChild<QPushButton*>("line.measure")) {
+        button->setText(zh ? QStringLiteral("测算节拍") : QStringLiteral("Measure cycle"));
     }
 }
 

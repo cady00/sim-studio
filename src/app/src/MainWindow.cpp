@@ -60,6 +60,7 @@
 #include <QStatusBar>
 #include <QSystemTrayIcon>
 #include <QTimer>
+#include <QSizePolicy>
 #include <QToolBar>
 #include <QItemSelectionModel>
 #include <QTreeView>
@@ -380,7 +381,14 @@ void MainWindow::buildUi() {
     propertyDock_->setObjectName("dock.properties");
 
     chrome_ = new ChromeBar(this);
-    setMenuWidget(chrome_);
+    chrome_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    chrome_->setMinimumWidth(1200);
+    auto* chromeHost = new QToolBar(this);
+    chromeHost->setObjectName("toolbar.chrome");
+    chromeHost->setMovable(false);
+    chromeHost->setFloatable(false);
+    chromeHost->addWidget(chrome_);
+    addToolBar(Qt::TopToolBarArea, chromeHost);
     palette_ = new CommandPalette(this);
     intent_ = new IntentBar(this);
     connect(chrome_, &ChromeBar::modeChanged, this, [this](int mode) { applyTaskMode(mode); });
@@ -683,6 +691,9 @@ void MainWindow::bindScene() {
             }
             if (gantt_ != nullptr) {
                 gantt_->reload();
+            }
+            if (weld_ != nullptr) {
+                weld_->reload();
             }
         } else if (kind == ChangeKind::Selection) {
             refreshProperties();
@@ -1089,6 +1100,7 @@ void MainWindow::newProject() {
     scene_.clear();
     projectPath_.clear();
     viewport_->fitAll();
+    applyTaskMode(taskMode_);
 }
 
 void MainWindow::openProjectInteractive() {
@@ -1114,6 +1126,7 @@ void MainWindow::openProject(const QString& path) {
     scene_.markClean();
     viewport_->fitAll();
     refreshStatus();
+    applyTaskMode(taskMode_);
 }
 
 bool MainWindow::saveProject(const QString& path) {
@@ -2467,7 +2480,7 @@ void MainWindow::applyTaskMode(int mode) {
     show(scriptDock_, taskMode_ == 5);
     show(plcDock_, taskMode_ == 5);
     show(physicsDock_, taskMode_ == 0 || taskMode_ == 4);
-    const bool showLine = !scene_.layout.stations.empty() && taskMode_ == 0;
+    const bool showLine = taskMode_ == 0 && (!scene_.layout.stations.empty() || !scene_.operations.empty());
     show(floorDock_, showLine);
     show(operationDock_, showLine);
     show(ganttDock_, showLine);

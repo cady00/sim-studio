@@ -46,6 +46,9 @@ public:
     void importStepAsync(const QString& path);
     void importObj(const QString& path);
     void openProject(const QString& path);
+    bool saveProject(const QString& path);
+    const Scene& document() const { return scene_; }
+    bool importing() const { return importing_; }
     void setScreenshotPath(const QString& path);
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
@@ -105,7 +108,6 @@ private:
     QString mechLabel(MechKind kind) const;
     void selectNode(const QString& id, bool fromTree);
     bool confirmDiscard();
-    bool saveProject(const QString& path);
     QString trk(const char* key) const;
     void finishScreenshot();
     void applyTaskMode(int mode);

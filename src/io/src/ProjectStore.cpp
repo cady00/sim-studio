@@ -453,6 +453,8 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     if (json.contains("ppr")) {
         pprFromJson(json.at("ppr"), scene.ppr);
     }
+    // reset() notifies before kinematics, welds, and operations are copied in.
+    scene.notify(ChangeKind::Structure);
     result.ok = true;
     result.message.clear();
     return result;

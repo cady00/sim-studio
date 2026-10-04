@@ -335,3 +335,17 @@ TEST_CASE("a shared zone holds the station and unreachable spots name a fix") {
     const sim::WeldAdvice gun = sim::suggestWeldFix(robot, turned);
     REQUIRE(gun.kind == "gun");
 }
+
+TEST_CASE("an empty project records the weld tour as a station task") {
+    sim::Scene scene;
+    sim::attachWeldLine(scene);
+    REQUIRE(scene.layout.stations.size() == 1);
+    REQUIRE(scene.layout.stations.front().id == "st_weld");
+    REQUIRE(scene.layout.stations.front().resource == "kr420");
+    REQUIRE(scene.operations.size() == 2);
+    REQUIRE(scene.operations[1].path == "weld_tour");
+    REQUIRE(scene.operations[1].parent == "line");
+    REQUIRE(scene.operations[1].seconds == 0);
+    sim::attachWeldLine(scene);
+    REQUIRE(scene.operations.size() == 2);
+}

@@ -452,12 +452,13 @@ Quat slerpPublic(Quat a, Quat b, double t) {
     return Quat{w0 * a.w + w1 * b.w, w0 * a.x + w1 * b.x, w0 * a.y + w1 * b.y, w0 * a.z + w1 * b.z}.normalized();
 }
 
-std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource) {
+std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource,
+                                                                double maxDistance) {
     auto query = createCollisionQuery();
     query->rebuild(scene);
     std::set<std::pair<std::string, std::string>> hits;
     for (const ContactHit& hit : query->query(scene, 0)) {
-        if (hit.distance > 1e-4 || !relevantPair(scene, resource, hit.a, hit.b)) {
+        if (hit.distance > maxDistance || !relevantPair(scene, resource, hit.a, hit.b)) {
             continue;
         }
         if (hit.a < hit.b) {

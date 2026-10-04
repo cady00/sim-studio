@@ -40,3 +40,44 @@ target_link_libraries(simstudio PRIVATE
     Qt6::OpenGLWidgets
 )
 target_compile_definitions(simstudio PRIVATE SIM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+qt_add_executable(simstudio_e2e
+    src/e2e_main.cpp
+    src/MainWindow.cpp
+    src/MotionPanel.cpp
+    src/CollisionPanel.cpp
+    src/ChromeBar.cpp
+    src/CommandPalette.cpp
+    src/IntentBar.cpp
+    src/TaskPanels.cpp
+    src/LinePanels.cpp
+    src/WeldPanel.cpp
+    src/PhysicsShelf.cpp
+    src/SceneTree.cpp
+    include/sim/app/SceneTree.hpp
+    include/sim/app/PhysicsShelf.hpp
+    include/sim/app/MainWindow.hpp
+    include/sim/app/MotionPanel.hpp
+    include/sim/app/CollisionPanel.hpp
+    include/sim/app/ChromeBar.hpp
+    include/sim/app/CommandPalette.hpp
+    include/sim/app/IntentBar.hpp
+    include/sim/app/TaskPanels.hpp
+    include/sim/app/LinePanels.hpp
+    include/sim/app/WeldPanel.hpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+set_target_properties(simstudio_e2e PROPERTIES AUTORCC ON AUTOMOC ON)
+target_include_directories(simstudio_e2e PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(simstudio_e2e PRIVATE
+    sim_render
+    sim_io
+    sim_physics
+    sim_scripting
+    sim_motion
+    sim_ai
+    Qt6::Widgets
+    Qt6::OpenGLWidgets
+    Qt6::Test
+)
+target_compile_definitions(simstudio_e2e PRIVATE SIM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

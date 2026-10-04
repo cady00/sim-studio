@@ -60,7 +60,7 @@ add_subdirectory(src/motion)
 add_subdirectory(src/ai)
 
 if(SIMSTUDIO_BUILD_APP)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Test)
     qt_standard_project_setup()
     set(CMAKE_AUTORCC ON)
     add_subdirectory(src/render)

@@ -21,6 +21,7 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     summary_->setWordWrap(true);
     layout->addWidget(summary_);
     source_ = new QPlainTextEdit;
+    source_->setObjectName("weldSource");
     source_->setPlaceholderText("id,x,y,z,nx,ny,nz,layers,electrode,example");
     source_->setMaximumHeight(90);
     layout->addWidget(source_);
@@ -236,6 +237,9 @@ void WeldPanel::baseRegion() {
 
 void WeldPanel::planTour() {
     const int points = planExampleWeldTour(scene_);
+    if (points > 0) {
+        attachWeldLine(scene_);
+    }
     scene_.notify(ChangeKind::Structure);
     reload();
     summary_->setText(trk("weld.tour").arg(points));
