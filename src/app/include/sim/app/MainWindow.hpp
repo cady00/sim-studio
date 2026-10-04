@@ -123,6 +123,8 @@ private:
     bool kr420Demo_ = false;
     bool kr420TrackDemo_ = false;
     bool transferDemo_ = false;
+    bool meshDemo_ = false;
+    bool slipDemo_ = false;
     bool shelfReload_ = true;
     std::string demoPath_;
     std::string pendingPath_;

@@ -573,6 +573,8 @@ void addKr420Demonstration(Scene& scene) {
         away.joints[i] = nudge[i];
     }
     away.speed = 40;
+    away.zone = 30;
+    home.zone = 20;
     PathPoint back;
     back.name = "return";
     back.move = PathMove::Lin;

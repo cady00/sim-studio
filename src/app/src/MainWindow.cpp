@@ -1466,6 +1466,7 @@ void MainWindow::playSimulation() {
                               }
                           },
                           [this] { scripting_->onStop(); });
+    simulation_->setAfterStep([this] { scripting_->onContacts(); });
     std::string robotError;
     robot_->build(scene_, robotError);
     const std::string path = !pendingPath_.empty() ? pendingPath_ : demoPath_;
@@ -1565,6 +1566,8 @@ void MainWindow::loadDemo(const QString& name) {
     kr420Demo_ = name == QStringLiteral("kr420");
     kr420TrackDemo_ = name == QStringLiteral("kr420track");
     transferDemo_ = name == QStringLiteral("transfer");
+    meshDemo_ = name == QStringLiteral("mesh");
+    slipDemo_ = name == QStringLiteral("slip");
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
         demoPath_ = "pick_place";
@@ -1623,6 +1626,16 @@ void MainWindow::loadDemo(const QString& name) {
         buildTransferLine(scene_);
         demoPath_.clear();
         applyTaskMode(4);
+    } else if (meshDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildMeshGapDemo(scene_);
+        demoPath_.clear();
+        applyTaskMode(4);
+    } else if (slipDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildSlipDemo(scene_);
+        demoPath_.clear();
+        applyTaskMode(4);
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
@@ -1673,8 +1686,9 @@ void MainWindow::beginHeadlessPlayback() {
             collision_->reload();
             viewport_->fitAll();
         }
-        if (transferDemo_) {
-            if (const auto box = scene_.findByName("RubberBox")) {
+        if (transferDemo_ || meshDemo_ || slipDemo_) {
+            const char* focus = transferDemo_ ? "RubberBox" : meshDemo_ ? "Supported" : "GripBox";
+            if (const auto box = scene_.findByName(focus)) {
                 scene_.setSelected(box->id);
             }
             if (physicsDock_ != nullptr) {
@@ -1699,6 +1713,9 @@ void MainWindow::beginHeadlessPlayback() {
             ++guard;
         }
         if (viewport_ != nullptr) {
+            if (meshDemo_ || slipDemo_) {
+                viewport_->fitAll();
+            }
             const PhysicsStats& stats = scene_.physicsDoc.stats;
             viewport_->setPhysicsLine(trk("phys.hud")
                                           .arg(stats.contacts)

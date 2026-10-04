@@ -116,6 +116,7 @@ public:
     std::vector<ConvexCacheEntry> convexCache;
     PhysicsDocument physicsDoc;
     std::vector<MotorAspect> motors;
+    std::vector<ContactNotice> contactNotices;
 
     bool dirty() const { return dirty_; }
     void markClean() { dirty_ = false; }

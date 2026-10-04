@@ -41,6 +41,8 @@ public:
 
     Simulation(Scene& scene, IPhysicsEngine& engine);
     void setHooks(std::function<void()> onStart, std::function<void(double)> onStep, std::function<void()> onStop);
+    // Runs after each engine step, so scripts can read contacts produced by that step.
+    void setAfterStep(std::function<void()> afterStep);
 
     void play();
     void pause();
@@ -70,6 +72,7 @@ private:
     std::function<void()> onStart_;
     std::function<void(double)> onStep_;
     std::function<void()> onStop_;
+    std::function<void()> afterStep_;
 };
 
 // Not constructed yet. Phase 3 owns the motion planner and cycle-time model.

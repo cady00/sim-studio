@@ -560,6 +560,16 @@ void highlightCollisions(Scene& scene, const KinematicResource& resource,
     }
 }
 
+double zoneBlend(double u, double q0, double q1, double slope0, double slope1) {
+    const double uu = u * u;
+    const double uuu = uu * u;
+    const double h00 = (2.0 * uuu) - (3.0 * uu) + 1.0;
+    const double h10 = uuu - (2.0 * uu) + u;
+    const double h01 = (-2.0 * uuu) + (3.0 * uu);
+    const double h11 = uuu - uu;
+    return (h00 * q0) + (h10 * slope0) + (h01 * q1) + (h11 * slope1);
+}
+
 MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotPath& path) {
     MotionPlan plan;
     if (path.points.empty()) {
@@ -656,15 +666,17 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
         plan.segmentSeconds.push_back(span);
     }
 
+    bool resumeAtWindow = false;
+    bool zoneWarned = false;
     for (std::size_t i = 0; i < chunks.size(); ++i) {
-        int begin = plan.samples.empty() ? 0 : 1;
+        int begin = plan.samples.empty() || resumeAtWindow ? 0 : 1;
         int end = static_cast<int>(chunks[i].frames.size());
         int drop = 0;
         if (i + 1 < chunks.size() && path.points[i].zone > 0.0) {
             const double blendTime = std::min(0.3 * static_cast<double>(chunks[i].frames.size()) * plan.dt,
                                               path.points[i].zone / std::max(path.points[i].speed, 1.0));
             drop = static_cast<int>(std::round(blendTime / plan.dt));
-            drop = std::min(drop, std::max(0, end - begin - 1));
+            drop = std::min(drop, std::max(0, end - 2));
             drop = std::min(drop, std::max(0, static_cast<int>(chunks[i + 1].frames.size()) - 1));
         }
         if (drop > 0) {
@@ -673,21 +685,45 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
         for (int frame = begin; frame < end; ++frame) {
             plan.samples.push_back(chunks[i].frames[static_cast<std::size_t>(frame)]);
         }
-        for (int k = 0; k < drop; ++k) {
-            const auto& incoming = chunks[i].frames[chunks[i].frames.size() - static_cast<std::size_t>(drop) + static_cast<std::size_t>(k)];
-            const auto& outgoing = chunks[i + 1].frames[static_cast<std::size_t>(k)];
-            const double u = static_cast<double>(k + 1) / static_cast<double>(drop + 1);
-            std::vector<double> mixed(std::max(incoming.size(), outgoing.size()));
-            for (std::size_t n = 0; n < mixed.size(); ++n) {
-                const double a = n < incoming.size() ? incoming[n] : 0;
-                const double b = n < outgoing.size() ? outgoing[n] : 0;
-                mixed[n] = (1.0 - u) * a + u * b;
+        if (drop > 0) {
+            const auto& current = chunks[i].frames;
+            auto& next = chunks[i + 1].frames;
+            const int q0Index = std::max(0, end - 1);
+            const int q1Index = std::min(drop, std::max(0, static_cast<int>(next.size()) - 1));
+            const int prevIndex = std::max(0, q0Index - 1);
+            const int afterIndex = std::min(static_cast<int>(next.size()) - 1, q1Index + 1);
+            const auto& q0 = current[static_cast<std::size_t>(q0Index)];
+            const auto& qPrev = current[static_cast<std::size_t>(prevIndex)];
+            const auto& q1 = next[static_cast<std::size_t>(q1Index)];
+            const auto& qAfter = next[static_cast<std::size_t>(afterIndex)];
+            const double span = static_cast<double>(drop + 1);
+            for (int k = 0; k < drop; ++k) {
+                const double u = static_cast<double>(k + 1) / span;
+                const std::size_t width = std::max(std::max(q0.size(), q1.size()), std::max(qPrev.size(), qAfter.size()));
+                std::vector<double> mixed(width);
+                for (std::size_t n = 0; n < width; ++n) {
+                    const double a0 = n < q0.size() ? q0[n] : 0;
+                    const double a1 = n < q1.size() ? q1[n] : 0;
+                    const double before = n < qPrev.size() ? qPrev[n] : a0;
+                    const double after = n < qAfter.size() ? qAfter[n] : a1;
+                    double value = zoneBlend(u, a0, a1, (a0 - before) * span, (after - a1) * span);
+                    if (n < resource.joints.size()) {
+                        const double clamped = clampJoint(resource.joints[n], value);
+                        if (!zoneWarned && std::abs(clamped - value) > 1e-3) {
+                            plan.warnings.push_back("zone clamp");
+                            zoneWarned = true;
+                        }
+                        value = clamped;
+                    }
+                    mixed[n] = value;
+                }
+                plan.samples.push_back(std::move(mixed));
             }
-            plan.samples.push_back(std::move(mixed));
-        }
-        if (drop > 0 && i + 1 < chunks.size()) {
-            chunks[i + 1].frames.erase(chunks[i + 1].frames.begin(),
-                                       chunks[i + 1].frames.begin() + std::min(drop, static_cast<int>(chunks[i + 1].frames.size())));
+            const int eraseCount = std::min(drop, static_cast<int>(next.size()));
+            next.erase(next.begin(), next.begin() + eraseCount);
+            resumeAtWindow = !next.empty();
+        } else {
+            resumeAtWindow = false;
         }
     }
 

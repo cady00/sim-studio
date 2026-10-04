@@ -1,10 +1,14 @@
 add_library(sim_physics
     src/PhysicsFactory.cpp
     src/BuiltinPhysicsEngine.cpp
+    src/ContactNarrow.cpp
     src/Simulation.cpp
 )
 target_include_directories(sim_physics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(sim_physics PUBLIC sim_core)
+# Static archives do not carry their own link line. The collision symbols used by
+# the builtin narrow phase have to ride the public interface of sim_physics.
+target_link_libraries(sim_physics PUBLIC sim_collision)
 if(MSVC)
     target_compile_options(sim_physics PRIVATE /bigobj)
 endif()

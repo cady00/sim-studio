@@ -148,6 +148,8 @@ private:
 };
 
 MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotPath& path);
+// Cubic Hermite on u in [0, 1]. Slopes are dq/du so a zone can match the joint velocity on both sides.
+double zoneBlend(double u, double q0, double q1, double slope0, double slope1);
 std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource);
 void highlightCollisions(Scene& scene, const KinematicResource& resource,
                          const std::vector<std::pair<std::string, std::string>>& pairs);

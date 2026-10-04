@@ -106,6 +106,7 @@ void Scene::clear() {
     convexCache.clear();
     physicsDoc = {};
     motors.clear();
+    contactNotices.clear();
     dirty_ = false;
     ++structureRevision_;
     if (!mute_ && onChanged) {
@@ -140,6 +141,7 @@ void Scene::steal(Scene& other) {
     convexCache = std::move(other.convexCache);
     physicsDoc = std::move(other.physicsDoc);
     motors = std::move(other.motors);
+    contactNotices = std::move(other.contactNotices);
     selected_.clear();
     selection_.clear();
     other.root_.reset();
@@ -155,6 +157,7 @@ void Scene::steal(Scene& other) {
     other.convexCache.clear();
     other.physicsDoc = {};
     other.motors.clear();
+    other.contactNotices.clear();
     if (!root_) {
         clear();
         return;
@@ -478,6 +481,7 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     robotPaths.clear();
     proximity = {};
     convexCache.clear();
+    contactNotices.clear();
     selected_.clear();
     selection_.clear();
     adoptIds();

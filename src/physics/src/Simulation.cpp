@@ -38,6 +38,8 @@ void Simulation::setHooks(std::function<void()> onStart, std::function<void(doub
     onStop_ = std::move(onStop);
 }
 
+void Simulation::setAfterStep(std::function<void()> afterStep) { afterStep_ = std::move(afterStep); }
+
 void Simulation::setSpeed(double factor) { speed_ = std::clamp(factor, 0.0, 16.0); }
 
 void Simulation::captureRest() {
@@ -115,6 +117,9 @@ void Simulation::tick(double realDtSeconds) {
             onStep_(stepDt);
         }
         engine_.step(stepDt);
+        if (afterStep_) {
+            afterStep_();
+        }
         time_ += stepDt;
         accumulator_ -= stepDt;
         ++steps;

@@ -187,6 +187,20 @@ PYBIND11_EMBEDDED_MODULE(simstudio, module) {
         item["time_to_speed"] = timeToSpeed(0, speed, decel);
         return item;
     });
+    module.def("contacts", []() {
+        py::list list;
+        Scene* scene = sceneOrThrow();
+        for (const ContactNotice& notice : scene->contactNotices) {
+            py::dict item;
+            item["self"] = notice.self;
+            item["other"] = notice.other;
+            item["impulse"] = notice.impulse;
+            item["normal"] = py::make_tuple(notice.normal.x, notice.normal.y, notice.normal.z);
+            item["point"] = py::make_tuple(notice.point.x, notice.point.y, notice.point.z);
+            list.append(item);
+        }
+        return list;
+    });
     module.def("encoder_count", [](const std::string& name) {
         for (const MotorAspect& motor : sceneOrThrow()->motors) {
             if (motor.name == name) {
@@ -238,6 +252,7 @@ public:
         hasStart_ = false;
         hasStep_ = false;
         hasStop_ = false;
+        hasContact_ = false;
         if (source.empty()) {
             return true;
         }
@@ -247,6 +262,7 @@ public:
         hasStart_ = scopeContains("on_start");
         hasStep_ = scopeContains("on_step");
         hasStop_ = scopeContains("on_stop");
+        hasContact_ = scopeContains("on_contact");
         return true;
     }
 
@@ -265,6 +281,21 @@ public:
     }
     void onStop() override { call("on_stop", hasStop_); }
 
+    void onContacts() override {
+        if (!hasContact_ || gBridge.scene == nullptr) {
+            return;
+        }
+        try {
+            for (const ContactNotice& notice : gBridge.scene->contactNotices) {
+                scope_["on_contact"](notice.self, notice.other, notice.impulse);
+            }
+        } catch (const py::error_already_set& ex) {
+            gBridge.log += ex.what();
+            gBridge.log.push_back('\n');
+            hasContact_ = false;
+        }
+    }
+
     bool execute(const std::string& code, std::string& output, std::string& error) override {
         gBridge.log.clear();
         if (!exec(code, error)) {
@@ -274,6 +305,7 @@ public:
         hasStart_ = scopeContains("on_start");
         hasStep_ = scopeContains("on_step");
         hasStop_ = scopeContains("on_stop");
+        hasContact_ = scopeContains("on_contact");
         output = takeLog();
         return true;
     }
@@ -337,6 +369,7 @@ sys.stderr = _Stream()
     bool hasStart_ = false;
     bool hasStep_ = false;
     bool hasStop_ = false;
+    bool hasContact_ = false;
 };
 
 }  // namespace

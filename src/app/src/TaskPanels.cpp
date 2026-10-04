@@ -347,7 +347,8 @@ void PathTimeline::reload() {
     }
     std::string next = path.name + "|" + path.resource + "|" + std::to_string(path.points.size());
     for (const PathPoint& point : path.points) {
-        next += "|" + point.name + "|" + std::to_string(point.speed) + "|" + std::to_string(static_cast<int>(point.move));
+        next += "|" + point.name + "|" + std::to_string(point.speed) + "|" + std::to_string(point.zone) + "|" +
+                std::to_string(static_cast<int>(point.move));
     }
     if (planned_ && signature_ == next) {
         update();
@@ -394,7 +395,11 @@ void PathTimeline::paintEvent(QPaintEvent*) {
     painter.setPen(ink);
     painter.drawText(12, 20, QString::fromStdString(path.name + "  ·  " + path.resource));
     painter.setPen(muted);
-    painter.drawText(12, 40, QString("规划器节拍 %1 s").arg(seconds_, 0, 'f', 3));
+    double segmentSum = 0;
+    for (double span : segmentSeconds_) {
+        segmentSum += span;
+    }
+    painter.drawText(12, 40, QString("分段合计 %1 s · 过渡后 %2 s").arg(segmentSum, 0, 'f', 3).arg(seconds_, 0, 'f', 3));
 
     const int count = static_cast<int>(path.points.size());
     const int span = std::max(48, (width() - 32) / std::max(count, 1));

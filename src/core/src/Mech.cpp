@@ -157,6 +157,7 @@ nlohmann::json mechToJson(const Mech& mech) {
         {"height", mech.height},
         {"other", mech.other},
         {"axis", {mech.axis.x, mech.axis.y, mech.axis.z}},
+        {"spin", {mech.spin.x, mech.spin.y, mech.spin.z}},
         {"limited", mech.limited},
         {"lower", mech.lower},
         {"upper", mech.upper},
@@ -213,6 +214,7 @@ void mechFromJson(const nlohmann::json& json, Mech& mech) {
     mech.height = json.value("height", mech.height);
     mech.other = json.value("other", mech.other);
     mech.axis = vec3Or(json, "axis", mech.axis);
+    mech.spin = vec3Or(json, "spin", mech.spin);
     mech.limited = json.value("limited", mech.limited);
     mech.lower = json.value("lower", mech.lower);
     mech.upper = json.value("upper", mech.upper);

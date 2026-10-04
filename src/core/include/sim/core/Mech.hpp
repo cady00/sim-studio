@@ -63,6 +63,8 @@ struct Mech {
     double height = 50;
     std::string other;
     Vec3 axis{1, 0, 0};
+    // Initial angular velocity of a ball joint, degrees per second, parent frame.
+    Vec3 spin{0, 0, 0};
     bool limited = true;
     double lower = 0;
     double upper = 0;

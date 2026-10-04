@@ -65,6 +65,15 @@ struct PhysicsStats {
     double solveMs = 0;
 };
 
+// One solved contact from the latest physics step. `normal` pushes `self`.
+struct ContactNotice {
+    std::string self;
+    std::string other;
+    double impulse = 0;
+    Vec3 normal{0, 0, 1};
+    Vec3 point{0, 0, 0};
+};
+
 struct PhysicsDocument {
     bool enabled = true;
     double timestep = 1.0 / 60.0;

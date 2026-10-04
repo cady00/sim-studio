@@ -1,5 +1,8 @@
 #include "sim/physics/PhysicsEngine.hpp"
 
+#include "sim/collision/Query.hpp"
+#include "sim/physics/ContactNarrow.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -20,10 +23,35 @@ struct JointState {
     std::string id;
     Vec3 axis{1, 0, 0};
     bool hinge = false;
+    bool ball = false;
     Vec3 restTranslation{};
     Quat restRotation = Quat::identity();
     double position = 0;
     double speed = 0;
+    // Degrees per second in the parent frame. Orthogonal to `axis` stays free on a ball joint.
+    Vec3 omega{};
+    Quat swing = Quat::identity();
+};
+
+struct Probe {
+    bool hit = false;
+    Vec3 push{0, 0, 1};
+    double depth = 0;
+    Vec3 point{};
+};
+
+struct Touch {
+    bool used = false;
+    Vec3 push{0, 0, 1};
+    double depth = 0;
+    Vec3 point{};
+    std::string otherId;
+    std::string otherName;
+    bool conveyor = false;
+    Vec3 belt{};
+    double friction = 0.4;
+    double restitution = 0.05;
+    bool ride = false;
 };
 
 Vec3 worldTranslation(const SceneNode& node) {
@@ -141,6 +169,25 @@ void integrateJoint(double& position, double& speed, const Mech& mech, double dt
     }
 }
 
+void integrateBall(JointState& joint, SceneNode& node, double dt) {
+    const Vec3 axis = joint.axis;
+    if (node.mech.drive != DriveMode::None) {
+        double axisSpeed = dot(joint.omega, axis);
+        integrateJoint(joint.position, axisSpeed, node.mech, dt);
+        joint.omega = joint.omega - axis * dot(joint.omega, axis) + axis * axisSpeed;
+    }
+    const Vec3 along = axis * dot(joint.omega, axis);
+    const double keep = std::max(0.0, 1.0 - std::max(0.0, node.mech.angularDamp) * dt);
+    joint.omega = along + (joint.omega - along) * keep;
+    const double rate = length(joint.omega);
+    if (rate > 1e-8 && dt > 0) {
+        const Quat delta = Quat::fromAxisAngle(normalize(joint.omega), deg2rad(rate * dt));
+        joint.swing = (delta * joint.swing).normalized();
+    }
+    node.local.rotation = (joint.swing * joint.restRotation).normalized();
+    node.local.translation = joint.restTranslation;
+}
+
 class BuiltinPhysicsEngine final : public IPhysicsEngine {
 public:
     const char* backendName() const override { return "builtin"; }
@@ -171,7 +218,9 @@ public:
                 JointState joint;
                 joint.id = node->id;
                 joint.axis = length(node->mech.axis) > 1e-8 ? normalize(node->mech.axis) : Vec3{1, 0, 0};
-                joint.hinge = node->mech.kind == MechKind::Hinge || node->mech.kind == MechKind::Ball;
+                joint.hinge = node->mech.kind == MechKind::Hinge;
+                joint.ball = node->mech.kind == MechKind::Ball;
+                joint.omega = node->mech.spin;
                 joint.restTranslation = node->local.translation;
                 joint.restRotation = node->local.rotation;
                 joints_.push_back(std::move(joint));
@@ -184,6 +233,13 @@ public:
     void step(double dtSeconds) override {
         if (scene_ == nullptr || dtSeconds <= 0) {
             return;
+        }
+        scene_->contactNotices.clear();
+        if (Signal* contact = scene_->findSignal("contact")) {
+            contact->flag = false;
+        }
+        if (Signal* impulse = scene_->findSignal("contact_impulse")) {
+            impulse->real = 0;
         }
         scene_->physicsDoc.stats.contacts = 0;
         int continuous = 0;
@@ -207,14 +263,18 @@ public:
             if (!node) {
                 continue;
             }
-            integrateJoint(joint.position, joint.speed, node->mech, dt);
-            if (joint.hinge) {
-                const Quat delta = Quat::fromAxisAngle(joint.axis, deg2rad(joint.position));
-                node->local.rotation = (delta * joint.restRotation).normalized();
-                node->local.translation = joint.restTranslation;
+            if (joint.ball) {
+                integrateBall(joint, *node, dt);
             } else {
-                node->local.translation = joint.restTranslation + joint.axis * joint.position;
-                node->local.rotation = joint.restRotation;
+                integrateJoint(joint.position, joint.speed, node->mech, dt);
+                if (joint.hinge) {
+                    const Quat delta = Quat::fromAxisAngle(joint.axis, deg2rad(joint.position));
+                    node->local.rotation = (delta * joint.restRotation).normalized();
+                    node->local.translation = joint.restTranslation;
+                } else {
+                    node->local.translation = joint.restTranslation + joint.axis * joint.position;
+                    node->local.rotation = joint.restRotation;
+                }
             }
         }
 
@@ -255,6 +315,7 @@ public:
         bodies_.clear();
         joints_.clear();
         sourceClock_.clear();
+        meshBvh_.clear();
         scene_ = nullptr;
     }
 
@@ -277,6 +338,7 @@ public:
             const BodyMotion motion = effectiveMotion(node->mech);
             body.dynamic = node->mech.kind == MechKind::Rigid && motion == BodyMotion::Free;
             body.riding = node->mech.kind == MechKind::Rigid && (motion == BodyMotion::Surface || node->mech.surfaceRide);
+            rememberHull(*scene_, *node);
             bodies_.push_back(std::move(body));
         }
     }
@@ -293,21 +355,227 @@ private:
             return;
         }
         const std::string key = node.meshId.empty() ? node.id : node.meshId;
-        for (const ConvexCacheEntry& entry : scene.convexCache) {
-            if (entry.meshId == key) {
-                return;
-            }
-        }
         ConvexCacheEntry entry;
         entry.meshId = key;
-        entry.fingerprint = 1;
-        ConvexPiece piece;
-        const Vec3 h = node.mech.halfExtents;
-        for (int corner = 0; corner < 8; ++corner) {
-            piece.vertices.push_back({(corner & 1) ? h.x : -h.x, (corner & 2) ? h.y : -h.y, (corner & 4) ? h.z : -h.z});
+        bool stored = false;
+        if (!node.meshId.empty()) {
+            if (const auto mesh = scene.mesh(node.meshId); mesh && !mesh->empty()) {
+                entry.fingerprint = meshFingerprint(*mesh);
+                for (const ConvexCacheEntry& existing : scene.convexCache) {
+                    if (existing.meshId == key && existing.fingerprint == entry.fingerprint && !existing.pieces.empty()) {
+                        return;
+                    }
+                }
+                for (std::vector<Vec3>& piece : decomposeMesh(*mesh)) {
+                    if (piece.size() < 3) {
+                        continue;
+                    }
+                    ConvexPiece storedPiece;
+                    storedPiece.vertices = std::move(piece);
+                    entry.pieces.push_back(std::move(storedPiece));
+                }
+                stored = !entry.pieces.empty();
+            }
         }
-        entry.pieces.push_back(std::move(piece));
+        if (!stored) {
+            const double radius = std::max(std::abs(node.mech.halfExtents.x), 1.0);
+            const double halfHeight = std::max(std::abs(node.mech.halfExtents.z), 1.0);
+            ConvexPiece ring;
+            constexpr int kSides = 10;
+            for (int side = 0; side < kSides; ++side) {
+                const double angle = (2.0 * kPi * side) / static_cast<double>(kSides);
+                const double x = radius * std::cos(angle);
+                const double y = radius * std::sin(angle);
+                ring.vertices.push_back({x, y, halfHeight});
+                ring.vertices.push_back({x, y, -halfHeight});
+            }
+            entry.pieces.push_back(std::move(ring));
+            entry.fingerprint = 2;
+        }
+        scene.convexCache.erase(std::remove_if(scene.convexCache.begin(), scene.convexCache.end(),
+                                               [&](const ConvexCacheEntry& existing) { return existing.meshId == key; }),
+                                scene.convexCache.end());
         scene.convexCache.push_back(std::move(entry));
+    }
+
+    const ConvexCacheEntry* cacheFor(const SceneNode& node) const {
+        const std::string key = node.meshId.empty() ? node.id : node.meshId;
+        for (const ConvexCacheEntry& entry : scene_->convexCache) {
+            if (entry.meshId == key && !entry.pieces.empty()) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    const TriangleBvh* trianglesFor(const SceneNode& node) {
+        if (node.meshId.empty()) {
+            return nullptr;
+        }
+        const auto found = meshBvh_.find(node.meshId);
+        if (found == meshBvh_.end()) {
+            const auto mesh = scene_->mesh(node.meshId);
+            TriangleBvh built = mesh && !mesh->empty() ? buildTriangleBvh(*mesh) : TriangleBvh{};
+            const auto inserted = meshBvh_.emplace(node.meshId, std::move(built));
+            if (inserted.first->second.root < 0) {
+                return nullptr;
+            }
+            return &inserted.first->second;
+        }
+        if (found->second.root < 0) {
+            return nullptr;
+        }
+        return &found->second;
+    }
+
+    Probe probeBoxes(const SceneNode& moving, const SceneNode& obstacle) const {
+        Vec3 toward;
+        double depth = 0;
+        if (!separated(boxOf(moving), boxOf(obstacle), toward, depth)) {
+            return {};
+        }
+        Probe probe;
+        probe.hit = true;
+        probe.push = toward * -1.0;
+        probe.depth = depth;
+        probe.point = worldTranslation(moving);
+        return probe;
+    }
+
+    std::vector<Probe> probeConvex(const SceneNode& boxNode, const SceneNode& hullNode, bool flip) {
+        const ConvexCacheEntry* entry = cacheFor(hullNode);
+        if (entry == nullptr) {
+            return {};
+        }
+        const Box bounds = boxOf(boxNode);
+        ConvexShape box;
+        box.kind = ConvexShape::Kind::Box;
+        box.center = bounds.center;
+        box.half = bounds.half;
+        box.rotation = Quat::identity();
+        Probe best;
+        for (const ConvexPiece& piece : entry->pieces) {
+            if (piece.vertices.size() < 3) {
+                continue;
+            }
+            ConvexShape hull;
+            hull.kind = ConvexShape::Kind::Hull;
+            hull.localPoints = piece.vertices;
+            hull.useMatrix = true;
+            hull.world = hullNode.worldMatrix();
+            const ContactHit hit = queryConvex(box, hull);
+            const double depth = hit.penetration > 0 ? hit.penetration : 0;
+            if (depth <= best.depth) {
+                continue;
+            }
+            Vec3 center{};
+            for (const Vec3& vertex : piece.vertices) {
+                center = center + transformPoint(hull.world, vertex);
+            }
+            center = center * (1.0 / static_cast<double>(piece.vertices.size()));
+            Vec3 push = hit.normal;
+            if (dot(push, bounds.center - center) < 0) {
+                push = push * -1.0;
+            }
+            if (flip) {
+                push = push * -1.0;
+            }
+            best.hit = true;
+            best.push = length(push) > 1e-8 ? normalize(push) : Vec3{0, 0, 1};
+            best.depth = depth;
+            best.point = hit.pointA;
+        }
+        if (!best.hit) {
+            return {};
+        }
+        return {best};
+    }
+
+    std::vector<Probe> narrowProbes(const SceneNode& moving, const SceneNode& obstacle) {
+        if (obstacle.mech.shape == CollisionShape::Mesh) {
+            if (const TriangleBvh* bvh = trianglesFor(obstacle)) {
+                const Box box = boxOf(moving);
+                std::vector<Probe> probes;
+                for (const NarrowContact& hit : queryBoxMesh(*bvh, obstacle.worldMatrix(), box.center, box.half, 4)) {
+                    Probe probe;
+                    probe.hit = true;
+                    probe.push = hit.normal;
+                    probe.depth = hit.depth;
+                    probe.point = hit.point;
+                    probes.push_back(probe);
+                }
+                return probes;
+            }
+        }
+        if (moving.mech.shape == CollisionShape::Mesh) {
+            if (const TriangleBvh* bvh = trianglesFor(moving)) {
+                const Box box = boxOf(obstacle);
+                std::vector<Probe> probes;
+                for (const NarrowContact& hit : queryBoxMesh(*bvh, moving.worldMatrix(), box.center, box.half, 4)) {
+                    Probe probe;
+                    probe.hit = true;
+                    probe.push = hit.normal * -1.0;
+                    probe.depth = hit.depth;
+                    probe.point = hit.point;
+                    probes.push_back(probe);
+                }
+                return probes;
+            }
+        }
+        if (obstacle.mech.shape == CollisionShape::ConvexHull || obstacle.mech.shape == CollisionShape::Extrusion) {
+            return probeConvex(moving, obstacle, false);
+        }
+        if (moving.mech.shape == CollisionShape::ConvexHull || moving.mech.shape == CollisionShape::Extrusion) {
+            return probeConvex(obstacle, moving, true);
+        }
+        const Probe boxes = probeBoxes(moving, obstacle);
+        if (!boxes.hit) {
+            return {};
+        }
+        return {boxes};
+    }
+
+    void applyFriction(BodyState& body, const Touch& touch, const SceneNode& node) {
+        Vec3 velocity = body.velocity;
+        const Vec3 push = length(touch.push) > 1e-8 ? normalize(touch.push) : Vec3{0, 0, 1};
+        const double approach = dot(velocity, push);
+        double normalDelta = 0;
+        if (approach < 0) {
+            // One gravity substep is about 163 mm/s. Keep that band inelastic so a resting
+            // body does not chatter, and let faster impacts use the pair restitution.
+            const bool resting = -approach < 250.0;
+            const double after = resting ? 0.0 : -touch.restitution * approach;
+            normalDelta = after - approach;
+            velocity = velocity + push * normalDelta;
+        }
+        Vec3 target = touch.belt - push * dot(touch.belt, push);
+        const Vec3 tangent = velocity - push * dot(velocity, push);
+        const Vec3 slip = tangent - target;
+        const double slipLength = length(slip);
+        const double maxReduce = std::max(0.0, touch.friction) * std::abs(normalDelta);
+        if (slipLength > 1e-9 && maxReduce > 0) {
+            const double reduce = std::min(slipLength, maxReduce);
+            velocity = velocity - slip * (reduce / slipLength);
+        }
+        body.velocity = velocity;
+        ContactNotice notice;
+        notice.self = node.name;
+        notice.other = touch.otherName;
+        notice.impulse = massKilograms(node.mech) * std::abs(normalDelta);
+        notice.normal = push;
+        notice.point = touch.point;
+        scene_->contactNotices.push_back(notice);
+        scene_->upsertSignal("contact", SignalType::Bool).flag = true;
+        Signal& impulse = scene_->upsertSignal("contact_impulse", SignalType::Real);
+        impulse.real = std::max(impulse.real, notice.impulse);
+        if (touch.ride) {
+            body.dynamic = false;
+            body.riding = true;
+            if (auto live = scene_->find(body.id)) {
+                live->mech.motion = BodyMotion::Surface;
+                live->mech.kinematic = true;
+            }
+        }
     }
 
     Vec3 beltVelocity(const SceneNode& belt, const SceneNode& load) const {
@@ -470,8 +738,10 @@ private:
     }
 
     void resolveContacts() {
+        std::vector<Touch> touches(bodies_.size());
         for (int iteration = 0; iteration < 4; ++iteration) {
-            for (BodyState& body : bodies_) {
+            for (std::size_t index = 0; index < bodies_.size(); ++index) {
+                BodyState& body = bodies_[index];
                 if (!body.dynamic) {
                     continue;
                 }
@@ -479,7 +749,6 @@ private:
                 if (!node) {
                     continue;
                 }
-                const Box moving = boxOf(*node);
                 for (const BodyState& other : bodies_) {
                     if (other.id == body.id || other.dynamic) {
                         continue;
@@ -488,33 +757,53 @@ private:
                     if (!obstacle) {
                         continue;
                     }
-                    Vec3 normal;
-                    double depth = 0;
-                    if (!separated(moving, boxOf(*obstacle), normal, depth)) {
+                    const std::vector<Probe> probes = narrowProbes(*node, *obstacle);
+                    if (probes.empty()) {
                         continue;
                     }
-                    node->local.translation = node->local.translation - normal * (depth + 0.01);
-                    const double into = dot(body.velocity, normal);
-                    if (into > 0) {
-                        body.velocity = body.velocity - normal * into;
-                    }
-                    node->mech.asleep = false;
-                    scene_->physicsDoc.stats.contacts += 1;
-                    if (obstacle->mech.kind == MechKind::Conveyor && !body.riding) {
-                        const Vec3 belt = beltVelocity(*obstacle, *node);
-                        const double bounce = pairRestitution(scene_->physicsDoc, node->mech.surface, obstacle->mech.surface);
-                        body.velocity.x = belt.x;
-                        body.velocity.y = belt.y;
-                        body.velocity.z *= -bounce;
-                        if (node->mech.surfaceRide && normal.z > 0.5 && !insideHandoff(*node)) {
-                            body.dynamic = false;
-                            body.riding = true;
-                            node->mech.motion = BodyMotion::Surface;
-                            node->mech.kinematic = true;
+                    const Probe* deepest = &probes.front();
+                    for (const Probe& probe : probes) {
+                        if (probe.depth > deepest->depth) {
+                            deepest = &probe;
                         }
+                    }
+                    const double slop = obstacle->mech.shape == CollisionShape::Mesh ? 0.05 : 0.01;
+                    node->local.translation = node->local.translation + deepest->push * (deepest->depth + slop);
+                    node->mech.asleep = false;
+                    Touch& touch = touches[index];
+                    if (!touch.used || deepest->depth > touch.depth) {
+                        if (!touch.used) {
+                            scene_->physicsDoc.stats.contacts += 1;
+                        }
+                        touch.used = true;
+                        touch.push = deepest->push;
+                        touch.depth = deepest->depth;
+                        touch.point = deepest->point;
+                        touch.otherId = obstacle->id;
+                        touch.otherName = obstacle->name;
+                        touch.conveyor = obstacle->mech.kind == MechKind::Conveyor;
+                        touch.friction = pairFriction(scene_->physicsDoc, node->mech.surface, obstacle->mech.surface);
+                        touch.restitution = pairRestitution(scene_->physicsDoc, node->mech.surface, obstacle->mech.surface);
+                        touch.belt = {};
+                        if (touch.conveyor) {
+                            Vec3 direction = obstacle->mech.direction;
+                            direction = length(direction) > 1e-8 ? normalize(direction) : Vec3{1, 0, 0};
+                            touch.belt = direction * obstacle->mech.speed;
+                        }
+                        touch.ride = touch.conveyor && node->mech.surfaceRide && deepest->push.z > 0.5 && !insideHandoff(*node);
                     }
                 }
             }
+        }
+        for (std::size_t index = 0; index < bodies_.size(); ++index) {
+            if (!touches[index].used || !bodies_[index].dynamic) {
+                continue;
+            }
+            auto node = scene_->find(bodies_[index].id);
+            if (!node) {
+                continue;
+            }
+            applyFriction(bodies_[index], touches[index], *node);
         }
     }
 
@@ -654,6 +943,7 @@ private:
     std::vector<BodyState> bodies_;
     std::vector<JointState> joints_;
     std::unordered_map<std::string, double> sourceClock_;
+    std::unordered_map<std::string, TriangleBvh> meshBvh_;
 };
 
 }  // namespace

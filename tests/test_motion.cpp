@@ -5,6 +5,7 @@
 #include "sim/io/StepImporter.hpp"
 #include "sim/motion/Motion.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -408,6 +409,11 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
         std::cerr << "plan warning " << warning << "\n";
     }
     REQUIRE(plan.seconds > 0);
+    double raw = 0;
+    for (double span : plan.segmentSeconds) {
+        raw += span;
+    }
+    REQUIRE(plan.seconds + 1e-3 < raw);
     auto query = sim::createCollisionQuery();
     query->rebuild(scene);
     bool near = false;
@@ -856,5 +862,64 @@ TEST_CASE("kr420 on a ten metre track follows a line longer than its reach") {
         if (node) {
             node->visible = true;
         }
+    }
+}
+
+TEST_CASE("zone blend keeps joint velocity continuous and inside the limits") {
+    const double q0 = 2;
+    const double q1 = 8;
+    const double slope0 = 3.5;
+    const double slope1 = -1.25;
+    REQUIRE(sim::zoneBlend(0, q0, q1, slope0, slope1) == Catch::Approx(q0));
+    REQUIRE(sim::zoneBlend(1, q0, q1, slope0, slope1) == Catch::Approx(q1));
+    const double eps = 1e-5;
+    const double startSlope = (sim::zoneBlend(eps, q0, q1, slope0, slope1) - sim::zoneBlend(0, q0, q1, slope0, slope1)) / eps;
+    const double endSlope = (sim::zoneBlend(1, q0, q1, slope0, slope1) - sim::zoneBlend(1 - eps, q0, q1, slope0, slope1)) / eps;
+    REQUIRE(startSlope == Catch::Approx(slope0).margin(1e-3));
+    REQUIRE(endSlope == Catch::Approx(slope1).margin(1e-3));
+    REQUIRE(sim::zoneBlend(0.5, 40, 40, 12, -12) > 40);
+
+    sim::KinematicResource resource;
+    resource.name = "axis";
+    resource.ik = "none";
+    sim::KinJoint joint;
+    joint.name = "J1";
+    joint.lower = -40;
+    joint.upper = 40;
+    joint.maxSpeed = 120;
+    joint.maxAccel = 400;
+    joint.limited = true;
+    resource.joints.push_back(joint);
+
+    sim::Scene scene;
+    sim::RobotPath finePath;
+    finePath.name = "turn";
+    finePath.resource = resource.name;
+    sim::PathPoint out;
+    out.name = "out";
+    out.move = sim::PathMove::Ptp;
+    out.joints = {40};
+    out.speed = 80;
+    sim::PathPoint back;
+    back.name = "back";
+    back.move = sim::PathMove::Ptp;
+    back.joints = {-20};
+    back.speed = 80;
+    finePath.points = {out, back};
+    const sim::MotionPlan fine = sim::planRobotPath(scene, resource, finePath);
+
+    sim::RobotPath zoned = finePath;
+    zoned.points[0].zone = 30;
+    const sim::MotionPlan blended = sim::planRobotPath(scene, resource, zoned);
+    REQUIRE(blended.seconds + 1e-4 < fine.seconds);
+    double raw = 0;
+    for (double span : blended.segmentSeconds) {
+        raw += span;
+    }
+    REQUIRE(blended.seconds + 1e-4 < raw);
+    REQUIRE_FALSE(blended.samples.empty());
+    for (const std::vector<double>& sample : blended.samples) {
+        REQUIRE(sample[0] <= 40.0 + 1e-3);
+        REQUIRE(sample[0] >= -40.0 - 1e-3);
     }
 }
