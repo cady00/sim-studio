@@ -7,6 +7,7 @@
 #include "sim/app/CollisionPanel.hpp"
 #include "sim/app/CommandPalette.hpp"
 #include "sim/app/IntentBar.hpp"
+#include "sim/app/LinePanels.hpp"
 #include "sim/app/MotionPanel.hpp"
 #include "sim/app/TaskPanels.hpp"
 #include "sim/core/DemoScene.hpp"
@@ -311,6 +312,24 @@ void MainWindow::buildUi() {
     physicsDock_->setWidget(physicsShelf_);
     addDockWidget(Qt::RightDockWidgetArea, physicsDock_);
     splitDockWidget(propertyDock_, physicsDock_, Qt::Vertical);
+
+    floor_ = new FloorPlanView(scene_, this);
+    floorDock_ = new QDockWidget(this);
+    floorDock_->setObjectName("dock.floor");
+    floorDock_->setWidget(floor_);
+    addDockWidget(Qt::LeftDockWidgetArea, floorDock_);
+
+    operations_ = new OperationTreeView(scene_, this);
+    operationDock_ = new QDockWidget(this);
+    operationDock_->setObjectName("dock.operations");
+    operationDock_->setWidget(operations_);
+    addDockWidget(Qt::RightDockWidgetArea, operationDock_);
+
+    gantt_ = new GanttView(scene_, this);
+    ganttDock_ = new QDockWidget(this);
+    ganttDock_->setObjectName("dock.gantt");
+    ganttDock_->setWidget(gantt_);
+    addDockWidget(Qt::BottomDockWidgetArea, ganttDock_);
 
     tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
     tray_->setToolTip(QStringLiteral("Sim Studio"));
@@ -619,6 +638,15 @@ void MainWindow::bindScene() {
             if (motion_ != nullptr) {
                 motion_->refresh();
             }
+            if (floor_ != nullptr) {
+                floor_->reload();
+            }
+            if (operations_ != nullptr) {
+                operations_->reload();
+            }
+            if (gantt_ != nullptr) {
+                gantt_->reload();
+            }
         } else if (kind == ChangeKind::Selection) {
             refreshProperties();
             if (motion_ != nullptr) {
@@ -702,6 +730,25 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.physics")) {
         dock->setWindowTitle(trk("dock.physics"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.floor")) {
+        dock->setWindowTitle(trk("dock.floor"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.operations")) {
+        dock->setWindowTitle(trk("dock.operations"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.gantt")) {
+        dock->setWindowTitle(trk("dock.gantt"));
+    }
+    const bool zh = i18n_.locale() == "zh_CN";
+    if (floor_ != nullptr) {
+        floor_->setZh(zh);
+    }
+    if (operations_ != nullptr) {
+        operations_->setZh(zh);
+    }
+    if (gantt_ != nullptr) {
+        gantt_->setZh(zh);
     }
     if (physicsShelf_ != nullptr) {
         physicsShelf_->reload();
@@ -1252,7 +1299,47 @@ void MainWindow::showScripting() {
 
 void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path; }
 
+void MainWindow::arrangeLineDocks() {
+    if (floorDock_ == nullptr || operationDock_ == nullptr || ganttDock_ == nullptr) {
+        return;
+    }
+    auto show = [](QDockWidget* dock, bool visible) {
+        if (dock != nullptr) {
+            dock->setVisible(visible);
+        }
+    };
+    show(treeDock_, false);
+    show(propertyDock_, false);
+    show(motionDock_, false);
+    show(logicDock_, false);
+    show(pathDock_, false);
+    show(collisionDock_, false);
+    show(signalDock_, false);
+    show(scriptDock_, false);
+    show(plcDock_, false);
+    show(physicsDock_, false);
+    show(floorDock_, true);
+    show(operationDock_, true);
+    show(ganttDock_, true);
+    if (lineFocus_ == QStringLiteral("ops")) {
+        resizeDocks({operationDock_, floorDock_}, {820, 280}, Qt::Horizontal);
+        resizeDocks({ganttDock_}, {180}, Qt::Vertical);
+        operationDock_->raise();
+    } else if (lineFocus_ == QStringLiteral("gantt")) {
+        resizeDocks({floorDock_, operationDock_}, {280, 280}, Qt::Horizontal);
+        resizeDocks({ganttDock_}, {460}, Qt::Vertical);
+        ganttDock_->raise();
+    } else {
+        resizeDocks({floorDock_, operationDock_}, {700, 320}, Qt::Horizontal);
+        resizeDocks({ganttDock_}, {230}, Qt::Vertical);
+        floorDock_->raise();
+    }
+}
+
 void MainWindow::captureScreenshot() {
+    if (lineDemo_) {
+        arrangeLineDocks();
+    }
     // update() only queues a paint. The simulation clock is advanced before the
     // event loop runs, so the widget FBO would still show the pose from fitAll.
     viewport_->repaint();
@@ -1568,6 +1655,13 @@ void MainWindow::loadDemo(const QString& name) {
     transferDemo_ = name == QStringLiteral("transfer");
     meshDemo_ = name == QStringLiteral("mesh");
     slipDemo_ = name == QStringLiteral("slip");
+    lineDemo_ = name == QStringLiteral("line") || name.startsWith(QStringLiteral("line-"));
+    lineFocus_ = QStringLiteral("floor");
+    if (name.endsWith(QStringLiteral("ops"))) {
+        lineFocus_ = QStringLiteral("ops");
+    } else if (name.endsWith(QStringLiteral("gantt"))) {
+        lineFocus_ = QStringLiteral("gantt");
+    }
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
         demoPath_ = "pick_place";
@@ -1636,6 +1730,11 @@ void MainWindow::loadDemo(const QString& name) {
         buildSlipDemo(scene_);
         demoPath_.clear();
         applyTaskMode(4);
+    } else if (lineDemo_) {
+        buildExampleLine(scene_);
+        demoPath_.clear();
+        statusLabel_->setText(trk("dock.floor") + QStringLiteral(" · ") + QString::fromStdString(scene_.layout.title));
+        applyTaskMode(0);
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
@@ -1659,6 +1758,18 @@ void MainWindow::loadDemo(const QString& name) {
     }
     if (pathTimeline_ != nullptr) {
         pathTimeline_->update();
+    }
+    if (floor_ != nullptr) {
+        floor_->reload();
+    }
+    if (operations_ != nullptr) {
+        operations_->reload();
+    }
+    if (gantt_ != nullptr) {
+        gantt_->reload();
+    }
+    if (lineDemo_) {
+        arrangeLineDocks();
     }
     rebuildTree();
     viewport_->fitAll();
@@ -1776,6 +1887,13 @@ void MainWindow::applyTaskMode(int mode) {
     show(scriptDock_, taskMode_ == 5);
     show(plcDock_, taskMode_ == 5);
     show(physicsDock_, taskMode_ == 0 || taskMode_ == 4);
+    const bool showLine = !scene_.layout.stations.empty() && taskMode_ == 0;
+    show(floorDock_, showLine);
+    show(operationDock_, showLine);
+    show(ganttDock_, showLine);
+    if (lineDemo_) {
+        arrangeLineDocks();
+    }
     if (chrome_ != nullptr) {
         chrome_->setMode(taskMode_);
     }
@@ -1807,6 +1925,15 @@ void MainWindow::setThemeName(const QString& theme) {
     }
     if (pathTimeline_ != nullptr) {
         pathTimeline_->setDark(themeName_ == "dark");
+    }
+    if (floor_ != nullptr) {
+        floor_->setDark(themeName_ == "dark");
+    }
+    if (gantt_ != nullptr) {
+        gantt_->setDark(themeName_ == "dark");
+    }
+    if (operations_ != nullptr) {
+        operations_->setDark(themeName_ == "dark");
     }
     saveWorkspace();
 }

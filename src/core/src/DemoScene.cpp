@@ -329,4 +329,160 @@ void buildSlipDemo(Scene& scene) {
     scene.markClean();
 }
 
+void buildExampleLine(Scene& scene) {
+    scene.clear();
+    scene.name = "example_weld_line";
+    scene.layout.example = true;
+    scene.layout.title = "示例焊装线";
+    scene.layout.gridMm = 500;
+    scene.ppr.example = true;
+    scene.ppr.title = "示例焊装线";
+
+    const char* outline = R"(0
+SECTION
+2
+ENTITIES
+0
+LWPOLYLINE
+70
+1
+10
+-800
+20
+-1600
+10
+9800
+20
+-1600
+10
+9800
+20
+1600
+10
+-800
+20
+1600
+0
+LINE
+10
+-800
+20
+0
+11
+9800
+21
+0
+0
+ENDSEC
+0
+EOF
+)";
+    const DxfResult parsed = parseDxf(outline, 1);
+    scene.layout.underlay.kind = "dxf";
+    scene.layout.underlay.mmPerUnit = 1;
+    scene.layout.underlay.opacity = 0.45;
+    scene.layout.underlay.lines = parsed.lines;
+
+    auto addStation = [&](const std::string& id, const std::string& name, double x, StationKind kind, const std::string& resource,
+                          const std::string& node, Vec3 color) {
+        Station station;
+        station.id = id;
+        station.name = name;
+        station.x = x;
+        station.y = 0;
+        station.width = 2000;
+        station.depth = 1800;
+        station.kind = kind;
+        station.resource = resource;
+        station.nodeName = node;
+        scene.layout.stations.push_back(station);
+        Mech pad;
+        pad.kind = MechKind::Collision;
+        pad.motion = BodyMotion::Anchored;
+        pad.halfExtents = {1000, 900, 20};
+        addBox(scene, node, pad.halfExtents, {x, 0, 20}, color, pad);
+    };
+    addStation("st_load", "上料", 0, StationKind::Manual, "", "LoadPad", {0.35, 0.55, 0.78});
+    addStation("st_weld", "焊接", 2500, StationKind::Robot, "kr420", "KR420", {0.17, 0.43, 0.81});
+    addStation("st_inspect", "检查", 5000, StationKind::Fixture, "", "InspectPad", {0.45, 0.62, 0.55});
+    addStation("st_unload", "下料", 7500, StationKind::Conveyor, "", "UnloadPad", {0.55, 0.48, 0.32});
+
+    Mech column;
+    column.kind = MechKind::Collision;
+    column.motion = BodyMotion::Anchored;
+    column.halfExtents = {280, 280, 420};
+    addBox(scene, "KR420Column", column.halfExtents, {2500, 0, 460}, {0.24, 0.53, 0.91}, column);
+
+    auto addOp = [&](const std::string& id, const std::string& name, const std::string& parent, OpKind kind, int index,
+                     const std::string& station, double seconds, const std::string& path, const std::string& logic) {
+        Operation operation;
+        operation.id = id;
+        operation.name = name;
+        operation.parent = parent;
+        operation.kind = kind;
+        operation.index = index;
+        operation.station = station;
+        operation.seconds = seconds;
+        operation.path = path;
+        operation.logic = logic;
+        scene.operations.push_back(std::move(operation));
+    };
+    addOp("line", "节拍", "", OpKind::Sequence, 0, "", 0, "", "");
+    addOp("load", "上料", "line", OpKind::Task, 0, "st_load", 8, "", "");
+    addOp("weld", "焊接", "line", OpKind::Task, 1, "st_weld", 12, "cycle", "weld_seq");
+    addOp("branch", "检查并行", "line", OpKind::Parallel, 2, "", 0, "", "");
+    addOp("inspect", "检查", "branch", OpKind::Task, 0, "st_inspect", 6, "", "");
+    addOp("prep", "夹具准备", "branch", OpKind::Task, 1, "st_inspect", 4, "", "");
+    addOp("unload", "下料", "line", OpKind::Task, 3, "st_unload", 5, "", "");
+
+    ProductNode product;
+    product.id = "prod_bracket";
+    product.name = "示例支架";
+    product.partName = "Bracket";
+    scene.ppr.products.push_back(product);
+    ProcessNode process;
+    process.id = "proc_weld";
+    process.name = "焊接工艺";
+    process.operation = "weld";
+    process.product = "prod_bracket";
+    scene.ppr.processes.push_back(process);
+    PlantNode plant;
+    plant.id = "plant_weld";
+    plant.name = "焊接工位";
+    plant.station = "st_weld";
+    plant.resource = "kr420";
+    scene.ppr.plants.push_back(plant);
+
+    RobotPath path;
+    path.name = "cycle";
+    path.resource = "kr420";
+    PathPoint home;
+    home.name = "home";
+    home.move = PathMove::Ptp;
+    home.speed = 50;
+    home.zone = 20;
+    PathPoint away;
+    away.name = "away";
+    away.move = PathMove::Lin;
+    away.cartesian = true;
+    away.position = {2500, 0, 800};
+    away.speed = 40;
+    away.zone = 30;
+    path.points.push_back(home);
+    path.points.push_back(away);
+    scene.robotPaths.push_back(std::move(path));
+
+    LogicBlock block;
+    block.name = "weld_seq";
+    block.resource = "kr420";
+    LogicAction action;
+    action.kind = "set_output";
+    action.signal = "weld_done";
+    LogicStep step;
+    step.actions.push_back(action);
+    block.steps.push_back(std::move(step));
+    scene.logicBlocks.push_back(std::move(block));
+    scene.markClean();
+}
+
 }  // namespace sim

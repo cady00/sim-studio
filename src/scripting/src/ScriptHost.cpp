@@ -223,6 +223,81 @@ PYBIND11_EMBEDDED_MODULE(simstudio, module) {
         item["b"] = hit.b;
         return item;
     });
+    module.def("line_stations", []() {
+        py::list list;
+        Scene* scene = sceneOrThrow();
+        for (const Station& station : scene->layout.stations) {
+            py::dict item;
+            item["id"] = station.id;
+            item["name"] = station.name;
+            item["x"] = station.x;
+            item["y"] = station.y;
+            item["kind"] = stationKindName(station.kind);
+            item["resource"] = station.resource;
+            item["node"] = station.nodeName;
+            list.append(item);
+        }
+        return list;
+    });
+    module.def("line_add_station", [](const std::string& id, const std::string& name, double x, double y, const std::string& kind) {
+        if (id.empty()) {
+            throw std::runtime_error("station needs an id");
+        }
+        StationKind parsed = StationKind::Manual;
+        if (!kind.empty() && !stationKindFromName(kind, parsed)) {
+            throw std::runtime_error("unknown station kind");
+        }
+        Station* station = findStation(sceneOrThrow()->layout, id);
+        if (station == nullptr) {
+            sceneOrThrow()->layout.stations.push_back(Station{});
+            station = &sceneOrThrow()->layout.stations.back();
+            station->id = id;
+        }
+        station->name = name;
+        station->x = x;
+        station->y = y;
+        if (!kind.empty()) {
+            station->kind = parsed;
+        }
+        sceneOrThrow()->notify(ChangeKind::Structure);
+        return id;
+    });
+    module.def("line_schedule", []() {
+        Scene* scene = sceneOrThrow();
+        const ScheduleReport report = scheduleOperations(scene->operations, scene->layout);
+        if (!report.error.empty()) {
+            throw std::runtime_error(report.error);
+        }
+        py::dict item;
+        item["makespan"] = report.makespan;
+        item["bottleneck"] = report.bottleneck;
+        item["bottleneckName"] = report.bottleneckName;
+        py::list critical;
+        for (const std::string& id : report.criticalIds) {
+            critical.append(id);
+        }
+        item["critical"] = critical;
+        return item;
+    });
+    module.def("ppr_counts", []() {
+        Scene* scene = sceneOrThrow();
+        py::dict item;
+        item["products"] = static_cast<int>(scene->ppr.products.size());
+        item["processes"] = static_cast<int>(scene->ppr.processes.size());
+        item["plants"] = static_cast<int>(scene->ppr.plants.size());
+        item["example"] = scene->ppr.example;
+        return item;
+    });
+    module.def("ems_import", [](const std::string& path) {
+        Scene* scene = sceneOrThrow();
+        const std::size_t stations = scene->layout.stations.size();
+        const EmsImportResult imported = importEmsXml(path, *scene);
+        py::dict item;
+        item["ok"] = imported.ok;
+        item["message"] = imported.message;
+        item["unchanged"] = scene->layout.stations.size() == stations;
+        return item;
+    });
 }
 
 class PythonScriptHost final : public IScriptHost {

@@ -254,5 +254,8 @@
   "phys.a": "Grade A",
   "phys.b": "Grade B",
   "phys.addGrade": "Add grade",
-  "phys.addPair": "Add pair"
+  "phys.addPair": "Add pair",
+  "dock.floor": "Floor plan",
+  "dock.operations": "Operation tree",
+  "dock.gantt": "Cycle time"
 }

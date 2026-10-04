@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sim/core/Kinematics.hpp"
+#include "sim/core/LineModel.hpp"
 #include "sim/core/Mech.hpp"
 #include "sim/core/PhysicsModel.hpp"
 #include "sim/core/Proximity.hpp"
@@ -117,6 +118,9 @@ public:
     PhysicsDocument physicsDoc;
     std::vector<MotorAspect> motors;
     std::vector<ContactNotice> contactNotices;
+    LineLayout layout;
+    std::vector<Operation> operations;
+    PprDocument ppr;
 
     bool dirty() const { return dirty_; }
     void markClean() { dirty_ = false; }

@@ -237,6 +237,9 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     for (const MotorAspect& motor : scene.motors) {
         json["motors"].push_back(motorToJson(motor));
     }
+    json["layout"] = layoutToJson(scene.layout);
+    json["operations"] = operationsToJson(scene.operations);
+    json["ppr"] = pprToJson(scene.ppr);
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
         json["signals"].push_back(signalToJson(signal));
@@ -413,6 +416,15 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
             motorFromJson(item, motor);
             scene.motors.push_back(std::move(motor));
         }
+    }
+    if (json.contains("layout")) {
+        layoutFromJson(json.at("layout"), scene.layout);
+    }
+    if (json.contains("operations")) {
+        operationsFromJson(json.at("operations"), scene.operations);
+    }
+    if (json.contains("ppr")) {
+        pprFromJson(json.at("ppr"), scene.ppr);
     }
     result.ok = true;
     result.message.clear();

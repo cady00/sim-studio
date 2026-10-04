@@ -107,6 +107,9 @@ void Scene::clear() {
     physicsDoc = {};
     motors.clear();
     contactNotices.clear();
+    layout = {};
+    operations.clear();
+    ppr = {};
     dirty_ = false;
     ++structureRevision_;
     if (!mute_ && onChanged) {
@@ -142,6 +145,9 @@ void Scene::steal(Scene& other) {
     physicsDoc = std::move(other.physicsDoc);
     motors = std::move(other.motors);
     contactNotices = std::move(other.contactNotices);
+    layout = std::move(other.layout);
+    operations = std::move(other.operations);
+    ppr = std::move(other.ppr);
     selected_.clear();
     selection_.clear();
     other.root_.reset();
@@ -158,6 +164,9 @@ void Scene::steal(Scene& other) {
     other.physicsDoc = {};
     other.motors.clear();
     other.contactNotices.clear();
+    other.layout = {};
+    other.operations.clear();
+    other.ppr = {};
     if (!root_) {
         clear();
         return;
@@ -482,6 +491,9 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     proximity = {};
     convexCache.clear();
     contactNotices.clear();
+    layout = {};
+    operations.clear();
+    ppr = {};
     selected_.clear();
     selection_.clear();
     adoptIds();

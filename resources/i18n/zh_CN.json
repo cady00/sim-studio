@@ -254,5 +254,8 @@
   "phys.a": "材料 A",
   "phys.b": "材料 B",
   "phys.addGrade": "添加材料",
-  "phys.addPair": "添加配对"
+  "phys.addPair": "添加配对",
+  "dock.floor": "平面布局",
+  "dock.operations": "操作树",
+  "dock.gantt": "节拍"
 }

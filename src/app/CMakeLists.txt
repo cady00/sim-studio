@@ -7,6 +7,7 @@ qt_add_executable(simstudio
     src/CommandPalette.cpp
     src/IntentBar.cpp
     src/TaskPanels.cpp
+    src/LinePanels.cpp
     src/PhysicsShelf.cpp
     include/sim/app/PhysicsShelf.hpp
     include/sim/app/MainWindow.hpp
@@ -16,6 +17,7 @@ qt_add_executable(simstudio
     include/sim/app/CommandPalette.hpp
     include/sim/app/IntentBar.hpp
     include/sim/app/TaskPanels.hpp
+    include/sim/app/LinePanels.hpp
     ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 set_target_properties(simstudio PROPERTIES AUTORCC ON AUTOMOC ON)

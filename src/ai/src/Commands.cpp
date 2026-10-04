@@ -80,6 +80,23 @@ nlohmann::json CommandExecutor::catalog() {
         op("min_distance", "Signed distance, witness points, and gradient between two named parts.", {"name", "other"}, true),
         op("sweep_check", "Continuous sweep of a part between local translations, or of a named robot path.",
            {"name", "path", "x0", "y0", "z0", "x1", "y1", "z1"}, true),
+        op("line_list", "Stations, grid, title, and whether the line is example data.", nlohmann::json::array(), true),
+        op("line_add_station", "Add or replace a station anchor in plan millimeters.",
+           {"id", "name", "x", "y", "width", "depth", "kind", "resource", "node"}, true),
+        op("line_move_station", "Move a station anchor. Coordinates are plan millimeters.", {"id", "x", "y"}, true),
+        op("line_snap", "Snap every station anchor to the layout grid.", nlohmann::json::array(), true),
+        op("line_align", "Align station left edges, then snap.", nlohmann::json::array(), true),
+        op("line_distribute", "Distribute station anchors along X, then snap.", nlohmann::json::array(), true),
+        op("line_import_dxf", "Import an ASCII DXF underlay. LINE, LWPOLYLINE, and CIRCLE only.", {"path", "mmPerUnit"}, true),
+        op("line_set_underlay", "Remember an image underlay path. The pixels are not stored in the project.", {"path", "opacity"}, true),
+        op("line_ops", "Operation tree: sequence, parallel, predecessors, path, and logic names.", nlohmann::json::array(), true),
+        op("line_add_op", "Add or replace an operation. after is a list of finish-start ids.",
+           {"id", "name", "station", "parent", "kind", "seconds", "index", "after", "path", "logic"}, true),
+        op("line_schedule", "Critical path, makespan, and bottleneck station. Does not replan a robot path.", nlohmann::json::array(), true),
+        op("line_export_csv", "Write the cycle report as CSV.", {"path"}, true),
+        op("line_export_xlsx", "Write the cycle report as a spreadsheet.", {"path"}, true),
+        op("ppr_list", "Product, process, and plant nodes.", nlohmann::json::array(), true),
+        op("ems_import", "Reserved eMS/XML import. Does not read the file or edit the scene.", {"path"}, true),
         op("nl_to_logic", "Future: natural language to a logic block or script.", {"text"}, false),
         op("layout_suggest", "Future: suggest a line layout. Does not edit the scene.", {"text"}, false),
         op("cycle_optimize", "Future: suggest cycle-time changes.", {"text"}, false),
@@ -545,6 +562,200 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         query->commitCache(scene_);
         return okValue(hits);
+    }
+    if (op == "line_list") {
+        nlohmann::json stations = nlohmann::json::array();
+        for (const Station& station : scene_.layout.stations) {
+            stations.push_back({{"id", station.id},
+                                {"name", station.name},
+                                {"x", station.x},
+                                {"y", station.y},
+                                {"kind", stationKindName(station.kind)},
+                                {"resource", station.resource},
+                                {"node", station.nodeName}});
+        }
+        return okValue({{"example", scene_.layout.example},
+                        {"title", scene_.layout.title},
+                        {"gridMm", scene_.layout.gridMm},
+                        {"underlay", scene_.layout.underlay.kind},
+                        {"stations", std::move(stations)}});
+    }
+    if (op == "line_add_station") {
+        const std::string id = command.value("id", "");
+        if (id.empty()) {
+            return fail("station needs an id");
+        }
+        Station station;
+        if (Station* existing = findStation(scene_.layout, id)) {
+            station = *existing;
+        }
+        station.id = id;
+        if (command.contains("name")) {
+            station.name = command.value("name", station.name);
+        }
+        station.x = command.value("x", station.x);
+        station.y = command.value("y", station.y);
+        station.width = command.value("width", station.width);
+        station.depth = command.value("depth", station.depth);
+        if (command.contains("kind")) {
+            StationKind kind = station.kind;
+            if (!stationKindFromName(command.value("kind", ""), kind)) {
+                return fail("unknown station kind");
+            }
+            station.kind = kind;
+        }
+        if (command.contains("resource")) {
+            station.resource = command.value("resource", "");
+        }
+        if (command.contains("node")) {
+            station.nodeName = command.value("node", "");
+        }
+        if (Station* existing = findStation(scene_.layout, id)) {
+            *existing = station;
+        } else {
+            scene_.layout.stations.push_back(station);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(id);
+    }
+    if (op == "line_move_station") {
+        Station* station = findStation(scene_.layout, command.value("id", ""));
+        if (station == nullptr) {
+            return fail("no station named " + command.value("id", ""));
+        }
+        station->x = command.value("x", station->x);
+        station->y = command.value("y", station->y);
+        scene_.notify(ChangeKind::Structure);
+        return okValue({{"x", station->x}, {"y", station->y}});
+    }
+    if (op == "line_snap") {
+        snapStations(scene_.layout);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(static_cast<int>(scene_.layout.stations.size()));
+    }
+    if (op == "line_align") {
+        alignStationsMinX(scene_.layout);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(true);
+    }
+    if (op == "line_distribute") {
+        distributeStationsX(scene_.layout);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(true);
+    }
+    if (op == "line_import_dxf") {
+        std::string error;
+        if (!loadDxfUnderlay(scene_.layout, command.value("path", ""), command.value("mmPerUnit", 1.0), error)) {
+            return fail(error);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(static_cast<int>(scene_.layout.underlay.lines.size()));
+    }
+    if (op == "line_set_underlay") {
+        setImageUnderlay(scene_.layout, command.value("path", ""), command.value("opacity", 0.35));
+        scene_.notify(ChangeKind::Structure);
+        return okValue(scene_.layout.underlay.path);
+    }
+    if (op == "line_ops") {
+        return okValue(operationsToJson(scene_.operations));
+    }
+    if (op == "line_add_op") {
+        const std::string id = command.value("id", "");
+        if (id.empty()) {
+            return fail("operation needs an id");
+        }
+        Operation operation;
+        for (const Operation& existing : scene_.operations) {
+            if (existing.id == id) {
+                operation = existing;
+            }
+        }
+        operation.id = id;
+        if (command.contains("name")) {
+            operation.name = command.value("name", operation.name);
+        }
+        if (command.contains("station")) {
+            operation.station = command.value("station", "");
+        }
+        if (command.contains("parent")) {
+            operation.parent = command.value("parent", "");
+        }
+        if (command.contains("kind")) {
+            OpKind kind = operation.kind;
+            if (!opKindFromName(command.value("kind", ""), kind)) {
+                return fail("unknown operation kind");
+            }
+            operation.kind = kind;
+        }
+        operation.seconds = command.value("seconds", operation.seconds);
+        operation.index = command.value("index", operation.index);
+        if (command.contains("path")) {
+            operation.path = command.value("path", "");
+        }
+        if (command.contains("logic")) {
+            operation.logic = command.value("logic", "");
+        }
+        if (command.contains("after")) {
+            operation.after.clear();
+            const nlohmann::json& after = command.at("after");
+            if (after.is_array()) {
+                for (const auto& item : after) {
+                    if (item.is_string()) {
+                        operation.after.push_back(item.get<std::string>());
+                    }
+                }
+            } else if (after.is_string() && !after.get<std::string>().empty()) {
+                operation.after.push_back(after.get<std::string>());
+            }
+        }
+        bool replaced = false;
+        for (Operation& existing : scene_.operations) {
+            if (existing.id == id) {
+                existing = operation;
+                replaced = true;
+            }
+        }
+        if (!replaced) {
+            scene_.operations.push_back(operation);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(id);
+    }
+    if (op == "line_schedule") {
+        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        if (!report.error.empty()) {
+            return fail(report.error);
+        }
+        return okValue(scheduleToJson(report));
+    }
+    if (op == "line_export_csv") {
+        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        std::string error = report.error;
+        if (error.empty() && !exportScheduleCsv(report, command.value("path", ""), error)) {
+            return fail(error.empty() ? "csv export failed" : error);
+        }
+        if (!error.empty()) {
+            return fail(error);
+        }
+        return okValue(command.value("path", ""));
+    }
+    if (op == "line_export_xlsx") {
+        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        std::string error = report.error;
+        if (error.empty() && !exportScheduleXlsx(report, command.value("path", ""), error)) {
+            return fail(error.empty() ? "xlsx export failed" : error);
+        }
+        if (!error.empty()) {
+            return fail(error);
+        }
+        return okValue(command.value("path", ""));
+    }
+    if (op == "ppr_list") {
+        return okValue(pprToJson(scene_.ppr));
+    }
+    if (op == "ems_import") {
+        const EmsImportResult imported = importEmsXml(command.value("path", ""), scene_);
+        return fail(imported.message);
     }
     if (op == "nl_to_logic" || op == "layout_suggest" || op == "cycle_optimize" || op == "explain_anomaly") {
         return fail(op + " is a documented hook and is not implemented");

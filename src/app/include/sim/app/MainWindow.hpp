@@ -109,6 +109,7 @@ private:
     void undoIntent();
     void saveWorkspace();
     void positionFloaters();
+    void arrangeLineDocks();
 
     Scene scene_;
     I18nCatalog i18n_;
@@ -222,6 +223,14 @@ private:
     class PathTimeline* pathTimeline_ = nullptr;
     class PlcCards* plc_ = nullptr;
     class PhysicsShelf* physicsShelf_ = nullptr;
+    class FloorPlanView* floor_ = nullptr;
+    class OperationTreeView* operations_ = nullptr;
+    class GanttView* gantt_ = nullptr;
+    QDockWidget* floorDock_ = nullptr;
+    QDockWidget* operationDock_ = nullptr;
+    QDockWidget* ganttDock_ = nullptr;
+    bool lineDemo_ = false;
+    QString lineFocus_;
     QSystemTrayIcon* tray_ = nullptr;
     int taskMode_ = 0;
     bool focusMode_ = false;
