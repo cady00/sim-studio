@@ -2186,6 +2186,21 @@ void MainWindow::loadDemo(const QString& name) {
         } else {
             applyTaskMode(0);
         }
+    } else if (name == QStringLiteral("robots")) {
+        scene_.clear();
+        scene_.name = "robot_catalog";
+        demoPath_.clear();
+        std::string error;
+        int placed = 0;
+        for (const CatalogRobot& robot : robotCatalog()) {
+            if (!addCatalogRobot(scene_, robot.name, {placed * 1400.0, 0, 0}, error)) {
+                statusLabel_->setText(QString::fromStdString(error));
+                break;
+            }
+            ++placed;
+        }
+        viewport_->setCallout(QStringLiteral("KR6 R900 · IRB 120 · LR Mate 200iD · GP8 · 参数待核实"));
+        applyTaskMode(1);
     } else if (name == QStringLiteral("devices")) {
         buildEditorDevices(scene_);
         demoPath_.clear();

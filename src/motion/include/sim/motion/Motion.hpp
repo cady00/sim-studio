@@ -288,6 +288,17 @@ bool applyLinkSuggestions(Scene& scene, const std::string& resourceName, const S
                           const std::vector<RevoluteLimit>& limits, std::string& error);
 // Public KR 420 R3080 ranges and speeds. See docs/KR420.md. Six entries, A1 through A6.
 std::vector<RevoluteLimit> kr420DatasheetLimits();
+
+struct CatalogRobot {
+    std::string name;
+    std::string source;
+};
+
+// KUKA KR 6 R900 sixx, ABB IRB 120, FANUC LR Mate 200iD, Yaskawa GP8.
+// Limits, speeds, and link origins are copied from the public pages named in `source`.
+// Acceleration is the 180 deg/s^2 placeholder. Geometry is a box on each link.
+const std::vector<CatalogRobot>& robotCatalog();
+bool addCatalogRobot(Scene& scene, const std::string& name, Vec3 station, std::string& error);
 // Hides meshed parts whose names are outside the proximity sets. The caller shows them again.
 std::vector<std::shared_ptr<SceneNode>> hidePartsOutsideProximity(Scene& scene);
 // Obstacle, tint is already applied by applyLinkSuggestions. Adds a PTP/LIN path named "cycle".

@@ -154,6 +154,8 @@
   "motion.tab.logic": "Logic",
   "motion.tab.robot": "Robot",
   "motion.resource": "Resource",
+  "motion.catalog": "Model",
+  "motion.addCatalog": "Add model",
   "motion.newResource": "New resource",
   "motion.link": "Link name",
   "motion.solids": "Solids",

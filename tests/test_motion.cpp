@@ -1120,3 +1120,64 @@ TEST_CASE("scope records signals, joint velocity, and csv") {
     }
     REQUIRE(trace.time.size() == sim::ScopeTrace::kMaxSamples);
 }
+
+TEST_CASE("robot catalog copies published limits and link origins") {
+    const std::vector<sim::CatalogRobot>& catalog = sim::robotCatalog();
+    REQUIRE(catalog.size() == 4);
+    sim::Scene scene;
+    const char* names[] = {"KR6_R900", "IRB120", "LRMate200iD", "GP8"};
+    for (int i = 0; i < 4; ++i) {
+        std::string error;
+        REQUIRE(sim::addCatalogRobot(scene, names[i], {i * 1400.0, 0, 0}, error));
+        const sim::KinematicResource* resource = sim::findResource(scene.resources, names[i]);
+        REQUIRE(resource != nullptr);
+        REQUIRE(resource->joints.size() == 6);
+        REQUIRE(resource->source.find("http") != std::string::npos);
+        REQUIRE(resource->source.find("待核实") != std::string::npos);
+        for (const sim::KinJoint& joint : resource->joints) {
+            REQUIRE(joint.motion == sim::JointMotion::Revolute);
+            REQUIRE(joint.maxAccel == Catch::Approx(180));
+        }
+        sim::KinematicResource loaded;
+        REQUIRE(sim::kinematicsFromJson(sim::kinematicsToJson(*resource), loaded, error));
+        REQUIRE(loaded.source == resource->source);
+        REQUIRE(loaded.joints[1].lower == Catch::Approx(resource->joints[1].lower));
+    }
+    sim::KinematicResource* kr6 = sim::findResource(scene.resources, "KR6_R900");
+    REQUIRE(sim::findJoint(*kr6, "A1")->lower == Catch::Approx(-170));
+    REQUIRE(sim::findJoint(*kr6, "A1")->maxSpeed == Catch::Approx(360));
+    REQUIRE(sim::findJoint(*kr6, "A2")->upper == Catch::Approx(45));
+    REQUIRE(sim::findJoint(*kr6, "A6")->maxSpeed == Catch::Approx(615));
+    auto a3 = scene.find(sim::findLink(*kr6, "A3")->nodeId);
+    REQUIRE(a3);
+    REQUIRE(a3->local.translation.x == Catch::Approx(455));
+
+    const sim::KinematicResource* irb = sim::findResource(scene.resources, "IRB120");
+    REQUIRE(sim::findJoint(*irb, "A3")->lower == Catch::Approx(-110));
+    REQUIRE(sim::findJoint(*irb, "A3")->upper == Catch::Approx(70));
+    REQUIRE(sim::findJoint(*irb, "A6")->lower == Catch::Approx(-400));
+    REQUIRE(sim::findJoint(*irb, "A1")->maxSpeed == Catch::Approx(250));
+
+    const sim::KinematicResource* mate = sim::findResource(scene.resources, "LRMate200iD");
+    REQUIRE(sim::findJoint(*mate, "A3")->lower == Catch::Approx(-70));
+    REQUIRE(sim::findJoint(*mate, "A3")->upper == Catch::Approx(205));
+    REQUIRE(sim::findJoint(*mate, "A1")->maxSpeed == Catch::Approx(450));
+    REQUIRE(mate->source.find("420") != std::string::npos);
+
+    sim::KinematicResource* gp8 = sim::findResource(scene.resources, "GP8");
+    REQUIRE(sim::findJoint(*gp8, "A2")->lower == Catch::Approx(-65));
+    REQUIRE(sim::findJoint(*gp8, "A2")->upper == Catch::Approx(145));
+    REQUIRE(sim::findJoint(*gp8, "A3")->upper == Catch::Approx(190));
+    REQUIRE(sim::findJoint(*gp8, "A1")->maxSpeed == Catch::Approx(455));
+    REQUIRE(sim::findLink(*gp8, "flange") != nullptr);
+
+    auto wrist = scene.find(sim::findLink(*kr6, "A6")->nodeId);
+    REQUIRE(wrist);
+    const double before = wrist->worldMatrix()(3, 2);
+    sim::findJoint(*kr6, "A2")->position = 30;
+    sim::applyResource(scene, *kr6);
+    REQUIRE(std::abs(wrist->worldMatrix()(3, 2) - before) > 1.0);
+
+    std::string error;
+    REQUIRE_FALSE(sim::addCatalogRobot(scene, "no-such-robot", {}, error));
+}

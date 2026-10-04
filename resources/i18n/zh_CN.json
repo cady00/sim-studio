@@ -154,6 +154,8 @@
   "motion.tab.logic": "逻辑块",
   "motion.tab.robot": "机器人",
   "motion.resource": "设备",
+  "motion.catalog": "型号",
+  "motion.addCatalog": "加入型号",
   "motion.newResource": "新建设备",
   "motion.link": "连杆名",
   "motion.solids": "实体",

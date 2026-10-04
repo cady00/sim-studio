@@ -146,6 +146,7 @@ const KinPose* findPose(const KinematicResource& resource, const std::string& na
 nlohmann::json kinematicsToJson(const KinematicResource& resource) {
     nlohmann::json json;
     json["name"] = resource.name;
+    json["source"] = resource.source;
     json["ik"] = resource.ik;
     json["wrist"] = {{"d1", resource.wrist.d1},
                      {"shoulder", resource.wrist.shoulder},
@@ -218,6 +219,7 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
     }
     resource = {};
     resource.name = json.at("name").get<std::string>();
+    resource.source = json.value("source", std::string{});
     resource.ik = json.value("ik", std::string("none"));
     if (json.contains("wrist")) {
         const auto& wrist = json.at("wrist");

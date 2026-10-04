@@ -180,7 +180,13 @@ void MotionPanel::buildUi() {
     profileCombo_ = new QComboBox;
     profileCombo_->addItems({"trapezoid", "scurve"});
     pickLabel_ = new QLabel("-");
+    catalogCombo_ = new QComboBox;
+    catalogCombo_->setObjectName("motion.catalog");
+    for (const CatalogRobot& robot : robotCatalog()) {
+        catalogCombo_->addItem(QString::fromStdString(robot.name));
+    }
     kinForm->addRow(trk("motion.resource"), resourceCombo_);
+    kinForm->addRow(trk("motion.catalog"), catalogCombo_);
     kinForm->addRow(resourceName_);
     kinForm->addRow(trk("motion.link"), linkName_);
     kinForm->addRow(trk("motion.parent"), parentCombo_);
@@ -252,6 +258,26 @@ void MotionPanel::buildUi() {
         kinButtons->addWidget(button);
         return button;
     };
+    addButton("motion.addCatalog", [this] {
+        if (catalogCombo_ == nullptr) {
+            return;
+        }
+        const std::string name = catalogCombo_->currentText().toStdString();
+        const Vec3 station{static_cast<double>(scene_.resources.size()) * 1400.0, 0, 0};
+        std::string error;
+        if (!addCatalogRobot(scene_, name, station, error)) {
+            liveLabel_->setText(QString::fromStdString(error));
+            return;
+        }
+        refresh();
+        const int index = resourceCombo_->findText(QString::fromStdString(name));
+        if (index >= 0) {
+            resourceCombo_->setCurrentIndex(index);
+        }
+        if (viewport_ != nullptr) {
+            viewport_->update();
+        }
+    });
     addButton("motion.newResource", [this] {
         const QString name = resourceName_->text().trimmed().isEmpty() ? QStringLiteral("resource") : resourceName_->text().trimmed();
         ensureResource(scene_, name.toStdString());
@@ -1185,6 +1211,12 @@ void MotionPanel::refreshLive() {
             text += QStringLiteral("\n");
         }
         text += QString::fromStdString(suggestNote_);
+    }
+    if (!current->source.empty()) {
+        if (!text.isEmpty()) {
+            text += QStringLiteral("\n");
+        }
+        text += QString::fromStdString(current->source);
     }
     liveLabel_->setText(text);
     syncJointSlider();

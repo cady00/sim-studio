@@ -106,6 +106,9 @@ struct ScaraArm {
 
 struct KinematicResource {
     std::string name;
+    // Public page the limits and link origins were copied from. Empty for a mechanism the user built.
+    // The text is a reminder to check the numbers, not a certificate.
+    std::string source;
     // none | scara | spherical_wrist | numerical
     std::string ik = "none";
     SphericalWrist wrist;

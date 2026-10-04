@@ -64,6 +64,7 @@ private:
 
     QTabWidget* tabs_ = nullptr;
     QComboBox* resourceCombo_ = nullptr;
+    QComboBox* catalogCombo_ = nullptr;
     QLineEdit* resourceName_ = nullptr;
     QLineEdit* linkName_ = nullptr;
     QComboBox* parentCombo_ = nullptr;
