@@ -6,6 +6,7 @@
 
 #include <pybind11/embed.h>
 
+#include <cstdlib>
 #include <utility>
 
 namespace py = pybind11;
@@ -350,6 +351,11 @@ public:
         static bool ready = false;
         if (!ready) {
             py::initialize_interpreter();
+            std::atexit([] {
+                if (Py_IsInitialized() != 0) {
+                    py::finalize_interpreter();
+                }
+            });
             ready = true;
         }
         resetScope();
