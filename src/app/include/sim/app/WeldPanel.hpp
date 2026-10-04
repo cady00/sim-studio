@@ -29,11 +29,14 @@ private:
     void planTour();
     void envelope();
     void interlock();
+    void exportKrl();
+    void fillProgram();
     KinematicResource* robot();
 
     Scene& scene_;
     I18nCatalog& i18n_;
     QPlainTextEdit* source_ = nullptr;
+    QPlainTextEdit* program_ = nullptr;
     QListWidget* list_ = nullptr;
     QLabel* summary_ = nullptr;
 };

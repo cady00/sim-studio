@@ -13,6 +13,7 @@
 #include "sim/app/TaskPanels.hpp"
 #include "sim/app/WeldPanel.hpp"
 #include "sim/motion/Envelope.hpp"
+#include "sim/motion/Olp.hpp"
 #include "sim/motion/WeldPlan.hpp"
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
@@ -1895,12 +1896,33 @@ void MainWindow::loadDemo(const QString& name) {
                                                     .arg(region.minX, 0, 'f', 0)
                                                     .arg(region.maxX, 0, 'f', 0)
                                               : QStringLiteral("底座未全覆盖");
-            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 包络 %5 段")
+            int krlPoints = 0;
+            if (robot != nullptr) {
+                const std::unique_ptr<IOlpProgram> post = createOlpProgram("kuka");
+                for (const RobotPath& path : scene_.robotPaths) {
+                    if (path.name != "weld_tour" || post == nullptr) {
+                        continue;
+                    }
+                    std::string src;
+                    std::string dat;
+                    std::string error;
+                    RobotPath back;
+                    if (post->exportProgram(*robot, path, src, dat, error) &&
+                        post->importProgram(robot, src, dat, back, error)) {
+                        krlPoints = static_cast<int>(back.points.size());
+                    }
+                }
+            }
+            if (weld_ != nullptr) {
+                weld_->reload();
+            }
+            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 包络 %5 段 · KRL %6 点")
                                       .arg(static_cast<int>(scene_.welds.size()))
                                       .arg(reachable)
                                       .arg(base)
                                       .arg(tourPoints)
-                                      .arg(envelopeSegments));
+                                      .arg(envelopeSegments)
+                                      .arg(krlPoints));
             applyTaskMode(3);
         } else {
             applyTaskMode(0);

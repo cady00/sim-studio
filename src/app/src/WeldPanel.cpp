@@ -1,7 +1,10 @@
 #include "sim/app/WeldPanel.hpp"
 
 #include "sim/motion/Envelope.hpp"
+#include "sim/motion/Olp.hpp"
 #include "sim/motion/WeldPlan.hpp"
+
+#include <QFont>
 
 #include <QLabel>
 #include <QListWidget>
@@ -37,6 +40,8 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     envelopeButton->setObjectName("weldEnvelope");
     auto* interlockButton = new QPushButton;
     interlockButton->setObjectName("weldInterlock");
+    auto* krlButton = new QPushButton;
+    krlButton->setObjectName("weldKrl");
     layout->addWidget(importButton);
     layout->addWidget(projectButton);
     layout->addWidget(alignButton);
@@ -45,6 +50,16 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     layout->addWidget(planButton);
     layout->addWidget(envelopeButton);
     layout->addWidget(interlockButton);
+    layout->addWidget(krlButton);
+    program_ = new QPlainTextEdit;
+    program_->setObjectName("weldProgram");
+    program_->setReadOnly(true);
+    program_->setMaximumHeight(180);
+    QFont programFont(QStringLiteral("Monospace"));
+    programFont.setStyleHint(QFont::TypeWriter);
+    programFont.setPointSize(8);
+    program_->setFont(programFont);
+    layout->addWidget(program_);
     list_ = new QListWidget;
     layout->addWidget(list_, 1);
     connect(importButton, &QPushButton::clicked, this, [this] { importText(); });
@@ -55,6 +70,7 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     connect(planButton, &QPushButton::clicked, this, [this] { planTour(); });
     connect(envelopeButton, &QPushButton::clicked, this, [this] { envelope(); });
     connect(interlockButton, &QPushButton::clicked, this, [this] { interlock(); });
+    connect(krlButton, &QPushButton::clicked, this, [this] { exportKrl(); });
     retranslate();
 }
 
@@ -84,6 +100,9 @@ void WeldPanel::retranslate() {
     }
     if (auto* button = findChild<QPushButton*>("weldInterlock")) {
         button->setText(trk("weld.interlock"));
+    }
+    if (auto* button = findChild<QPushButton*>("weldKrl")) {
+        button->setText(trk("weld.krl"));
     }
     reload();
 }
@@ -119,6 +138,7 @@ void WeldPanel::reload() {
                        QString::fromStdString(spot.electrode) + QStringLiteral("  ") + mark);
     }
     summary_->setText(trk("weld.summary").arg(static_cast<int>(scene_.welds.size())).arg(onSurface).arg(reachable));
+    fillProgram();
 }
 
 void WeldPanel::importText() {
@@ -252,6 +272,61 @@ void WeldPanel::interlock() {
     scene_.notify(ChangeKind::Structure);
     reload();
     summary_->setText(trk("weld.interlockSummary").arg(static_cast<int>(hits.size())));
+}
+
+void WeldPanel::fillProgram() {
+    if (program_ == nullptr) {
+        return;
+    }
+    const KinematicResource* resource = robot();
+    const RobotPath* path = nullptr;
+    for (const RobotPath& candidate : scene_.robotPaths) {
+        if (candidate.name == "weld_tour") {
+            path = &candidate;
+        }
+    }
+    if (path == nullptr && !scene_.robotPaths.empty()) {
+        path = &scene_.robotPaths.front();
+    }
+    if (resource == nullptr || path == nullptr || path->points.empty()) {
+        program_->clear();
+        return;
+    }
+    const std::unique_ptr<IOlpProgram> post = createOlpProgram("kuka");
+    std::string src;
+    std::string dat;
+    std::string error;
+    if (post == nullptr || !post->exportProgram(*resource, *path, src, dat, error)) {
+        program_->setPlainText(QString::fromStdString(error));
+        return;
+    }
+    program_->setPlainText(QString::fromStdString(dat + "\n" + src));
+}
+
+void WeldPanel::exportKrl() {
+    const KinematicResource* resource = robot();
+    const RobotPath* path = nullptr;
+    for (const RobotPath& candidate : scene_.robotPaths) {
+        if (candidate.name == "weld_tour") {
+            path = &candidate;
+        }
+    }
+    if (resource == nullptr || path == nullptr) {
+        summary_->setText(trk("weld.krlFail"));
+        return;
+    }
+    const std::unique_ptr<IOlpProgram> post = createOlpProgram("kuka");
+    std::string src;
+    std::string dat;
+    std::string error;
+    RobotPath back;
+    if (post == nullptr || !post->exportProgram(*resource, *path, src, dat, error) ||
+        !post->importProgram(resource, src, dat, back, error)) {
+        summary_->setText(QString::fromStdString(error.empty() ? std::string("krl") : error));
+        return;
+    }
+    fillProgram();
+    summary_->setText(trk("weld.krlSummary").arg(static_cast<int>(back.points.size())));
 }
 
 }  // namespace sim
