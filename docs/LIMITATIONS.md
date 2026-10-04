@@ -12,7 +12,7 @@
 | 路径 | 实际行为 |
 | --- | --- |
 | JT（`JtImporter`） | `probeContent` 恒为假。`importFile` 返回失败，说明本构建没有解码器，也不链接 Siemens JT Open Toolkit。 |
-| IGES | `createImporter` 只接受 `step` / `stp` / `obj`。`iges` 得到空指针。 |
+| IGES | `createImporter("iges")` 和资源注册表都走 OCCT `IGESControl_Reader`，读入后做三角化。读失败时返回错误，不造网格。 |
 | 二进制 DXF | 读到二进制头时返回 `binary DXF is not supported`。 |
 | 压缩 ZIP | 工程包只接受存储法（method 0）。压缩条目报错，不假装解压成功。 |
 | `nl_to_logic`、`layout_suggest`、`cycle_optimize`、`explain_anomaly` | 返回 `is a documented hook and is not implemented`。单元测试锁定这句。 |
