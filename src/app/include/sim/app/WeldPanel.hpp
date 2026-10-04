@@ -24,6 +24,10 @@ private:
     void importText();
     void project();
     void align();
+    void reach();
+    void baseRegion();
+    void planTour();
+    KinematicResource* robot();
 
     Scene& scene_;
     I18nCatalog& i18n_;

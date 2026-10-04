@@ -123,3 +123,73 @@ TEST_CASE("example weld spots are marked and land on a plate") {
     REQUIRE(reachable >= 2);
     REQUIRE(scene.findByName("WeldPlate"));
 }
+
+TEST_CASE("reachability, base coverage, weld order, and rrt avoid a joint slab") {
+    sim::KinematicResource robot = wristResource();
+    sim::setJointVector(robot, {15, -40, 55, 10, 40, -20});
+    const sim::CartesianPose posed = sim::forwardModel(robot);
+    sim::WeldSpot near;
+    near.id = "near";
+    near.position = posed.position;
+    near.normal = -(posed.rotation.rotate({0, 0, 1}));
+    sim::WeldSpot far = near;
+    far.id = "far";
+    far.position = {8000, 8000, 8000};
+    std::vector<sim::WeldSpot> spots{near, far};
+    const std::vector<sim::SpotReach> reach = sim::checkWeldReach(nullptr, robot, spots, false);
+    REQUIRE(reach.size() == 2);
+    REQUIRE(reach[0].reachable);
+    REQUIRE(reach[0].margin > 0.02);
+    REQUIRE_FALSE(reach[0].singular);
+    REQUIRE_FALSE(reach[1].reachable);
+
+    const sim::BaseRegion region = sim::optimizeRobotBase(robot, std::vector<sim::WeldSpot>{near}, 1500, 3);
+    REQUIRE(region.found);
+    REQUIRE(region.minX <= 0);
+    REQUIRE(region.maxX >= 0);
+    bool farMiss = false;
+    for (const sim::BaseSample& sample : region.samples) {
+        if (std::abs(sample.x) > 1000 && !sample.coversAll) {
+            farMiss = true;
+        }
+    }
+    REQUIRE(farMiss);
+
+    const std::vector<sim::Vec3> square{{0, 0, 0}, {0, 10, 0}, {10, 10, 0}, {10, 0, 0}};
+    const std::vector<int> order = sim::orderWeldSpots(square);
+    REQUIRE(order.size() == 4);
+    double tour = 0;
+    for (std::size_t i = 1; i < order.size(); ++i) {
+        tour += sim::length(square[static_cast<std::size_t>(order[i])] - square[static_cast<std::size_t>(order[i - 1])]);
+    }
+    REQUIRE(tour == Catch::Approx(30));
+
+    const std::vector<double> start{0, -30, 40, 0, 30, 0};
+    const std::vector<double> goal{80, -30, 40, 0, 30, 0};
+    const auto blocked = [](const std::vector<double>& q) {
+        return q.size() > 1 && q[0] > 25 && q[0] < 55 && std::abs(q[1] + 30) < 12;
+    };
+    sim::RrtOptions options;
+    options.iterations = 500;
+    options.stepDeg = 8;
+    options.seed = 3;
+    const sim::RrtResult planned = sim::planRrtConnect(robot, start, goal, blocked, options);
+    REQUIRE(planned.ok);
+    REQUIRE(planned.joints.size() >= 3);
+    for (const std::vector<double>& sample : planned.joints) {
+        REQUIRE_FALSE(blocked(sample));
+    }
+    bool detoured = false;
+    for (const std::vector<double>& sample : planned.joints) {
+        if (std::abs(sample[1] + 30) > 12) {
+            detoured = true;
+        }
+    }
+    REQUIRE(detoured);
+    const std::vector<std::vector<double>> smooth = sim::smoothJointPath(planned.joints, blocked, 6);
+    REQUIRE(smooth.size() >= 2);
+    REQUIRE(smooth.size() <= planned.joints.size());
+    for (const std::vector<double>& sample : smooth) {
+        REQUIRE_FALSE(blocked(sample));
+    }
+}

@@ -26,14 +26,26 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     projectButton->setObjectName("weldProject");
     auto* alignButton = new QPushButton;
     alignButton->setObjectName("weldAlign");
+    auto* reachButton = new QPushButton;
+    reachButton->setObjectName("weldReach");
+    auto* baseButton = new QPushButton;
+    baseButton->setObjectName("weldBase");
+    auto* planButton = new QPushButton;
+    planButton->setObjectName("weldPlan");
     layout->addWidget(importButton);
     layout->addWidget(projectButton);
     layout->addWidget(alignButton);
+    layout->addWidget(reachButton);
+    layout->addWidget(baseButton);
+    layout->addWidget(planButton);
     list_ = new QListWidget;
     layout->addWidget(list_, 1);
     connect(importButton, &QPushButton::clicked, this, [this] { importText(); });
     connect(projectButton, &QPushButton::clicked, this, [this] { project(); });
     connect(alignButton, &QPushButton::clicked, this, [this] { align(); });
+    connect(reachButton, &QPushButton::clicked, this, [this] { reach(); });
+    connect(baseButton, &QPushButton::clicked, this, [this] { baseRegion(); });
+    connect(planButton, &QPushButton::clicked, this, [this] { planTour(); });
     retranslate();
 }
 
@@ -48,6 +60,15 @@ void WeldPanel::retranslate() {
     }
     if (auto* button = findChild<QPushButton*>("weldAlign")) {
         button->setText(trk("weld.align"));
+    }
+    if (auto* button = findChild<QPushButton*>("weldReach")) {
+        button->setText(trk("weld.reach"));
+    }
+    if (auto* button = findChild<QPushButton*>("weldBase")) {
+        button->setText(trk("weld.base"));
+    }
+    if (auto* button = findChild<QPushButton*>("weldPlan")) {
+        button->setText(trk("weld.plan"));
     }
     reload();
 }
@@ -68,8 +89,18 @@ void WeldPanel::reload() {
         }
         const QString mark = spot.example ? trk("weld.example") : QString();
         const QString state = !spot.checked ? trk("weld.unchecked") : (spot.reachable ? trk("weld.reachable") : trk("weld.blocked"));
+        QString flags;
+        if (spot.checked) {
+            flags = QStringLiteral("  ") + trk("weld.margin").arg(spot.margin, 0, 'f', 2);
+            if (spot.singular) {
+                flags += QStringLiteral("  ") + trk("weld.singular");
+            }
+            if (spot.collision) {
+                flags += QStringLiteral("  ") + trk("weld.collision");
+            }
+        }
         list_->addItem(QString::fromStdString(spot.id) + QStringLiteral("  ") + state + QStringLiteral("  ") +
-                       trk("weld.spin").arg(spot.spinDeg, 0, 'f', 0) + QStringLiteral("  ") +
+                       trk("weld.spin").arg(spot.spinDeg, 0, 'f', 0) + flags + QStringLiteral("  ") +
                        QString::fromStdString(spot.electrode) + QStringLiteral("  ") + mark);
     }
     summary_->setText(trk("weld.summary").arg(static_cast<int>(scene_.welds.size())).arg(onSurface).arg(reachable));
@@ -95,17 +126,22 @@ void WeldPanel::project() {
     reload();
 }
 
-void WeldPanel::align() {
-    KinematicResource* robot = findResource(scene_.resources, "kr420");
-    if (robot == nullptr && !scene_.resources.empty()) {
-        robot = &scene_.resources.front();
+KinematicResource* WeldPanel::robot() {
+    KinematicResource* resource = findResource(scene_.resources, "kr420");
+    if (resource == nullptr && !scene_.resources.empty()) {
+        resource = &scene_.resources.front();
     }
-    if (robot == nullptr) {
+    return resource;
+}
+
+void WeldPanel::align() {
+    KinematicResource* resource = robot();
+    if (resource == nullptr) {
         summary_->setText(trk("weld.noRobot"));
         return;
     }
     for (WeldSpot& spot : scene_.welds) {
-        const SpinSearch aligned = searchWeldSpin(&scene_, *robot, spot, 12, false);
+        const SpinSearch aligned = searchWeldSpin(&scene_, *resource, spot, 12, false);
         spot.checked = true;
         spot.reachable = aligned.ok && !aligned.singular && aligned.margin > 0.02;
         spot.margin = aligned.margin;
@@ -116,6 +152,50 @@ void WeldPanel::align() {
     }
     scene_.notify(ChangeKind::Transform);
     reload();
+}
+
+void WeldPanel::reach() {
+    KinematicResource* resource = robot();
+    if (resource == nullptr) {
+        summary_->setText(trk("weld.noRobot"));
+        return;
+    }
+    const std::vector<SpotReach> report = checkWeldReach(&scene_, *resource, scene_.welds, true);
+    int reachable = 0;
+    for (const SpotReach& row : report) {
+        if (row.reachable) {
+            ++reachable;
+        }
+    }
+    scene_.notify(ChangeKind::Transform);
+    reload();
+    summary_->setText(trk("weld.reachSummary").arg(reachable).arg(static_cast<int>(report.size())));
+}
+
+void WeldPanel::baseRegion() {
+    KinematicResource* resource = robot();
+    if (resource == nullptr || scene_.welds.empty()) {
+        summary_->setText(trk("weld.noRobot"));
+        return;
+    }
+    const BaseRegion region = optimizeRobotBase(*resource, scene_.welds, 400, 5);
+    reload();
+    if (!region.found) {
+        summary_->setText(trk("weld.baseMiss").arg(region.bestCovered).arg(static_cast<int>(scene_.welds.size())));
+    } else {
+        summary_->setText(trk("weld.baseHit")
+                              .arg(region.minX, 0, 'f', 0)
+                              .arg(region.maxX, 0, 'f', 0)
+                              .arg(region.minY, 0, 'f', 0)
+                              .arg(region.maxY, 0, 'f', 0));
+    }
+}
+
+void WeldPanel::planTour() {
+    const int points = planExampleWeldTour(scene_);
+    scene_.notify(ChangeKind::Structure);
+    reload();
+    summary_->setText(trk("weld.tour").arg(points));
 }
 
 }  // namespace sim

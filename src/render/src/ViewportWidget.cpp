@@ -505,6 +505,24 @@ void ViewportWidget::paintGL() {
         }
         renderer_->submitLines(welds);
     }
+    if (scene_ != nullptr) {
+        LineBatch tour;
+        tour.width = 2.4f;
+        tour.depthTest = false;
+        const Vec3 ink{0.24, 0.62, 0.95};
+        for (const RobotPath& path : scene_->robotPaths) {
+            if (path.name != "weld_tour" || path.points.size() < 2) {
+                continue;
+            }
+            for (std::size_t i = 1; i < path.points.size(); ++i) {
+                pushLine(tour, path.points[i - 1].position, ink);
+                pushLine(tour, path.points[i].position, ink);
+            }
+        }
+        if (!tour.vertices.empty()) {
+            renderer_->submitLines(tour);
+        }
+    }
     renderer_->endFrame();
     drawMs_ = static_cast<double>(drawTimer.nsecsElapsed()) / 1.0e6;
     paintOverlay();

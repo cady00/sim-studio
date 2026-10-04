@@ -1848,6 +1848,9 @@ void MainWindow::loadDemo(const QString& name) {
                               QStringLiteral(" · 实测 ") + QString::number(measured.updated));
         if (lineFocus_ == QStringLiteral("weld")) {
             prepareExampleWelds(scene_);
+            const int tourPoints = planExampleWeldTour(scene_);
+            KinematicResource* robot = findResource(scene_.resources, "kr420");
+            const BaseRegion region = robot == nullptr ? BaseRegion{} : optimizeRobotBase(*robot, scene_.welds, 500, 3);
             if (weld_ != nullptr) {
                 weld_->reload();
             }
@@ -1857,9 +1860,15 @@ void MainWindow::loadDemo(const QString& name) {
                     ++reachable;
                 }
             }
-            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 贴合表面 · 可对齐 %2 · 焊钳绕法向")
+            const QString base = region.found ? QStringLiteral("底座 X %1…%2")
+                                                    .arg(region.minX, 0, 'f', 0)
+                                                    .arg(region.maxX, 0, 'f', 0)
+                                              : QStringLiteral("底座未全覆盖");
+            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障路径 %4 点")
                                       .arg(static_cast<int>(scene_.welds.size()))
-                                      .arg(reachable));
+                                      .arg(reachable)
+                                      .arg(base)
+                                      .arg(tourPoints));
             applyTaskMode(3);
         } else {
             applyTaskMode(0);

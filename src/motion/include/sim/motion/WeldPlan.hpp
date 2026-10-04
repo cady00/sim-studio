@@ -3,6 +3,8 @@
 #include "sim/core/Weld.hpp"
 #include "sim/motion/Motion.hpp"
 
+#include <functional>
+
 namespace sim {
 
 struct SpinSearch {
@@ -27,5 +29,64 @@ SpinSearch searchWeldSpin(Scene* scene, KinematicResource& resource, const WeldS
 
 // Example spots on a plate in front of kr420. The private STEP is not required.
 void prepareExampleWelds(Scene& scene);
+
+struct SpotReach {
+    std::string id;
+    bool reachable = false;
+    double margin = 0;
+    double manipulability = 0;
+    bool singular = false;
+    bool collision = false;
+    std::vector<double> joints;
+};
+
+// Writes the red/green result back onto each spot. Collision is tested once, at the chosen spin.
+std::vector<SpotReach> checkWeldReach(Scene* scene, KinematicResource& resource, std::vector<WeldSpot>& spots, bool checkCollision);
+
+struct BaseSample {
+    double x = 0;
+    double y = 0;
+    int covered = 0;
+    bool coversAll = false;
+};
+
+struct BaseRegion {
+    std::vector<BaseSample> samples;
+    bool found = false;
+    double minX = 0;
+    double maxX = 0;
+    double minY = 0;
+    double maxY = 0;
+    int bestCovered = 0;
+};
+
+// Samples base offsets in the world XY plane. A cell covers a spot when the shifted target stays reachable.
+BaseRegion optimizeRobotBase(KinematicResource& resource, const std::vector<WeldSpot>& spots, double step, int cells);
+
+struct RrtOptions {
+    int iterations = 400;
+    double stepDeg = 8;
+    double goalBias = 0.15;
+    unsigned seed = 1;
+};
+
+struct RrtResult {
+    bool ok = false;
+    std::vector<std::vector<double>> joints;
+    int nodes = 0;
+    std::string note;
+};
+
+// Joint-space RRT-Connect. `blocked` is true when that configuration must be avoided.
+RrtResult planRrtConnect(const KinematicResource& resource, const std::vector<double>& start, const std::vector<double>& goal,
+                         const std::function<bool(const std::vector<double>&)>& blocked, const RrtOptions& options);
+std::vector<std::vector<double>> smoothJointPath(const std::vector<std::vector<double>>& path,
+                                                 const std::function<bool(const std::vector<double>&)>& blocked, int passes);
+
+// Open-tour nearest neighbor, then 2-opt. Returns indexes into `points`.
+std::vector<int> orderWeldSpots(const std::vector<Vec3>& points);
+
+// Orders reachable spots, plans a collision-free joint tour, and stores it as path "weld_tour".
+int planExampleWeldTour(Scene& scene);
 
 }  // namespace sim
