@@ -409,7 +409,7 @@ void MotionPanel::buildUi() {
     inputs_ = new QLineEdit;
     outputs_ = new QLineEdit;
     actionKind_ = new QComboBox;
-    actionKind_->addItems({"move_pose", "jog", "set_output", "reset_output", "wait"});
+    actionKind_->addItems({"move_pose", "jog", "set_output", "reset_output", "set_value", "wait", "wait_signal"});
     actionText_ = new QLineEdit;
     actionSeconds_ = spinBox(0, 3600);
     actionList_ = new QListWidget;

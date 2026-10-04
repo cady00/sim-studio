@@ -523,6 +523,206 @@ EOF
     scene.markClean();
 }
 
+void buildDeviceDemo(Scene& scene) {
+    scene.clear();
+    scene.name = "device_cell";
+    scene.physicsDoc.engine = "builtin";
+    scene.physicsDoc.defaultRestitution = 0.02;
+
+    Mech floor;
+    floor.kind = MechKind::Collision;
+    floor.motion = BodyMotion::Anchored;
+    floor.kinematic = true;
+    floor.halfExtents = {520, 280, 8};
+    addBox(scene, "Floor", floor.halfExtents, {40, -80, -8}, {0.12, 0.14, 0.20}, floor);
+
+    Mech master;
+    master.kind = MechKind::Hinge;
+    master.motion = BodyMotion::Driven;
+    master.kinematic = true;
+    master.axis = {0, 0, 1};
+    master.limited = true;
+    master.lower = 0;
+    master.upper = 120;
+    master.control = "position";
+    master.setpoint = "gear_cmd";
+    master.maxSpeed = 360;
+    master.maxAccel = 4000;
+    master.halfExtents = {70, 14, 14};
+    addBox(scene, "GearIn", master.halfExtents, {-280, 40, 70}, {0.18, 0.42, 0.78}, master);
+
+    Mech gear;
+    gear.kind = MechKind::Hinge;
+    gear.motion = BodyMotion::Driven;
+    gear.kinematic = true;
+    gear.axis = {0, 0, 1};
+    gear.limited = false;
+    gear.couple = "gear";
+    gear.master = "GearIn";
+    gear.ratio = 2;
+    gear.halfExtents = {70, 14, 14};
+    addBox(scene, "GearOut", gear.halfExtents, {-80, 40, 70}, {0.22, 0.62, 0.38}, gear);
+
+    Mech cam;
+    cam.kind = MechKind::Hinge;
+    cam.motion = BodyMotion::Driven;
+    cam.kinematic = true;
+    cam.axis = {0, 0, 1};
+    cam.limited = false;
+    cam.couple = "cam";
+    cam.master = "GearIn";
+    cam.camIn = {0, 90};
+    cam.camOut = {0, 36};
+    cam.halfExtents = {64, 12, 12};
+    addBox(scene, "CamOut", cam.halfExtents, {120, 40, 70}, {0.90, 0.62, 0.18}, cam);
+
+    Mech ecam;
+    ecam.kind = MechKind::Slider;
+    ecam.motion = BodyMotion::Driven;
+    ecam.kinematic = true;
+    ecam.axis = {1, 0, 0};
+    ecam.limited = false;
+    ecam.couple = "ecam";
+    ecam.master = "cam_master";
+    ecam.camIn = {0, 90};
+    ecam.camOut = {0, 80};
+    ecam.halfExtents = {28, 16, 16};
+    addBox(scene, "Ecam", ecam.halfExtents, {300, 40, 48}, {0.55, 0.38, 0.78}, ecam);
+
+    Mech positioned;
+    positioned.kind = MechKind::Slider;
+    positioned.motion = BodyMotion::Driven;
+    positioned.kinematic = true;
+    positioned.axis = {1, 0, 0};
+    positioned.limited = true;
+    positioned.lower = 0;
+    positioned.upper = 160;
+    positioned.control = "position";
+    positioned.setpoint = "pos_cmd";
+    positioned.maxSpeed = 400;
+    positioned.maxAccel = 4000;
+    positioned.halfExtents = {22, 16, 16};
+    addBox(scene, "PosAxis", positioned.halfExtents, {-280, -80, 36}, {0.25, 0.70, 0.78}, positioned);
+
+    Mech velocity;
+    velocity.kind = MechKind::Slider;
+    velocity.motion = BodyMotion::Driven;
+    velocity.kinematic = true;
+    velocity.axis = {1, 0, 0};
+    velocity.limited = true;
+    velocity.lower = 0;
+    velocity.upper = 200;
+    velocity.control = "velocity";
+    velocity.setpoint = "vel_cmd";
+    velocity.gain = 1;
+    velocity.maxSpeed = 200;
+    velocity.maxAccel = 2000;
+    velocity.halfExtents = {22, 16, 16};
+    addBox(scene, "VelAxis", velocity.halfExtents, {-40, -80, 36}, {0.35, 0.55, 0.85}, velocity);
+
+    Mech post;
+    post.kind = MechKind::Collision;
+    post.motion = BodyMotion::Anchored;
+    post.kinematic = true;
+    post.halfExtents = {24, 24, 40};
+    addBox(scene, "Post", post.halfExtents, {360, -40, 50}, {0.55, 0.58, 0.62}, post);
+
+    Mech range;
+    range.kind = MechKind::DistanceSensor;
+    range.axis = {0, 1, 0};
+    range.range = 400;
+    range.signal = "gap_hit";
+    range.valueSignal = "gap";
+    range.halfExtents = {8, 8, 8};
+    addBox(scene, "Range", range.halfExtents, {360, -180, 50}, {0.95, 0.82, 0.25}, range);
+
+    Mech limit;
+    limit.kind = MechKind::Limit;
+    limit.other = "GearIn";
+    limit.trip = 30;
+    limit.signal = "at_limit";
+    limit.halfExtents = {12, 12, 18};
+    addBox(scene, "Limit", limit.halfExtents, {-280, 110, 40}, {0.75, 0.22, 0.22}, limit);
+
+    Mech cylinder;
+    cylinder.kind = MechKind::Cylinder;
+    cylinder.axis = {1, 0, 0};
+    cylinder.lower = 0;
+    cylinder.upper = 160;
+    cylinder.maxSpeed = 280;
+    cylinder.throttle = 0.75;
+    cylinder.cushion = 0.12;
+    cylinder.signal = "extend";
+    cylinder.halfExtents = {36, 18, 18};
+    addBox(scene, "Cylinder", cylinder.halfExtents, {-220, -190, 36}, {0.86, 0.45, 0.18}, cylinder);
+
+    Mech gripper;
+    gripper.kind = MechKind::Gripper;
+    gripper.graspSignal = "grip";
+    gripper.graspRadius = 90;
+    gripper.halfExtents = {16, 28, 10};
+    addBox(scene, "Gripper", gripper.halfExtents, {40, -190, 110}, {0.72, 0.74, 0.78}, gripper);
+
+    Mech part;
+    part.kind = MechKind::Rigid;
+    part.motion = BodyMotion::Free;
+    part.autoMass = false;
+    part.mass = 0.4;
+    part.allowSleep = false;
+    part.halfExtents = {18, 18, 18};
+    addBox(scene, "Part", part.halfExtents, {40, -190, 62}, {0.92, 0.78, 0.22}, part);
+
+    Mech blank = part;
+    blank.halfExtents = {14, 14, 14};
+    addBox(scene, "Blank", blank.halfExtents, {240, -190, 220}, {0.45, 0.72, 0.42}, blank, false);
+
+    Mech source;
+    source.kind = MechKind::Source;
+    source.prototype = "Blank";
+    source.interval = 0.45;
+    source.signal = "feed";
+    source.halfExtents = {16, 16, 16};
+    addBox(scene, "Source", source.halfExtents, {240, -190, 90}, {0.28, 0.62, 0.36}, source);
+
+    Mech scrap = part;
+    scrap.halfExtents = {16, 16, 16};
+    addBox(scene, "Scrap", scrap.halfExtents, {420, -190, 28}, {0.62, 0.30, 0.28}, scrap);
+
+    Mech sink;
+    sink.kind = MechKind::Sink;
+    sink.signal = "collected";
+    sink.valueSignal = "collected_n";
+    sink.halfExtents = {36, 36, 28};
+    addBox(scene, "Sink", sink.halfExtents, {420, -190, 28}, {0.45, 0.18, 0.24}, sink);
+
+    LogicBlock cell;
+    cell.name = "cell";
+    LogicStep step;
+    auto flag = [&](const char* name) {
+        LogicAction action;
+        action.kind = "set_output";
+        action.signal = name;
+        step.actions.push_back(action);
+    };
+    auto number = [&](const char* name, double value) {
+        LogicAction action;
+        action.kind = "set_value";
+        action.signal = name;
+        action.speed = value;
+        step.actions.push_back(action);
+    };
+    flag("extend");
+    flag("grip");
+    flag("feed");
+    number("gear_cmd", 70);
+    number("pos_cmd", 100);
+    number("vel_cmd", 80);
+    number("cam_master", 45);
+    cell.steps.push_back(std::move(step));
+    scene.logicBlocks.push_back(std::move(cell));
+    scene.markClean();
+}
+
 void buildLargeField(Scene& scene, int parts, int triangles) {
     scene.clear();
     scene.name = "large_field";

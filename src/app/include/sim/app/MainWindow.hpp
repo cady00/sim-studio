@@ -133,6 +133,7 @@ private:
     bool transferDemo_ = false;
     bool meshDemo_ = false;
     bool slipDemo_ = false;
+    bool mcdDemo_ = false;
     bool shelfReload_ = true;
     std::string demoPath_;
     std::string pendingPath_;

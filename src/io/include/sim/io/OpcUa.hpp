@@ -67,5 +67,6 @@ private:
 
 // Copies a monitored value onto a scene signal the logic machine already waits on.
 void publishPlcBool(Scene& scene, const std::string& signalName, bool value);
+void publishPlcNumber(Scene& scene, const std::string& signalName, double value);
 
 }  // namespace sim

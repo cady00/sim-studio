@@ -1216,4 +1216,8 @@ void publishPlcBool(Scene& scene, const std::string& signalName, bool value) {
     scene.upsertSignal(signalName, SignalType::Bool).flag = value;
 }
 
+void publishPlcNumber(Scene& scene, const std::string& signalName, double value) {
+    scene.upsertSignal(signalName, SignalType::Real).real = value;
+}
+
 }  // namespace sim

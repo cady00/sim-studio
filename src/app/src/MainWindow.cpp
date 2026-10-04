@@ -1396,6 +1396,9 @@ QString MainWindow::mechLabel(MechKind kind) const {
         case MechKind::LightBarrier: return trk("mech.lightBarrier");
         case MechKind::Source: return trk("mech.source");
         case MechKind::Sink: return trk("mech.sink");
+        case MechKind::Limit: return trk("mech.limit");
+        case MechKind::Cylinder: return trk("mech.cylinder");
+        case MechKind::Gripper: return trk("mech.gripper");
     }
     return trk("mech.none");
 }
@@ -1423,7 +1426,10 @@ void MainWindow::fillMechCombos() {
                       {trk("mech.distanceSensor"), static_cast<int>(MechKind::DistanceSensor)},
                       {trk("mech.lightBarrier"), static_cast<int>(MechKind::LightBarrier)},
                       {trk("mech.source"), static_cast<int>(MechKind::Source)},
-                      {trk("mech.sink"), static_cast<int>(MechKind::Sink)}});
+                      {trk("mech.sink"), static_cast<int>(MechKind::Sink)},
+                      {trk("mech.limit"), static_cast<int>(MechKind::Limit)},
+                      {trk("mech.cylinder"), static_cast<int>(MechKind::Cylinder)},
+                      {trk("mech.gripper"), static_cast<int>(MechKind::Gripper)}});
     fill(shapeCombo_, {{trk("shape.box"), static_cast<int>(CollisionShape::Box)},
                        {trk("shape.sphere"), static_cast<int>(CollisionShape::Sphere)},
                        {trk("shape.capsule"), static_cast<int>(CollisionShape::Capsule)},
@@ -1761,6 +1767,7 @@ void MainWindow::loadDemo(const QString& name) {
     transferDemo_ = name == QStringLiteral("transfer");
     meshDemo_ = name == QStringLiteral("mesh");
     slipDemo_ = name == QStringLiteral("slip");
+    mcdDemo_ = name == QStringLiteral("mcd");
     lineDemo_ = name == QStringLiteral("line") || name.startsWith(QStringLiteral("line-"));
     lineFocus_ = QStringLiteral("floor");
     if (name.endsWith(QStringLiteral("ops"))) {
@@ -1838,6 +1845,51 @@ void MainWindow::loadDemo(const QString& name) {
         buildSlipDemo(scene_);
         demoPath_.clear();
         applyTaskMode(4);
+    } else if (mcdDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildDeviceDemo(scene_);
+        demoPath_.clear();
+        std::string error;
+        logic_.reset();
+        logic_.start(scene_, "cell", error);
+        if (physics_ != nullptr && physics_->build(scene_, error)) {
+            for (int i = 0; i < 72; ++i) {
+                logic_.step(scene_, 1.0 / 60.0);
+                physics_->step(1.0 / 60.0);
+            }
+        }
+        const auto degreesOf = [](const std::shared_ptr<SceneNode>& node) {
+            if (!node) {
+                return 0.0;
+            }
+            const Quat q = node->local.rotation.normalized();
+            return rad2deg(2.0 * std::atan2(q.z, q.w));
+        };
+        const double gear = degreesOf(scene_.findByName("GearOut"));
+        const auto cylinder = scene_.findByName("Cylinder");
+        const double stroke = cylinder ? cylinder->mech.command : 0;
+        const auto gripper = scene_.findByName("Gripper");
+        const bool held = gripper && !gripper->mech.held.empty();
+        const Signal* limit = scene_.findSignal("at_limit");
+        const Signal* collected = scene_.findSignal("collected_n");
+        viewport_->setCallout(QStringLiteral("齿轮 %1° · 气缸 %2 mm · 抓取 %3 · 限位 %4 · 收集 %5")
+                                  .arg(gear, 0, 'f', 0)
+                                  .arg(stroke, 0, 'f', 0)
+                                  .arg(held ? QStringLiteral("已持") : QStringLiteral("空"))
+                                  .arg(limit != nullptr && limit->flag ? QStringLiteral("开") : QStringLiteral("关"))
+                                  .arg(collected != nullptr ? static_cast<int>(collected->integer) : 0));
+        if (cylinder) {
+            scene_.setSelected(cylinder->id);
+        }
+        applyTaskMode(4);
+        refreshSignals();
+        if (signalDock_ != nullptr) {
+            signalDock_->raise();
+            resizeDocks({signalDock_}, {210}, Qt::Vertical);
+        }
+        if (physicsDock_ != nullptr) {
+            physicsDock_->raise();
+        }
     } else if (lineDemo_) {
         buildExampleLine(scene_);
         demoPath_.clear();

@@ -211,6 +211,12 @@ void LogicMachine::step(Scene& scene, double dt) {
                 ++run.action;
                 continue;
             }
+            if (action.kind == "set_value") {
+                Signal& signal = scene.upsertSignal(action.signal, SignalType::Real);
+                signal.real = action.speed;
+                ++run.action;
+                continue;
+            }
             if (action.kind == "wait") {
                 run.waiting = true;
                 run.waitSignal = false;

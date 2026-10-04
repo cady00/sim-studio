@@ -12,6 +12,8 @@ void buildTransferLine(Scene& scene);
 void buildMeshGapDemo(Scene& scene);
 // Two free boxes on one belt. Coulomb friction, not the surface-ride shortcut.
 void buildSlipDemo(Scene& scene);
+// Gear, cam, cylinder, gripper, sensors, and a source/sink. Logic writes the signals.
+void buildDeviceDemo(Scene& scene);
 // Four-station example line. layout.example and ppr.example are true. The KR420 is a named proxy
 // unless a caller replaces the node with an imported model.
 void buildExampleLine(Scene& scene);

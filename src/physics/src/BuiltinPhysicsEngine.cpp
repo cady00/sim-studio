@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace sim {
@@ -291,6 +292,197 @@ public:
         return true;
     }
 
+    JointState* jointByName(const std::string& name) {
+        if (name.empty() || scene_ == nullptr) {
+            return nullptr;
+        }
+        auto node = scene_->findByName(name);
+        if (!node) {
+            return nullptr;
+        }
+        for (JointState& joint : joints_) {
+            if (joint.id == node->id) {
+                return &joint;
+            }
+        }
+        return nullptr;
+    }
+
+    void writeJoint(JointState& joint, SceneNode& node) const {
+        if (joint.ball) {
+            return;
+        }
+        if (joint.hinge) {
+            const Quat delta = Quat::fromAxisAngle(joint.axis, deg2rad(joint.position));
+            node.local.rotation = (delta * joint.restRotation).normalized();
+            node.local.translation = joint.restTranslation;
+        } else {
+            node.local.translation = joint.restTranslation + joint.axis * joint.position;
+            node.local.rotation = joint.restRotation;
+        }
+    }
+
+    static double camMap(const Mech& mech, double master) {
+        if (mech.camIn.size() < 2 || mech.camIn.size() != mech.camOut.size()) {
+            return master * mech.ratio;
+        }
+        if (master <= mech.camIn.front()) {
+            return mech.camOut.front();
+        }
+        for (std::size_t i = 1; i < mech.camIn.size(); ++i) {
+            if (master <= mech.camIn[i]) {
+                const double span = mech.camIn[i] - mech.camIn[i - 1];
+                const double t = span > 1e-9 ? (master - mech.camIn[i - 1]) / span : 0;
+                return mech.camOut[i - 1] + t * (mech.camOut[i] - mech.camOut[i - 1]);
+            }
+        }
+        return mech.camOut.back();
+    }
+
+    void applySetpoints() {
+        for (JointState& joint : joints_) {
+            auto node = scene_->find(joint.id);
+            if (!node || node->mech.setpoint.empty()) {
+                continue;
+            }
+            const Signal* signal = scene_->findSignal(node->mech.setpoint);
+            if (signal == nullptr) {
+                continue;
+            }
+            if (node->mech.control == "velocity") {
+                node->mech.drive = DriveMode::Speed;
+                node->mech.target = signal->real * node->mech.gain;
+            } else {
+                node->mech.drive = DriveMode::Position;
+                node->mech.target = signal->real;
+            }
+        }
+    }
+
+    void applyCoupling() {
+        for (JointState& joint : joints_) {
+            auto node = scene_->find(joint.id);
+            if (!node || node->mech.couple.empty()) {
+                continue;
+            }
+            double master = 0;
+            if (node->mech.couple == "ecam") {
+                const Signal* signal = scene_->findSignal(node->mech.master);
+                master = signal == nullptr ? 0 : signal->real;
+            } else if (JointState* drive = jointByName(node->mech.master)) {
+                master = drive->position;
+            } else {
+                continue;
+            }
+            if (node->mech.couple == "gear") {
+                joint.position = master * node->mech.ratio;
+            } else {
+                joint.position = camMap(node->mech, master);
+            }
+            writeJoint(joint, *node);
+        }
+    }
+
+    void stepActuators(double dt) {
+        grasped_.clear();
+        std::vector<std::shared_ptr<SceneNode>> stack{scene_->root()};
+        while (!stack.empty()) {
+            auto node = stack.back();
+            stack.pop_back();
+            if (!node) {
+                continue;
+            }
+            for (const auto& child : node->children) {
+                stack.push_back(child);
+            }
+            if (node->mech.kind == MechKind::Limit) {
+                const JointState* watched = jointByName(node->mech.other);
+                const bool tripped = watched != nullptr && watched->position >= node->mech.trip;
+                const std::string name = node->mech.signal.empty() ? node->name : node->mech.signal;
+                scene_->upsertSignal(name, SignalType::Bool).flag = tripped;
+            }
+            if (node->mech.kind == MechKind::Cylinder) {
+                const Signal* extend = node->mech.signal.empty() ? nullptr : scene_->findSignal(node->mech.signal);
+                const bool out = extend != nullptr && extend->flag;
+                const double goal = out ? node->mech.upper : node->mech.lower;
+                const double flow = std::clamp(node->mech.throttle, 0.0, 1.0);
+                const double vmax = std::max(0.0, node->mech.maxSpeed) * flow;
+                double remaining = goal - node->mech.command;
+                if (vmax > 1e-9 && dt > 0 && std::abs(remaining) > 1e-9) {
+                    const double dir = remaining > 0 ? 1.0 : -1.0;
+                    const double absRem = std::abs(remaining);
+                    const double cushionDist = std::max(0.0, node->mech.cushion) * vmax;
+                    if (cushionDist > 1e-6 && absRem <= cushionDist) {
+                        const double next = absRem * std::exp(-(vmax / cushionDist) * dt);
+                        node->mech.command = goal - dir * next;
+                    } else if (cushionDist > 1e-6) {
+                        const double cruise = absRem - cushionDist;
+                        const double cruiseTime = cruise / vmax;
+                        if (dt < cruiseTime) {
+                            node->mech.command += dir * vmax * dt;
+                        } else {
+                            const double next = cushionDist * std::exp(-(vmax / cushionDist) * (dt - cruiseTime));
+                            node->mech.command = goal - dir * next;
+                        }
+                    } else {
+                        node->mech.command += std::clamp(remaining, -vmax * dt, vmax * dt);
+                    }
+                }
+                const Vec3 axis = length(node->mech.axis) > 1e-8 ? normalize(node->mech.axis) : Vec3{1, 0, 0};
+                if (actuatorRest_.count(node->id) == 0) {
+                    actuatorRest_[node->id] = node->local.translation;
+                }
+                node->local.translation = actuatorRest_[node->id] + axis * node->mech.command;
+            }
+            if (node->mech.kind == MechKind::Gripper) {
+                const Signal* grasp = node->mech.graspSignal.empty() ? nullptr : scene_->findSignal(node->mech.graspSignal);
+                const bool closed = grasp != nullptr && grasp->flag;
+                if (!closed) {
+                    node->mech.held.clear();
+                    continue;
+                }
+                if (node->mech.held.empty()) {
+                    double best = node->mech.graspRadius;
+                    std::string id;
+                    const Vec3 origin = worldTranslation(*node);
+                    for (const BodyState& body : bodies_) {
+                        if (!body.dynamic) {
+                            continue;
+                        }
+                        auto other = scene_->find(body.id);
+                        if (!other) {
+                            continue;
+                        }
+                        const double distance = length(worldTranslation(*other) - origin);
+                        if (distance <= best) {
+                            best = distance;
+                            id = body.id;
+                        }
+                    }
+                    if (!id.empty()) {
+                        auto other = scene_->find(id);
+                        node->mech.held = id;
+                        node->mech.direction = worldTranslation(*other) - worldTranslation(*node);
+                    }
+                }
+                if (!node->mech.held.empty()) {
+                    auto held = scene_->find(node->mech.held);
+                    if (!held) {
+                        node->mech.held.clear();
+                    } else {
+                        held->local.translation = worldTranslation(*node) + node->mech.direction;
+                        grasped_.insert(held->id);
+                        for (BodyState& body : bodies_) {
+                            if (body.id == held->id) {
+                                body.velocity = {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     void step(double dtSeconds) override {
         if (scene_ == nullptr || dtSeconds <= 0) {
             return;
@@ -316,6 +508,7 @@ public:
         }
         const double dt = dtSeconds;
         const auto started = std::chrono::steady_clock::now();
+        applySetpoints();
         stepMotors(dt);
         rideSurfaces(dt);
         const auto detected = std::chrono::steady_clock::now();
@@ -338,10 +531,12 @@ public:
                 }
             }
         }
+        applyCoupling();
+        stepActuators(dt);
 
         constexpr double kGravity = -9810.0;
         for (BodyState& body : bodies_) {
-            if (!body.dynamic) {
+            if (!body.dynamic || grasped_.count(body.id) != 0) {
                 continue;
             }
             auto node = scene_->find(body.id);
@@ -379,6 +574,8 @@ public:
         bodies_.clear();
         joints_.clear();
         sourceClock_.clear();
+        actuatorRest_.clear();
+        grasped_.clear();
         meshBvh_.clear();
         scene_ = nullptr;
     }
@@ -975,6 +1172,12 @@ private:
             if (node->mech.kind != MechKind::Source || node->mech.prototype.empty()) {
                 continue;
             }
+            if (!node->mech.signal.empty()) {
+                const Signal* enable = scene_->findSignal(node->mech.signal);
+                if (enable == nullptr || !enable->flag) {
+                    continue;
+                }
+            }
             double& clock = sourceClock_[node->id];
             clock += dt;
             const double interval = std::max(node->mech.interval, 0.05);
@@ -1020,6 +1223,12 @@ private:
                 double depth = 0;
                 if (separated(sink, boxOf(*other), normal, depth)) {
                     remove.push_back(body.id);
+                    if (!node->mech.signal.empty()) {
+                        scene_->upsertSignal(node->mech.signal, SignalType::Bool).flag = true;
+                    }
+                    if (!node->mech.valueSignal.empty()) {
+                        scene_->upsertSignal(node->mech.valueSignal, SignalType::Int).integer += 1;
+                    }
                 }
             }
         }
@@ -1033,6 +1242,8 @@ private:
     std::vector<BodyState> bodies_;
     std::vector<JointState> joints_;
     std::unordered_map<std::string, double> sourceClock_;
+    std::unordered_map<std::string, Vec3> actuatorRest_;
+    std::unordered_set<std::string> grasped_;
     std::unordered_map<std::string, TriangleBvh> meshBvh_;
 };
 

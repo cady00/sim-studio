@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace sim {
 
@@ -24,7 +25,10 @@ enum class MechKind {
     DistanceSensor,
     LightBarrier,
     Source,
-    Sink
+    Sink,
+    Limit,
+    Cylinder,
+    Gripper
 };
 
 enum class CollisionShape { Box, Sphere, Capsule, ConvexHull, Cylinder, Extrusion, Mesh };
@@ -91,6 +95,25 @@ struct Mech {
     std::string valueSignal;
     double interval = 1.5;
     std::string prototype;
+    // gear | cam | ecam. master names the driving joint, or a real signal for ecam.
+    std::string couple;
+    std::string master;
+    double ratio = 1;
+    std::vector<double> camIn;
+    std::vector<double> camOut;
+    // position | velocity. setpoint is a real signal written by logic or OPC UA.
+    std::string control;
+    std::string setpoint;
+    double gain = 1;
+    // Cylinder flow fraction and the time spent decelerating into the cushion.
+    double throttle = 1;
+    double cushion = 0;
+    double command = 0;
+    // Limit switch trips when the watched joint passes this position.
+    double trip = 0;
+    std::string graspSignal;
+    double graspRadius = 80;
+    std::string held;
 };
 
 struct Signal {
