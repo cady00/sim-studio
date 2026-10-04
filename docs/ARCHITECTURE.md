@@ -47,15 +47,17 @@ src/app         Qt 主窗口、导入线程、命令行
 | Diligent Engine | Apache-2.0，可私有商用 | 本基线没有官方 vcpkg 端口，需要整棵 vendored CMake（glslang、SPIRV-Cross） | 不采用。同样要和 Qt 的 OpenGL 上下文共存，依赖体积大。 |
 | 自有薄接口 `IRenderer` | 仓库自己的代码 | 不增加第三方库 | 采用。OpenGL 3.3 是现在的后端。Vulkan 或 Direct3D 12 以后实现同一个类，视口的输入和相机不用改。 |
 
-`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`selectLodLevel` 按距离选细节级别，当前每个零件只有一级网格，钩子先在提交路径里调用。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。同一网格的多个实例一次 `glDrawElementsInstanced` 画完，输送线上重复的工件走这条路径。
+`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`selectLodLevel` 按距离选细节级别，当前每个零件只有一级网格，钩子先在提交路径里调用。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。同一网格的多个实例按记录逐个设置模型矩阵再画。软件 OpenGL 上实例化矩阵属性没有把平移送进着色器，所以这条路径用 uniform。Qt 类型只出现在 `src/app` 和 `src/render`（视口是 `QOpenGLWidget`）。`IRenderer` 本身没有 Qt 头文件。
 
 离屏读回是 `captureRgba`。截图时视口先走这个接口，失败再退回 Qt 的 `grabFramebuffer`。
 
 ## 物理
 
-`createPhysicsEngine()` 返回 `JoltPhysicsEngine`。场景是毫米，Jolt 用米（×0.001）。重力为 −Z、9.81 m/s²。固定步长 1/60 s。播放、暂停、停止的语义与以前相同：运行时记下静止位姿，停止时删掉临时刚体并恢复位姿。
+`createPhysicsEngine()` 在编译进 Jolt 时返回 `JoltPhysicsEngine`。`createPhysicsEngine(PhysicsBackend::Builtin)` 返回仓库内的求解器，不链接 Jolt。CMake 选项 `SIMSTUDIO_WITH_JOLT` 默认开；关掉之后工厂只剩 builtin。场景是毫米。Jolt 用米（×0.001），重力为 −Z、9.81 m/s²。builtin 直接用毫米，重力 −9810 mm/s²。固定步长 1/60 s。播放、暂停、停止的语义相同：运行时记下静止位姿，停止时删掉临时刚体并恢复位姿。
 
-Jolt 5.5（vcpkg 端口 `joltphysics`；Linux 用同一 git 标签 FetchContent 编译，因为 Ubuntu 24.04 没有对等的包）。许可证是 MIT，允许私有商用。没有链接 PhysX。
+builtin 目前做这几件事：移动副和转动副在关节空间里按速度和加速度积分并写回局部变换；自由刚体用半隐式欧拉加盒子接触分离；光栅和距离传感器用射线对盒子；碰撞传感器用盒子重叠；发生器和销毁器会克隆或删掉节点。凸包接触、摩擦和 Jolt 那套力上限电机还没有。产线演示仍走 Jolt。
+
+Jolt 5.5（vcpkg 端口 `joltphysics`；Linux 用同一 git 标签 FetchContent 编译，因为 Ubuntu 24.04 没有对等的包）。许可证是 MIT，允许私有商用。没有链接 PhysX。Linux 上 Jolt 是静态库 `libJolt.a`。Windows 清单用动态 triplet。
 
 关节用 Jolt 自己的约束，不再为了 Bullet 的轴向做取反：
 
@@ -103,7 +105,7 @@ KR 420 R3080 / KR 280 R3080 的扁平 STEP 也在 `testdata/local/`，不进仓�
 
 ## STEP 与 OpenUSD
 
-`StepImporter` 仍用 Open CASCADE XCAF 读 AP214 / AP242。网格在引用形状上生成，变换只取该次出现的 location。一个产品里如果有多个实体、却没有装配出现（NAUO），导入器会把每个实体拆成独立零件，并把半径不小于 8 mm 的圆柱或圆记在 `faceAxes` 里。运动学页可以按这些轴线建议连杆，也可以在视口里 Ctrl 多选后收进连杆，或点选圆柱面填关节轴。详见 [KR420.md](KR420.md)。
+`createGeometryKernel()` 返回 `IGeometryKernel`，当前名字是 `occt`。`createImporter("step")` 给出 `StepImporter`，头文件里没有 OCCT 类型。实现在 `StepImporter.cpp`，用 XCAF 读 AP214 / AP242。网格在引用形状上生成，变换只取该次出现的 location。一个产品里如果有多个实体、却没有装配出现（NAUO），导入器会把每个实体拆成独立零件，并把半径不小于 8 mm 的圆柱或圆记在 `faceAxes` 里。运动学页只看见这些轴线和网格。换内核时换 `IGeometryKernel` 的实现，场景和 `.simproj` 不动。`obj` 由仓库内的解析器读，不经过 OCCT。详见 [KR420.md](KR420.md)。
 
 OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的另一个导入器里，把 USD 的 prim 层级写成现有场景节点和共享网格，单位换成毫米。不把 USD 的舞台对象留在场景图里，这样 `.simproj` 仍然只存自己的 JSON 和网格。导出时从场景图写 USD，而不是从 OCCT 文档转。
 
@@ -116,7 +118,7 @@ OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的�
 - Windows：`vcpkg.json` 清单模式，基线 `2026.06.24`。Qt 不进清单。CI 用 `jurplel/install-qt-action` 安装预编译的 Qt 6.8.3（MSVC 2022），避免在 vcpkg 里从源码编 Qt。Open CASCADE、Jolt、CPython、pybind11、Catch2、nlohmann-json 仍走 vcpkg，二进制缓存在 `x-gha`。OCCT 8 的 STEP 库是 `TKDESTEP`，CMake 只链接本机存在的 toolkit，因此 Linux 的 OCCT 7.6（`TKSTEP*`）也能链上。
 - Linux CI：发行版 Qt 6.4 与 OCCT 7.6。Jolt 在配置时按标签 v5.5.0 拉取并编译。
 
-许可证见 `THIRD_PARTY_LICENSES.md`。不要链接 OCCT Draw。
+许可证、链接方式和闭源发行义务见 [DEPENDENCIES.md](DEPENDENCIES.md)，短表在 `THIRD_PARTY_LICENSES.md`。不要链接 OCCT Draw。
 
 ## Future-proofing & moats
 
@@ -133,7 +135,7 @@ OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的�
 | 缝 | 现在 | 以后换什么 |
 | --- | --- | --- |
 | 渲染 | `IRenderer`，OpenGL 3.3 | Vulkan / Direct3D 12，同一提交接口 |
-| 刚体 | `IPhysicsEngine`，Jolt | 多体或 GPU 刚体，场景 API 不动 |
+| 刚体 | `IPhysicsEngine`。默认 Jolt，可选 builtin | 把 builtin 补到能单独跑产线，再让 Jolt 只作插件 |
 | 近距 | `ICollisionQuery`，CPU BVH + 支撑映射 + 窄带 SDF | GPU LBVH 写同一套 SoA（`IGpuBroadphase` 空接口）；学习距离场是 `ILearnedDistanceField` 空接口 |
 | 机器人运动 | `BuiltinRobotSolver`，RRS/RCS 只有 `IRcsAdapter` 空接口 | 厂商 RCS 适配器接到同一规划结果 |
 | PLC | 信号表 | OPC UA 为主；PLCSIM Advanced API 是另一个适配器 |

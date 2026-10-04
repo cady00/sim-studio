@@ -8,8 +8,10 @@
 
 namespace sim {
 
-// Rigid-body world. Jolt is the current backend. Scene, signals, and the Python
-// API do not include the physics SDK.
+// Rigid-body world. Scene, signals, and the Python API do not include a physics SDK.
+// Jolt is one backend. Builtin is the in-house solver and does not link Jolt.
+// createPhysicsEngine() keeps Jolt when it was compiled in, so existing scenes
+// do not change backend by surprise. Pass PhysicsBackend::Builtin to opt in.
 //
 // A six-axis robot does not belong in this class. Phase 3 adds an articulation
 // solver (IRobotSolver) that writes joint angles onto scene nodes and may publish
@@ -81,6 +83,10 @@ public:
     virtual void shutdown() = 0;
 };
 
+enum class PhysicsBackend { Jolt, Builtin };
+
+const char* physicsBackendName(PhysicsBackend backend);
 std::unique_ptr<IPhysicsEngine> createPhysicsEngine();
+std::unique_ptr<IPhysicsEngine> createPhysicsEngine(PhysicsBackend backend);
 
 }  // namespace sim

@@ -302,3 +302,64 @@ TEST_CASE("jolt accepts a convex hull body") {
     stepFor(*engine, 0.2);
     REQUIRE(std::isfinite(node->local.translation.z));
 }
+
+TEST_CASE("builtin solver drives a slider, senses a beam, and rests a box on the floor") {
+    sim::Scene scene;
+    auto base = addPart(scene, "Base");
+    base->mech.kind = sim::MechKind::Collision;
+    base->mech.halfExtents = {30, 30, 30};
+
+    auto slider = addPart(scene, "Slider");
+    slider->mech.kind = sim::MechKind::Slider;
+    slider->mech.other = "Base";
+    slider->mech.axis = {1, 0, 0};
+    slider->mech.limited = true;
+    slider->mech.lower = 0;
+    slider->mech.upper = 40;
+    slider->mech.drive = sim::DriveMode::Position;
+    slider->mech.target = 200;
+    slider->mech.maxSpeed = 500;
+    slider->mech.maxAccel = 8000;
+    slider->local.translation = {0, 0, 80};
+
+    auto box = addPart(scene, "Box");
+    box->mech.kind = sim::MechKind::Collision;
+    box->mech.halfExtents = {40, 40, 40};
+
+    auto barrier = addPart(scene, "Barrier");
+    barrier->mech.kind = sim::MechKind::LightBarrier;
+    barrier->mech.axis = {0, 1, 0};
+    barrier->mech.range = 400;
+    barrier->mech.signal = "blocked";
+    barrier->mech.valueSignal = "distance";
+    barrier->local.translation = {0, -200, 0};
+
+    auto floor = addPart(scene, "Floor");
+    floor->mech.kind = sim::MechKind::Collision;
+    floor->mech.halfExtents = {200, 200, 10};
+    floor->local.translation = {400, 0, 10};
+
+    auto falling = addPart(scene, "Falling");
+    falling->mech.kind = sim::MechKind::Rigid;
+    falling->mech.halfExtents = {20, 20, 20};
+    falling->local.translation = {400, 0, 200};
+
+    auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
+    REQUIRE(std::string(engine->backendName()) == "builtin");
+    sim::Simulation simulation(scene, *engine);
+    simulation.play();
+    REQUIRE(simulation.lastError().empty());
+    simulation.tick(1.5);
+    REQUIRE(slider->local.translation.x == Approx(40).margin(1));
+    REQUIRE(slider->local.translation.z == Approx(80).margin(0.1));
+    const sim::Signal* blocked = scene.findSignal("blocked");
+    const sim::Signal* distance = scene.findSignal("distance");
+    REQUIRE(blocked);
+    REQUIRE(blocked->flag);
+    REQUIRE(distance);
+    REQUIRE(distance->real == Approx(160).margin(1));
+    REQUIRE(falling->local.translation.z == Approx(40).margin(2));
+    const double rested = falling->local.translation.z;
+    simulation.tick(0.5);
+    REQUIRE(falling->local.translation.z == Approx(rested).margin(1));
+}

@@ -1,3 +1,4 @@
+#include "sim/io/GeometryKernel.hpp"
 #include "sim/io/ObjImporter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -29,4 +30,17 @@ TEST_CASE("gltf importer reports that it is not in phase 1") {
     const sim::ImportResult result = importer.importFile("robot.gltf", scene);
     REQUIRE_FALSE(result.ok);
     REQUIRE(result.message.find("Phase 1") != std::string::npos);
+}
+
+TEST_CASE("geometry kernel names occt and keeps obj on the in-house parser") {
+    const auto kernel = sim::createGeometryKernel();
+    REQUIRE(std::string(kernel->backendName()) == "occt");
+    const auto step = kernel->createImporter("step");
+    REQUIRE(step);
+    REQUIRE(std::string(step->backendName()) == "occt");
+    REQUIRE(std::string(step->format()) == "step");
+    const auto obj = kernel->createImporter("obj");
+    REQUIRE(obj);
+    REQUIRE(std::string(obj->backendName()) == "builtin");
+    REQUIRE(kernel->createImporter("iges") == nullptr);
 }

@@ -855,6 +855,4 @@ void JoltPhysicsEngine::shutdown() {
     world.scene = nullptr;
 }
 
-std::unique_ptr<IPhysicsEngine> createPhysicsEngine() { return std::make_unique<JoltPhysicsEngine>(); }
-
 }  // namespace sim
