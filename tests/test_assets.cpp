@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -103,6 +104,65 @@ TEST_CASE("asset registry reads stl ply obj urdf image and leaves a jt slot", "[
     REQUIRE_FALSE(jtResult.ok);
     REQUIRE(jtResult.message.find("JT Open Toolkit") != std::string::npos);
     REQUIRE(jt.root()->children.empty());
+}
+
+TEST_CASE("urdf package URIs and gltf morph targets", "[assets]") {
+    const auto root = std::filesystem::temp_directory_path() / "simstudio_ros_root";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "demo_pkg" / "meshes");
+    {
+        std::ofstream out(root / "demo_pkg" / "meshes" / "link.obj");
+        out << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    }
+    const auto urdf = std::filesystem::temp_directory_path() / "simstudio_pkg.urdf";
+    {
+        std::ofstream out(urdf);
+        out << "<robot name=\"arm\"><link name=\"base\"><visual><geometry><mesh filename=\"package://demo_pkg/meshes/link.obj\"/></geometry></visual></link></robot>\n";
+    }
+    const char* saved = std::getenv("ROS_PACKAGE_PATH");
+    const std::string previous = saved == nullptr ? std::string() : saved;
+    setenv("ROS_PACKAGE_PATH", root.string().c_str(), 1);
+    const auto registry = sim::createBuiltinRegistry();
+    sim::Scene scene;
+    const sim::AssetImportResult urdfResult = registry->importPath(urdf.string(), scene);
+    if (saved == nullptr) {
+        unsetenv("ROS_PACKAGE_PATH");
+    } else {
+        setenv("ROS_PACKAGE_PATH", previous.c_str(), 1);
+    }
+    REQUIRE(urdfResult.ok);
+    REQUIRE(urdfResult.triangleCount == 1);
+
+    const auto bin = std::filesystem::temp_directory_path() / "simstudio_morph.bin";
+    {
+        std::ofstream out(bin, std::ios::binary);
+        const float positions[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+        const float delta[] = {2, 0, 0, 0, 0, 0, 0, 0, 0};
+        const std::uint16_t indices[] = {0, 1, 2, 0};
+        out.write(reinterpret_cast<const char*>(positions), sizeof(positions));
+        out.write(reinterpret_cast<const char*>(delta), sizeof(delta));
+        out.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+    }
+    const auto gltf = std::filesystem::temp_directory_path() / "simstudio_morph.gltf";
+    {
+        std::ofstream out(gltf);
+        out << R"({"asset":{"version":"2.0"},"buffers":[{"uri":"simstudio_morph.bin","byteLength":80}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":6}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5123,"count":3,"type":"SCALAR"}],
+"meshes":[{"weights":[1],"primitives":[{"attributes":{"POSITION":0},"indices":2,"mode":4,"targets":[{"POSITION":1}]}]}],
+"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    }
+    sim::Scene morphed;
+    const sim::AssetImportResult morph = registry->importPath(gltf.string(), morphed);
+    REQUIRE(morph.ok);
+    REQUIRE(morph.triangleCount == 1);
+    bool shifted = false;
+    for (const auto& entry : morphed.meshes()) {
+        if (entry.second && entry.second->bounds.valid && entry.second->bounds.max.x > 1500.0) {
+            shifted = true;
+        }
+    }
+    REQUIRE(shifted);
 }
 
 TEST_CASE("stl export counts triangles and occt samples round trip", "[assets]") {

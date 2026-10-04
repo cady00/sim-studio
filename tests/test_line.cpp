@@ -583,6 +583,132 @@ EOF
     REQUIRE(sawSpan);
 }
 
+TEST_CASE("dxf hatch patterns, dimension text, and nested inserts", "[line]") {
+    const char* text = R"(0
+SECTION
+2
+BLOCKS
+0
+BLOCK
+2
+INNER
+0
+LINE
+8
+Inner
+10
+0
+20
+0
+11
+10
+21
+0
+0
+ENDBLK
+0
+BLOCK
+2
+OUTER
+0
+INSERT
+2
+INNER
+10
+0
+20
+4
+0
+ENDBLK
+0
+ENDSEC
+0
+SECTION
+2
+ENTITIES
+0
+INSERT
+8
+Placed
+2
+OUTER
+10
+100
+20
+0
+0
+HATCH
+8
+Fill
+70
+1
+10
+0
+20
+0
+10
+20
+20
+0
+10
+20
+20
+10
+10
+0
+20
+10
+0
+DIMENSION
+8
+Notes
+1
+40
+10
+0
+20
+0
+11
+20
+21
+0
+0
+ENDSEC
+0
+EOF
+)";
+    const sim::DxfResult drawn = sim::parseDxf(text, 1);
+    REQUIRE(drawn.ok);
+    int placed = 0;
+    int fill = 0;
+    int arrows = 0;
+    bool textSpan = false;
+    for (std::size_t i = 0; i < drawn.lines.size(); ++i) {
+        const std::string layer = i < drawn.layers.size() ? drawn.layers[i] : "";
+        const sim::Vec3 a = drawn.lines[i].first;
+        const sim::Vec3 b = drawn.lines[i].second;
+        if (layer == "Inner" || layer == "Placed") {
+            const bool shifted = std::abs(a.y - 4) < 1e-6 && std::abs(b.y - 4) < 1e-6 && std::abs(a.x - 100) < 1e-6 &&
+                                 std::abs(b.x - 110) < 1e-6;
+            placed += shifted ? 1 : 0;
+        }
+        fill += layer == "Fill" ? 1 : 0;
+        if (layer == "Notes") {
+            const double span = sim::length(b - a);
+            if (span > 2 && span < 12) {
+                ++arrows;
+            }
+            if (std::abs(a.x - 20) < 8 && std::abs(b.x - 20) < 12) {
+                textSpan = true;
+            }
+        }
+    }
+    REQUIRE(placed == 1);
+    REQUIRE(fill > 4);
+    REQUIRE(arrows >= 2);
+    REQUIRE(textSpan);
+}
+
 TEST_CASE("logic blocks and the operation list can cycle", "[line]") {
     sim::Scene scene;
     sim::LogicBlock block;

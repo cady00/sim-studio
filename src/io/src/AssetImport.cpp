@@ -11,9 +11,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <cstring>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
@@ -531,6 +533,36 @@ AssetImportResult importGltfBytes(const nlohmann::json& json, const std::vector<
                     }
                     return transformPoint(world, point) * 1000.0;
                 };
+                if (primitive.contains("targets")) {
+                    std::vector<double> morphWeights;
+                    const auto& meshJson = json.at("meshes").at(meshIndex);
+                    const auto& weightSource = node.contains("weights") ? node.at("weights")
+                                                                        : meshJson.contains("weights") ? meshJson.at("weights")
+                                                                                                       : nlohmann::json::array();
+                    for (const auto& weight : weightSource) {
+                        morphWeights.push_back(weight.get<double>());
+                    }
+                    int targetIndex = 0;
+                    for (const auto& target : primitive.at("targets")) {
+                        const double weight = targetIndex < static_cast<int>(morphWeights.size())
+                                                  ? morphWeights[static_cast<std::size_t>(targetIndex)]
+                                                  : 0;
+                        ++targetIndex;
+                        if (std::abs(weight) < 1e-8 || !target.contains("POSITION")) {
+                            continue;
+                        }
+                        std::vector<double> delta;
+                        int deltaComponents = 0;
+                        if (!loadAccessor(json, buffers, target.at("POSITION").get<int>(), delta, deltaComponents, error) ||
+                            deltaComponents != 3) {
+                            continue;
+                        }
+                        const std::size_t count = std::min(positions.size(), delta.size());
+                        for (std::size_t element = 0; element < count; ++element) {
+                            positions[element] += weight * delta[element];
+                        }
+                    }
+                }
                 if (indexed) {
                     for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
                         addTriangle(*mesh, pointAt(static_cast<int>(indices[i])), pointAt(static_cast<int>(indices[i + 1])),
@@ -826,7 +858,62 @@ AssetImportResult importUrdfText(const std::string& text, Scene& scene, const st
                 }
             }
             if (filename.rfind("package://", 0) == 0) {
-                meshError = "package URI is not resolved";
+                const std::string body = filename.substr(std::string("package://").size());
+                const auto slash = body.find('/');
+                const std::string package = slash == std::string::npos ? body : body.substr(0, slash);
+                const std::string relative = slash == std::string::npos ? std::string() : body.substr(slash + 1);
+                std::vector<std::string> roots;
+                auto pushEnv = [&](const char* key) {
+                    const char* value = std::getenv(key);
+                    if (value == nullptr) {
+                        return;
+                    }
+                    std::string text = value;
+                    std::size_t start = 0;
+                    while (start <= text.size()) {
+                        const auto cut = text.find(':', start);
+                        const std::string piece = text.substr(start, cut == std::string::npos ? std::string::npos : cut - start);
+                        if (!piece.empty()) {
+                            roots.push_back(piece);
+                        }
+                        if (cut == std::string::npos) {
+                            break;
+                        }
+                        start = cut + 1;
+                    }
+                };
+                pushEnv("ROS_PACKAGE_PATH");
+                pushEnv("SIM_PACKAGE_PATH");
+                if (!baseDir.empty()) {
+                    std::string dir = baseDir;
+                    while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) {
+                        dir.pop_back();
+                    }
+                    roots.push_back(dir);
+                    const auto parent = dir.find_last_of("/\\");
+                    if (parent != std::string::npos && parent > 0) {
+                        roots.push_back(dir.substr(0, parent));
+                    }
+                }
+                std::string resolved;
+                for (const std::string& root : roots) {
+                    const std::string candidates[] = {root + "/" + package + "/" + relative, root + "/" + relative};
+                    for (const std::string& candidate : candidates) {
+                        if (std::filesystem::exists(candidate)) {
+                            resolved = candidate;
+                            break;
+                        }
+                    }
+                    if (!resolved.empty()) {
+                        break;
+                    }
+                }
+                if (resolved.empty()) {
+                    meshError = "package URI is not resolved";
+                } else {
+                    filename = resolved;
+                    mesh = meshFromUrdfFile(filename, scale, meshError);
+                }
             } else if (!filename.empty()) {
                 const bool absolute = !filename.empty() && (filename[0] == '/' || (filename.size() > 2 && filename[1] == ':'));
                 const std::string path = absolute ? filename : baseDir + filename;

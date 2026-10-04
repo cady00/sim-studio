@@ -1,6 +1,7 @@
 #include "sim/core/LineModel.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -123,6 +124,106 @@ void addSpline(DxfResult& result, const std::vector<double>& xs, const std::vect
     }
 }
 
+void addArrow(DxfResult& result, Vec3 tip, Vec3 toward, const std::string& layer) {
+    Vec3 dir = toward - tip;
+    const double span = length(dir);
+    if (span < 1e-6) {
+        return;
+    }
+    dir = dir * (1.0 / span);
+    const Vec3 side{-dir.y, dir.x, 0};
+    const double size = std::min(8.0, span * 0.25);
+    const Vec3 back = tip + dir * size;
+    pushSegment(result, tip, back + side * (size * 0.35), layer);
+    pushSegment(result, tip, back - side * (size * 0.35), layer);
+}
+
+void addGlyph(DxfResult& result, char glyph, Vec3 origin, double size, const std::string& layer) {
+    auto line = [&](double x0, double y0, double x1, double y1) {
+        pushSegment(result, origin + Vec3{x0 * size, y0 * size, 0}, origin + Vec3{x1 * size, y1 * size, 0}, layer);
+    };
+    switch (glyph) {
+        case '0':
+        case 'O':
+            line(0, 0, 1, 0);
+            line(1, 0, 1, 2);
+            line(1, 2, 0, 2);
+            line(0, 2, 0, 0);
+            break;
+        case '1':
+            line(0.5, 0, 0.5, 2);
+            break;
+        case '2':
+            line(0, 2, 1, 2);
+            line(1, 2, 1, 1);
+            line(1, 1, 0, 1);
+            line(0, 1, 0, 0);
+            line(0, 0, 1, 0);
+            break;
+        case '3':
+            line(0, 2, 1, 2);
+            line(1, 2, 1, 0);
+            line(0, 1, 1, 1);
+            line(0, 0, 1, 0);
+            break;
+        case '4':
+            line(0, 2, 0, 1);
+            line(0, 1, 1, 1);
+            line(1, 2, 1, 0);
+            break;
+        case '5':
+        case 'S':
+            line(1, 2, 0, 2);
+            line(0, 2, 0, 1);
+            line(0, 1, 1, 1);
+            line(1, 1, 1, 0);
+            line(1, 0, 0, 0);
+            break;
+        case '6':
+            line(1, 2, 0, 2);
+            line(0, 2, 0, 0);
+            line(0, 0, 1, 0);
+            line(1, 0, 1, 1);
+            line(1, 1, 0, 1);
+            break;
+        case '7':
+            line(0, 2, 1, 2);
+            line(1, 2, 0.4, 0);
+            break;
+        case '8':
+            line(0, 0, 1, 0);
+            line(1, 0, 1, 2);
+            line(1, 2, 0, 2);
+            line(0, 2, 0, 0);
+            line(0, 1, 1, 1);
+            break;
+        case '9':
+            line(0, 0, 1, 0);
+            line(1, 0, 1, 2);
+            line(1, 2, 0, 2);
+            line(0, 2, 0, 1);
+            line(0, 1, 1, 1);
+            break;
+        case '-':
+            line(0, 1, 1, 1);
+            break;
+        case '.':
+            line(0.4, 0, 0.6, 0);
+            break;
+        default:
+            line(0, 0, 1, 2);
+            break;
+    }
+}
+
+void addText(DxfResult& result, const std::string& text, Vec3 origin, const std::string& layer) {
+    double cursor = 0;
+    for (unsigned char glyph : text) {
+        addGlyph(result, static_cast<char>(std::toupper(glyph)), origin + Vec3{cursor, 0, 0}, 2.5, layer);
+        cursor += 4.0;
+    }
+}
+
 Vec3 transformPlan(Vec3 point, double x, double y, double rotationDeg, double sx, double sy) {
     const double rad = rotationDeg * kPi / 180.0;
     const double px = point.x * sx;
@@ -238,10 +339,21 @@ bool decodeAscii(const std::string& text, std::vector<Group>& groups, std::strin
     return true;
 }
 
+struct BlockInsert {
+    std::string name;
+    std::string layer;
+    double x = 0;
+    double y = 0;
+    double rotation = 0;
+    double sx = 1;
+    double sy = 1;
+};
+
 struct Block {
     std::string name;
     std::vector<std::pair<Vec3, Vec3>> lines;
     std::vector<std::string> layers;
+    std::vector<BlockInsert> inserts;
 };
 
 }  // namespace
@@ -293,6 +405,17 @@ DxfResult parseDxf(const std::string& text, double mmPerUnit) {
         int flags = 0;
         int degree = 3;
         bool alive = false;
+        std::string text;
+        double patternAngle = 0;
+        struct PatternLine {
+            double angle = 0;
+            double ox = 0;
+            double oy = 0;
+            double dx = 0;
+            double dy = 0;
+            std::vector<double> dashes;
+        };
+        std::vector<PatternLine> pattern;
     } current;
     enum class Section { None, Entities, Blocks };
     Section section = Section::None;
@@ -301,6 +424,44 @@ DxfResult parseDxf(const std::string& text, double mmPerUnit) {
     std::vector<Block> blocks;
     Block building;
     bool inBlock = false;
+
+    struct Pose {
+        double x = 0;
+        double y = 0;
+        double rotation = 0;
+        double sx = 1;
+        double sy = 1;
+    };
+    auto expand = [&](auto&& self, const std::string& name, Pose pose, int depth, DxfResult& local) -> void {
+        if (depth > 12) {
+            return;
+        }
+        const Block* block = nullptr;
+        for (const Block& candidate : blocks) {
+            if (candidate.name == name) {
+                block = &candidate;
+            }
+        }
+        if (block == nullptr) {
+            return;
+        }
+        for (std::size_t i = 0; i < block->lines.size(); ++i) {
+            const Vec3 a = transformPlan(block->lines[i].first, pose.x, pose.y, pose.rotation, pose.sx, pose.sy);
+            const Vec3 b = transformPlan(block->lines[i].second, pose.x, pose.y, pose.rotation, pose.sx, pose.sy);
+            const std::string layer = i < block->layers.size() ? block->layers[i] : std::string();
+            pushSegment(local, a, b, layer);
+        }
+        for (const BlockInsert& nested : block->inserts) {
+            const Vec3 origin = transformPlan({nested.x, nested.y, 0}, pose.x, pose.y, pose.rotation, pose.sx, pose.sy);
+            Pose child;
+            child.x = origin.x;
+            child.y = origin.y;
+            child.rotation = pose.rotation + nested.rotation;
+            child.sx = pose.sx * nested.sx;
+            child.sy = pose.sy * nested.sy;
+            self(self, nested.name, child, depth + 1, local);
+        }
+    };
 
     auto emitInto = [&](std::vector<std::pair<Vec3, Vec3>>& lines, std::vector<std::string>& layers) {
         DxfResult local;
@@ -367,39 +528,165 @@ DxfResult parseDxf(const std::string& text, double mmPerUnit) {
             }
         } else if (current.type == "HATCH") {
             const std::size_t n = std::min(current.x.size(), current.y.size());
-            for (std::size_t i = 1; i < n; ++i) {
-                pushSegment(local, {current.x[i - 1] * scale, current.y[i - 1] * scale, 0},
-                            {current.x[i] * scale, current.y[i] * scale, 0}, current.layer);
+            std::vector<Vec3> polygon;
+            polygon.reserve(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                polygon.push_back({current.x[i] * scale, current.y[i] * scale, 0});
             }
-            if (n >= 3) {
-                pushSegment(local, {current.x[n - 1] * scale, current.y[n - 1] * scale, 0},
-                            {current.x.front() * scale, current.y.front() * scale, 0}, current.layer);
+            for (std::size_t i = 1; i < polygon.size(); ++i) {
+                pushSegment(local, polygon[i - 1], polygon[i], current.layer);
+            }
+            if (polygon.size() >= 3) {
+                pushSegment(local, polygon.back(), polygon.front(), current.layer);
+            }
+            struct Family {
+                double angle = 0;
+                double ox = 0;
+                double oy = 0;
+                double dx = 0;
+                double dy = 0;
+                std::vector<double> dashes;
+            };
+            std::vector<Family> families;
+            for (const auto& line : current.pattern) {
+                Family family;
+                family.angle = line.angle;
+                family.ox = line.ox * scale;
+                family.oy = line.oy * scale;
+                family.dx = line.dx * scale;
+                family.dy = line.dy * scale;
+                for (double dash : line.dashes) {
+                    family.dashes.push_back(dash * scale);
+                }
+                families.push_back(std::move(family));
+            }
+            if (families.empty() && (current.flags & 1) != 0 && polygon.size() >= 3) {
+                Family solid;
+                solid.angle = current.patternAngle;
+                double minX = polygon.front().x;
+                double maxX = minX;
+                double minY = polygon.front().y;
+                double maxY = minY;
+                for (const Vec3& point : polygon) {
+                    minX = std::min(minX, point.x);
+                    maxX = std::max(maxX, point.x);
+                    minY = std::min(minY, point.y);
+                    maxY = std::max(maxY, point.y);
+                }
+                const double span = std::max(maxX - minX, maxY - minY);
+                solid.dy = std::max(2.0, span / 8.0);
+                families.push_back(solid);
+            }
+            for (const Family& family : families) {
+                if (polygon.size() < 3) {
+                    break;
+                }
+                const double rad = family.angle * kPi / 180.0;
+                const Vec3 dir{std::cos(rad), std::sin(rad), 0};
+                const Vec3 normal{-dir.y, dir.x, 0};
+                double spacing = std::hypot(family.dx, family.dy);
+                if (spacing < 1e-3) {
+                    spacing = std::max(current.sx, 1.0) * scale;
+                }
+                double minProj = 1e300;
+                double maxProj = -1e300;
+                for (const Vec3& point : polygon) {
+                    const double proj = point.x * normal.x + point.y * normal.y;
+                    minProj = std::min(minProj, proj);
+                    maxProj = std::max(maxProj, proj);
+                }
+                const double origin = family.ox * normal.x + family.oy * normal.y;
+                for (int step = -48; step <= 48; ++step) {
+                    const double distance = origin + step * spacing;
+                    if (distance < minProj - 1e-6 || distance > maxProj + 1e-6) {
+                        continue;
+                    }
+                    const Vec3 point{normal.x * distance, normal.y * distance, 0};
+                    std::vector<double> hits;
+                    for (std::size_t edge = 0; edge < polygon.size(); ++edge) {
+                        const Vec3 a = polygon[edge];
+                        const Vec3 b = polygon[(edge + 1) % polygon.size()];
+                        const Vec3 side = b - a;
+                        const double det = dir.x * side.y - dir.y * side.x;
+                        if (std::abs(det) < 1e-9) {
+                            continue;
+                        }
+                        const Vec3 delta = a - point;
+                        const double t = (delta.x * side.y - delta.y * side.x) / det;
+                        const double u = (delta.x * dir.y - delta.y * dir.x) / det;
+                        if (u >= -1e-6 && u <= 1 + 1e-6) {
+                            hits.push_back(t);
+                        }
+                    }
+                    std::sort(hits.begin(), hits.end());
+                    hits.erase(std::unique(hits.begin(), hits.end(), [](double a, double b) { return std::abs(a - b) < 1e-4; }),
+                               hits.end());
+                    for (std::size_t pair = 0; pair + 1 < hits.size(); pair += 2) {
+                        Vec3 from = point + dir * hits[pair];
+                        Vec3 to = point + dir * hits[pair + 1];
+                        if (family.dashes.empty()) {
+                            pushSegment(local, from, to, current.layer);
+                            continue;
+                        }
+                        const double span = length(to - from);
+                        const Vec3 stepDir = span > 1e-9 ? (to - from) * (1.0 / span) : dir;
+                        double cursor = 0;
+                        std::size_t dashIndex = 0;
+                        while (cursor < span - 1e-6 && dashIndex < 64) {
+                            const double dash = family.dashes[dashIndex % family.dashes.size()];
+                            const double take = std::min(std::abs(dash), span - cursor);
+                            if (dash >= 0 && take > 1e-6) {
+                                pushSegment(local, from + stepDir * cursor, from + stepDir * (cursor + take), current.layer);
+                            }
+                            cursor += std::max(take, 1e-6);
+                            ++dashIndex;
+                        }
+                    }
+                }
             }
         } else if (current.type == "DIMENSION") {
             auto coord = [](const std::vector<double>& values) { return values.empty() ? 0.0 : values.front(); };
+            auto stroke = [&](Vec3 from, Vec3 to) {
+                pushSegment(local, from, to, current.layer);
+                addArrow(local, from, to, current.layer);
+                addArrow(local, to, from, current.layer);
+            };
             if (!current.x4.empty() && !current.x5.empty()) {
-                pushSegment(local, {coord(current.x4) * scale, coord(current.y4) * scale, coord(current.z4) * scale},
-                            {coord(current.x5) * scale, coord(current.y5) * scale, 0}, current.layer);
+                stroke({coord(current.x4) * scale, coord(current.y4) * scale, coord(current.z4) * scale},
+                       {coord(current.x5) * scale, coord(current.y5) * scale, 0});
             }
             if (!current.x.empty() && !current.x2.empty()) {
-                pushSegment(local, {coord(current.x) * scale, coord(current.y) * scale, coord(current.z) * scale},
-                            {coord(current.x2) * scale, coord(current.y2) * scale, coord(current.z2) * scale}, current.layer);
+                stroke({coord(current.x) * scale, coord(current.y) * scale, coord(current.z) * scale},
+                       {coord(current.x2) * scale, coord(current.y2) * scale, coord(current.z2) * scale});
+            }
+            if (!current.text.empty()) {
+                const Vec3 at = !current.x2.empty() ? Vec3{coord(current.x2) * scale, coord(current.y2) * scale, 0}
+                                                    : Vec3{coord(current.x) * scale, coord(current.y) * scale, 0};
+                addText(local, current.text, at, current.layer);
             }
         } else if (current.type == "INSERT" && !current.name.empty()) {
-            const Block* block = nullptr;
-            for (const Block& candidate : blocks) {
-                if (candidate.name == current.name) {
-                    block = &candidate;
-                }
-            }
-            if (block != nullptr) {
-                const double originX = (current.x.empty() ? 0 : current.x.front()) * scale;
-                const double originY = (current.y.empty() ? 0 : current.y.front()) * scale;
-                for (std::size_t i = 0; i < block->lines.size(); ++i) {
-                    const Vec3 a = transformPlan(block->lines[i].first, originX, originY, current.rotation, current.sx, current.sy);
-                    const Vec3 b = transformPlan(block->lines[i].second, originX, originY, current.rotation, current.sx, current.sy);
-                    const std::string layer = current.layer.empty() && i < block->layers.size() ? block->layers[i] : current.layer;
-                    pushSegment(local, a, b, layer);
+            BlockInsert insert;
+            insert.name = current.name;
+            insert.layer = current.layer;
+            insert.x = (current.x.empty() ? 0 : current.x.front()) * scale;
+            insert.y = (current.y.empty() ? 0 : current.y.front()) * scale;
+            insert.rotation = current.rotation;
+            insert.sx = current.sx == 0 ? 1 : current.sx;
+            insert.sy = current.sy == 0 ? 1 : current.sy;
+            if (section == Section::Blocks && inBlock) {
+                building.inserts.push_back(insert);
+            } else {
+                Pose pose;
+                pose.x = insert.x;
+                pose.y = insert.y;
+                pose.rotation = insert.rotation;
+                pose.sx = insert.sx;
+                pose.sy = insert.sy;
+                expand(expand, insert.name, pose, 0, local);
+                if (!current.layer.empty()) {
+                    for (std::string& layer : local.layers) {
+                        layer = current.layer;
+                    }
                 }
             }
         }
@@ -524,9 +811,27 @@ DxfResult parseDxf(const std::string& text, double mmPerUnit) {
                 } else {
                     current.sy = std::stod(group.value);
                 }
+            } else if (group.code == 1) {
+                current.text = group.value;
+            } else if (group.code == 43 && current.type == "HATCH" && !current.pattern.empty()) {
+                current.pattern.back().ox = std::stod(group.value);
+            } else if (group.code == 44 && current.type == "HATCH" && !current.pattern.empty()) {
+                current.pattern.back().oy = std::stod(group.value);
+            } else if (group.code == 45 && current.type == "HATCH" && !current.pattern.empty()) {
+                current.pattern.back().dx = std::stod(group.value);
+            } else if (group.code == 46 && current.type == "HATCH" && !current.pattern.empty()) {
+                current.pattern.back().dy = std::stod(group.value);
+            } else if (group.code == 49 && current.type == "HATCH" && !current.pattern.empty()) {
+                current.pattern.back().dashes.push_back(std::stod(group.value));
             } else if (group.code == 50) {
                 current.startAngle = std::stod(group.value);
                 current.rotation = current.startAngle;
+            } else if (group.code == 52 && current.type == "HATCH") {
+                current.patternAngle = std::stod(group.value);
+            } else if (group.code == 53 && current.type == "HATCH") {
+                decltype(current.pattern)::value_type line;
+                line.angle = std::stod(group.value);
+                current.pattern.push_back(line);
             } else if (group.code == 51) {
                 current.endAngle = std::stod(group.value);
             } else if (group.code == 70) {
