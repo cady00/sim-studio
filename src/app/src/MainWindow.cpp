@@ -328,6 +328,7 @@ void MainWindow::buildUi() {
     addDockWidget(Qt::RightDockWidgetArea, weldDock_);
 
     plc_ = new PlcCards(scene_, this);
+    connect(plc_, &PlcCards::signalsImported, this, [this] { refreshSignals(); });
     plcDock_ = new QDockWidget(this);
     plcDock_->setObjectName("dock.plc");
     plcDock_->setWidget(plc_);
@@ -1889,6 +1890,24 @@ void MainWindow::loadDemo(const QString& name) {
         }
         if (physicsDock_ != nullptr) {
             physicsDock_->raise();
+        }
+    } else if (name == QStringLiteral("plc")) {
+        demoPath_.clear();
+        if (plc_ != nullptr) {
+            plc_->demonstrateSecure();
+        }
+        viewport_->setCallout(QStringLiteral("Basic256Sha256 · SignAndEncrypt · operator"));
+        applyTaskMode(5);
+        refreshSignals();
+        if (plcDock_ != nullptr) {
+            plcDock_->show();
+            plcDock_->raise();
+            resizeDocks({plcDock_}, {460}, Qt::Horizontal);
+        }
+        if (signalDock_ != nullptr) {
+            signalDock_->show();
+            signalDock_->raise();
+            resizeDocks({signalDock_}, {220}, Qt::Vertical);
         }
     } else if (lineDemo_) {
         buildExampleLine(scene_);

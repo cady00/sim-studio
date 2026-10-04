@@ -4,6 +4,8 @@
 #include "sim/io/OpcUa.hpp"
 #include "sim/motion/Motion.hpp"
 
+#include <QFile>
+#include <QFileDialog>
 #include <QGraphicsItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
@@ -21,6 +23,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <thread>
 
 namespace sim {
 namespace {
@@ -467,7 +471,7 @@ void PathTimeline::paintEvent(QPaintEvent*) {
 
 PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
     auto* layout = new QVBoxLayout(this);
-    auto* note = new QLabel("OPC UA 按 SecurityPolicy None 连接本机回环，并把变量写进逻辑信号。PLCSIM Advanced 运行时未安装，只保留地址。");
+    auto* note = new QLabel("OPC UA 支持 SecurityPolicy None，以及 Basic256Sha256 的签名和签名加密、自签证书、用户名口令、断线重连。信号表可导入 CSV 或 TIA 变量表。PLCSIM Advanced 运行时未安装，只保留地址。");
     note->setWordWrap(true);
     layout->addWidget(note);
 
@@ -493,7 +497,88 @@ PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scen
     });
     QPushButton* opcButton = addCard("OPC UA", "opc.tcp://127.0.0.1:4840", opcState_);
     connect(opcButton, &QPushButton::clicked, this, [this] { connectOpcUa(); });
+    auto* import = new QPushButton("导入信号表");
+    connect(import, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, "导入信号表", QString(), "信号表 (*.csv *.txt);;所有文件 (*)");
+        if (path.isEmpty()) {
+            return;
+        }
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            opcState_->setText("未导入 · 打不开文件");
+            return;
+        }
+        importText(QString::fromUtf8(file.readAll()));
+    });
+    layout->addWidget(import);
     layout->addStretch(1);
+}
+
+bool PlcCards::importText(const QString& text) {
+    std::vector<ImportedSignal> rows;
+    std::string error;
+    if (!importSignalTable(text.toStdString(), rows, error)) {
+        opcState_->setText(QString::fromUtf8("未导入 · ") + QString::fromStdString(error));
+        return false;
+    }
+    applyImportedSignals(scene_, rows);
+    opcState_->setText(QString("已导入 %1 个信号").arg(static_cast<int>(rows.size())));
+    emit signalsImported();
+    return true;
+}
+
+bool PlcCards::demonstrateSecure() {
+    importText("name,type,value\nextend,bool,true\ncount,int,4\ngap,real,12.5\n");
+    OpcUaCertificate serverCert;
+    OpcUaCertificate clientCert;
+    std::string error;
+    if (!serverCert.createSelfSigned("simstudio-server", error) || !clientCert.createSelfSigned("simstudio-client", error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    delete secureServer_;
+    secureServer_ = new OpcUaServer;
+    secureServer_->useSecurity(OpcUaSecurity::SignAndEncrypt, serverCert);
+    secureServer_->setUser("operator", "secret");
+    if (!secureServer_->listen(0, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    const int port = secureServer_->port();
+    OpcUaServer* server = secureServer_;
+    std::thread([server] {
+        std::string serveError;
+        server->serve(serveError);
+    }).detach();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    delete client_;
+    client_ = new OpcUaClient;
+    client_->useSecurity(OpcUaSecurity::SignAndEncrypt, clientCert, serverCert);
+    client_->setUser("operator", "secret");
+    const std::string endpoint = "opc.tcp://127.0.0.1:" + std::to_string(port);
+    const bool opened = client_->connect("127.0.0.1", port, error) && client_->hello(endpoint, error) &&
+                        client_->openSecureChannel(error) && client_->createSession(error) && client_->activateSession(error);
+    if (!opened) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    std::vector<OpcUaReference> refs;
+    if (!client_->browse(85, refs, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    bool value = false;
+    if (!client_->readBool(10001, value, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    publishPlcBool(scene_, "part_seen", value);
+    const QString name = refs.empty() ? QStringLiteral("i=10001") : QString::fromStdString(refs.front().browseName);
+    opcState_->setText(QString("已连接 · Basic256Sha256 SignAndEncrypt · operator · %1 → part_seen · %2")
+                           .arg(name)
+                           .arg(value ? "true" : "false"));
+    emit signalsImported();
+    return true;
 }
 
 PlcCards::~PlcCards() { delete client_; }

@@ -14,6 +14,7 @@ class QLabel;
 namespace sim {
 class Scene;
 class OpcUaClient;
+class OpcUaServer;
 }
 
 namespace sim {
@@ -75,7 +76,7 @@ private:
     bool dark_ = true;
 };
 
-// OPC UA opens a SecurityPolicy None session on the loopback address.
+// OPC UA opens SecurityPolicy None or Basic256Sha256 on the loopback address.
 // PLCSIM Advanced stays an address card until that runtime is installed.
 class PlcCards : public QWidget {
     Q_OBJECT
@@ -84,11 +85,18 @@ public:
     explicit PlcCards(Scene& scene, QWidget* parent = nullptr);
     ~PlcCards() override;
     bool connectOpcUa();
+    // Loopback Basic256Sha256 session with a username, plus a sample signal table.
+    bool demonstrateSecure();
+
+signals:
+    void signalsImported();
 
 private:
+    bool importText(const QString& text);
     Scene& scene_;
     QLabel* opcState_ = nullptr;
     OpcUaClient* client_ = nullptr;
+    OpcUaServer* secureServer_ = nullptr;
 };
 
 }  // namespace sim

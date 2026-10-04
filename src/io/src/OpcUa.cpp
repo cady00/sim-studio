@@ -1,10 +1,13 @@
 #include "sim/io/OpcUa.hpp"
 
+#include "OpcUaCrypto.hpp"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cstring>
 #include <vector>
 
@@ -34,6 +37,7 @@ constexpr std::uint32_t kPublishRequest = 826;
 constexpr std::uint32_t kPublishResponse = 829;
 constexpr std::uint32_t kDataChange = 811;
 constexpr std::uint32_t kAnonymousToken = 321;
+constexpr std::uint32_t kUserToken = 324;
 
 class Writer {
 public:
@@ -100,10 +104,10 @@ public:
         u32(0);
         nullExtension();
     }
-    void responseHeader(std::uint32_t handle) {
+    void responseHeader(std::uint32_t handle, std::uint32_t status = 0) {
         i64(0);
         u32(handle);
-        u32(0);
+        u32(status);
         u8(0);
         i32(0);
         nullExtension();
@@ -115,6 +119,11 @@ public:
         u32(0);
     }
     void append(const Writer& other) { bytes_.insert(bytes_.end(), other.bytes_.begin(), other.bytes_.end()); }
+    void appendRaw(const std::uint8_t* data, std::size_t size) {
+        if (data != nullptr && size > 0) {
+            bytes_.insert(bytes_.end(), data, data + size);
+        }
+    }
     void patchSize() {
         const auto size = static_cast<std::uint32_t>(bytes_.size());
         bytes_[4] = static_cast<std::uint8_t>(size & 0xffu);
@@ -165,7 +174,20 @@ public:
         cursor_ += static_cast<std::size_t>(count);
         return text;
     }
-    void skipBytes() { string(); }
+    std::vector<std::uint8_t> bytes() {
+        const std::int32_t count = i32();
+        if (!ok_ || count < 0) {
+            return {};
+        }
+        if (cursor_ + static_cast<std::size_t>(count) > size_) {
+            ok_ = false;
+            return {};
+        }
+        std::vector<std::uint8_t> out(data_ + cursor_, data_ + cursor_ + static_cast<std::size_t>(count));
+        cursor_ += static_cast<std::size_t>(count);
+        return out;
+    }
+    void skipBytes() { bytes(); }
     std::uint32_t nodeId() {
         const std::uint8_t encoding = u8();
         const std::uint8_t kind = static_cast<std::uint8_t>(encoding & 0x3f);
@@ -445,6 +467,30 @@ void readEndpoint(Reader& reader) {
 
 bool readBoolValue(Reader& reader, bool& value) { return reader.dataValueBool(value) && reader.ok(); }
 
+bool readFrame(int fd, std::vector<std::uint8_t>& raw) {
+    std::uint8_t header[8];
+    if (!readAll(fd, header, sizeof(header))) {
+        return false;
+    }
+    const std::uint32_t size = static_cast<std::uint32_t>(header[4]) | (static_cast<std::uint32_t>(header[5]) << 8) |
+                               (static_cast<std::uint32_t>(header[6]) << 16) | (static_cast<std::uint32_t>(header[7]) << 24);
+    if (size < 8 || size > 8u * 1024u * 1024u) {
+        return false;
+    }
+    raw.assign(header, header + 8);
+    raw.resize(size);
+    return size == 8 || readAll(fd, raw.data() + 8, size - 8);
+}
+
+int securityMode(OpcUaSecurity security) { return security == OpcUaSecurity::SignAndEncrypt ? 3 : 2; }
+
+UaSymKeys symKeys(const std::vector<std::uint8_t>& sign, const std::vector<std::uint8_t>& enc) {
+    UaSymKeys keys;
+    keys.sign = sign;
+    keys.enc = enc;
+    return keys;
+}
+
 }  // namespace
 
 OpcUaServer::OpcUaServer() = default;
@@ -492,6 +538,16 @@ void OpcUaServer::close() {
     }
 }
 
+void OpcUaServer::useSecurity(OpcUaSecurity mode, const OpcUaCertificate& own) {
+    security_ = mode;
+    own_ = own;
+}
+
+void OpcUaServer::setUser(const std::string& name, const std::string& password) {
+    user_ = name;
+    password_ = password;
+}
+
 bool OpcUaServer::serve(std::string& error) {
     if (listenFd_ < 0) {
         error = "server is not listening";
@@ -506,8 +562,49 @@ bool OpcUaServer::serve(std::string& error) {
     bool ok = true;
     while (ok) {
         Chunk chunk;
-        if (!recvChunk(client, chunk)) {
-            break;
+        if (security_ == OpcUaSecurity::None) {
+            if (!recvChunk(client, chunk)) {
+                break;
+            }
+        } else {
+            std::vector<std::uint8_t> raw;
+            if (!readFrame(client, raw)) {
+                break;
+            }
+            chunk.type[0] = static_cast<char>(raw[0]);
+            if (raw[0] == 'H' || raw[0] == 'A') {
+                chunk.body.assign(raw.begin() + 8, raw.end());
+            } else if (raw[0] == 'O') {
+                UaOpened opened;
+                std::string cryptoError;
+                if (!uaOpenAsymmetric(securityMode(security_), own_.der, own_.keyPem, raw.data(), raw.size(), opened, cryptoError)) {
+                    error = cryptoError;
+                    ok = false;
+                    break;
+                }
+                chunk.channelId = opened.channelId;
+                chunk.sequence = opened.sequence;
+                chunk.requestId = opened.requestId;
+                chunk.body = std::move(opened.body);
+                peerDer_ = std::move(opened.senderDer);
+            } else if (raw[0] == 'M') {
+                UaOpened opened;
+                std::string cryptoError;
+                if (!uaOpenSymmetric(securityMode(security_), symKeys(clientSign_, clientEnc_), raw.data(), raw.size(), opened,
+                                     cryptoError)) {
+                    error = cryptoError;
+                    ok = false;
+                    break;
+                }
+                chunk.channelId = opened.channelId;
+                chunk.tokenId = opened.tokenId;
+                chunk.sequence = opened.sequence;
+                chunk.requestId = opened.requestId;
+                chunk.body = std::move(opened.body);
+            } else {
+                ok = false;
+                break;
+            }
         }
         if (chunk.type[0] == 'H') {
             Reader reader(chunk.body.data(), chunk.body.size());
@@ -532,8 +629,8 @@ bool OpcUaServer::serve(std::string& error) {
             const std::uint32_t handle = reader.requestHeader();
             reader.u32();
             reader.i32();
-            reader.i32();
-            reader.skipBytes();
+            const std::int32_t requestedMode = reader.i32();
+            clientNonce_ = reader.bytes();
             reader.u32();
             Writer body;
             body.nodeId(kOpenResponse);
@@ -543,14 +640,36 @@ bool OpcUaServer::serve(std::string& error) {
             body.u32(1);
             body.i64(0);
             body.u32(600000);
-            const std::uint8_t nonce = 1;
-            body.byteString(&nonce, 1);
-            Writer prefix;
-            prefix.string(kPolicyNone);
-            prefix.byteString(nullptr, -1);
-            prefix.byteString(nullptr, -1);
-            ok = reader.ok() && typeId == kOpenRequest &&
-                 sendSecure(client, "OPN", 1, false, 0, &prefix, sequence++, chunk.requestId, body);
+            if (security_ == OpcUaSecurity::None) {
+                const std::uint8_t nonce = 1;
+                body.byteString(&nonce, 1);
+                Writer prefix;
+                prefix.string(kPolicyNone);
+                prefix.byteString(nullptr, -1);
+                prefix.byteString(nullptr, -1);
+                ok = reader.ok() && typeId == kOpenRequest &&
+                     sendSecure(client, "OPN", 1, false, 0, &prefix, sequence++, chunk.requestId, body);
+            } else {
+                serverNonce_ = uaRandom(32);
+                UaSymKeys clientKeys;
+                UaSymKeys serverKeys;
+                const bool derived = uaDeriveKeys(serverNonce_, clientNonce_, clientKeys) &&
+                                     uaDeriveKeys(clientNonce_, serverNonce_, serverKeys);
+                clientSign_ = clientKeys.sign;
+                clientEnc_ = clientKeys.enc;
+                serverSign_ = serverKeys.sign;
+                serverEnc_ = serverKeys.enc;
+                body.byteString(serverNonce_.data(), static_cast<int>(serverNonce_.size()));
+                std::vector<std::uint8_t> message;
+                std::string cryptoError;
+                ok = reader.ok() && derived && typeId == kOpenRequest && requestedMode == securityMode(security_) &&
+                     uaSealAsymmetric(securityMode(security_), own_.der, own_.keyPem, peerDer_, 1, sequence++, chunk.requestId,
+                                      body.data(), body.size(), message, cryptoError) &&
+                     writeAll(client, message.data(), message.size());
+                if (!ok && error.empty()) {
+                    error = cryptoError.empty() ? "open rejected" : cryptoError;
+                }
+            }
             continue;
         }
         if (chunk.type[0] != 'M') {
@@ -575,9 +694,15 @@ bool OpcUaServer::serve(std::string& error) {
             body.nodeId(1);
             body.nodeId(2);
             body.f64(60000);
-            const std::uint8_t nonce = 2;
-            body.byteString(&nonce, 1);
-            body.byteString(nullptr, -1);
+            if (security_ == OpcUaSecurity::None) {
+                const std::uint8_t nonce = 2;
+                body.byteString(&nonce, 1);
+                body.byteString(nullptr, -1);
+            } else {
+                sessionNonce_ = uaRandom(32);
+                body.byteString(sessionNonce_.data(), static_cast<int>(sessionNonce_.size()));
+                body.byteString(own_.der.data(), static_cast<int>(own_.der.size()));
+            }
             body.i32(1);
             writeEndpoint(body);
             body.i32(0);
@@ -592,11 +717,28 @@ bool OpcUaServer::serve(std::string& error) {
             for (std::int32_t i = 0; i < locales && reader.ok(); ++i) {
                 reader.string();
             }
-            reader.skipExtension();
+            std::uint32_t activateStatus = 0;
+            if (security_ != OpcUaSecurity::None && !user_.empty()) {
+                const std::uint32_t tokenType = reader.nodeId();
+                const std::uint8_t encoding = reader.u8();
+                const std::vector<std::uint8_t> token = reader.bytes();
+                Reader identity(token.data(), token.size());
+                identity.string();
+                const std::string name = identity.string();
+                const std::vector<std::uint8_t> secret = identity.bytes();
+                std::string given;
+                std::string cryptoError;
+                if (tokenType != kUserToken || encoding != 0x01 ||
+                    !uaDecryptSecret(own_.keyPem, secret, sessionNonce_, given, cryptoError) || name != user_ || given != password_) {
+                    activateStatus = 0x801F0000u;
+                }
+            } else {
+                reader.skipExtension();
+            }
             reader.string();
             reader.skipBytes();
             body.nodeId(kActivateSessionResponse);
-            body.responseHeader(handle);
+            body.responseHeader(handle, activateStatus);
             const std::uint8_t nonce = 3;
             body.byteString(&nonce, 1);
             body.i32(0);
@@ -740,8 +882,20 @@ bool OpcUaServer::serve(std::string& error) {
         } else {
             ok = false;
         }
-        ok = ok && reader.ok() && sendSecure(client, "MSG", chunk.channelId, true, chunk.tokenId, nullptr, sequence++,
-                                             chunk.requestId, body);
+        if (security_ == OpcUaSecurity::None) {
+            ok = ok && reader.ok() && sendSecure(client, "MSG", chunk.channelId, true, chunk.tokenId, nullptr, sequence++,
+                                                 chunk.requestId, body);
+        } else {
+            std::vector<std::uint8_t> message;
+            std::string cryptoError;
+            ok = ok && reader.ok() &&
+                 uaSealSymmetric(securityMode(security_), symKeys(serverSign_, serverEnc_), chunk.channelId, chunk.tokenId, sequence++,
+                                 chunk.requestId, body.data(), body.size(), message, cryptoError) &&
+                 writeAll(client, message.data(), message.size());
+            if (!ok && error.empty()) {
+                error = cryptoError.empty() ? "message rejected" : cryptoError;
+            }
+        }
     }
     ::close(client);
     error.clear();
@@ -779,8 +933,76 @@ bool OpcUaClient::connect(const std::string& host, int port, std::string& error)
         close();
         return false;
     }
+    host_ = host;
+    portNumber_ = port;
     error.clear();
     return true;
+}
+
+void OpcUaClient::useSecurity(OpcUaSecurity mode, const OpcUaCertificate& own, const OpcUaCertificate& peer) {
+    security_ = mode;
+    own_ = own;
+    peer_ = peer;
+}
+
+void OpcUaClient::setUser(const std::string& name, const std::string& password) {
+    user_ = name;
+    password_ = password;
+}
+
+bool OpcUaClient::transact(const std::uint8_t* body, std::size_t size, std::vector<std::uint8_t>& reply, std::string& error) {
+    if (security_ == OpcUaSecurity::None) {
+        Writer wrapped;
+        wrapped.appendRaw(body, size);
+        if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, wrapped)) {
+            error = "send failed";
+            return false;
+        }
+        Chunk chunk;
+        if (!recvChunk(fd_, chunk)) {
+            error = "response missing";
+            return false;
+        }
+        reply = std::move(chunk.body);
+        error.clear();
+        return true;
+    }
+    std::vector<std::uint8_t> message;
+    if (!uaSealSymmetric(securityMode(security_), symKeys(clientSign_, clientEnc_), channelId_, tokenId_, sequence_++, requestId_, body,
+                         size, message, error)) {
+        return false;
+    }
+    if (!writeAll(fd_, message.data(), message.size())) {
+        error = "send failed";
+        return false;
+    }
+    std::vector<std::uint8_t> raw;
+    if (!readFrame(fd_, raw)) {
+        error = "response missing";
+        return false;
+    }
+    UaOpened opened;
+    if (!uaOpenSymmetric(securityMode(security_), symKeys(serverSign_, serverEnc_), raw.data(), raw.size(), opened, error)) {
+        return false;
+    }
+    reply = std::move(opened.body);
+    error.clear();
+    return true;
+}
+
+bool OpcUaClient::reconnect(std::string& error) {
+    close();
+    sequence_ = 1;
+    requestId_ = 1;
+    authToken_ = 0;
+    channelId_ = 0;
+    tokenId_ = 0;
+    if (host_.empty() || endpoint_.empty()) {
+        error = "reconnect has no endpoint";
+        return false;
+    }
+    return connect(host_, portNumber_, error) && hello(endpoint_, error) && openSecureChannel(error) && createSession(error) &&
+           activateSession(error);
 }
 
 bool OpcUaClient::hello(const std::string& endpointUrl, std::string& error) {
@@ -790,6 +1012,7 @@ bool OpcUaClient::hello(const std::string& endpointUrl, std::string& error) {
     body.u32(65536);
     body.u32(0);
     body.u32(0);
+    endpoint_ = endpointUrl;
     body.string(endpointUrl.c_str());
     if (!sendHello(fd_, "HEL", body)) {
         error = "hello send failed";
@@ -805,27 +1028,53 @@ bool OpcUaClient::hello(const std::string& endpointUrl, std::string& error) {
 }
 
 bool OpcUaClient::openSecureChannel(std::string& error) {
-    Writer prefix;
-    prefix.string(kPolicyNone);
-    prefix.byteString(nullptr, -1);
-    prefix.byteString(nullptr, -1);
     Writer body;
     body.nodeId(kOpenRequest);
     body.requestHeader(0, requestId_);
     body.u32(0);
     body.i32(0);
-    body.i32(1);
-    const std::uint8_t nonce = 1;
-    body.byteString(&nonce, 1);
-    body.u32(600000);
-    if (!sendSecure(fd_, "OPN", 0, false, 0, &prefix, sequence_++, requestId_, body)) {
-        error = "open send failed";
-        return false;
-    }
+    std::vector<std::uint8_t> clientNonce{1};
     Chunk chunk;
-    if (!recvChunk(fd_, chunk) || chunk.type[0] != 'O') {
-        error = "open response missing";
-        return false;
+    if (security_ == OpcUaSecurity::None) {
+        body.i32(1);
+        body.byteString(clientNonce.data(), 1);
+        body.u32(600000);
+        Writer prefix;
+        prefix.string(kPolicyNone);
+        prefix.byteString(nullptr, -1);
+        prefix.byteString(nullptr, -1);
+        if (!sendSecure(fd_, "OPN", 0, false, 0, &prefix, sequence_++, requestId_, body)) {
+            error = "open send failed";
+            return false;
+        }
+        if (!recvChunk(fd_, chunk) || chunk.type[0] != 'O') {
+            error = "open response missing";
+            return false;
+        }
+    } else {
+        clientNonce = uaRandom(32);
+        body.i32(securityMode(security_));
+        body.byteString(clientNonce.data(), static_cast<int>(clientNonce.size()));
+        body.u32(600000);
+        std::vector<std::uint8_t> message;
+        if (!uaSealAsymmetric(securityMode(security_), own_.der, own_.keyPem, peer_.der, 0, sequence_++, requestId_, body.data(),
+                              body.size(), message, error) ||
+            !writeAll(fd_, message.data(), message.size())) {
+            if (error.empty()) {
+                error = "open send failed";
+            }
+            return false;
+        }
+        std::vector<std::uint8_t> raw;
+        UaOpened opened;
+        if (!readFrame(fd_, raw) || !uaOpenAsymmetric(securityMode(security_), own_.der, own_.keyPem, raw.data(), raw.size(), opened, error)) {
+            if (error.empty()) {
+                error = "open response missing";
+            }
+            return false;
+        }
+        chunk.body = std::move(opened.body);
+        chunk.type[0] = 'O';
     }
     Reader reader(chunk.body.data(), chunk.body.size());
     if (reader.nodeId() != kOpenResponse) {
@@ -838,7 +1087,19 @@ bool OpcUaClient::openSecureChannel(std::string& error) {
     tokenId_ = reader.u32();
     reader.i64();
     reader.u32();
-    reader.skipBytes();
+    const std::vector<std::uint8_t> serverNonce = reader.bytes();
+    if (security_ != OpcUaSecurity::None) {
+        UaSymKeys clientKeys;
+        UaSymKeys serverKeys;
+        if (!uaDeriveKeys(serverNonce, clientNonce, clientKeys) || !uaDeriveKeys(clientNonce, serverNonce, serverKeys)) {
+            error = "channel keys rejected";
+            return false;
+        }
+        clientSign_ = clientKeys.sign;
+        clientEnc_ = clientKeys.enc;
+        serverSign_ = serverKeys.sign;
+        serverEnc_ = serverKeys.enc;
+    }
     if (!reader.ok() || channelId_ == 0 || tokenId_ == 0) {
         error = "open body rejected";
         return false;
@@ -856,21 +1117,22 @@ bool OpcUaClient::createSession(std::string& error) {
     body.string(nullptr);
     body.string("opc.tcp://127.0.0.1:4840");
     body.string("simstudio");
-    const std::uint8_t nonce = 4;
-    body.byteString(&nonce, 1);
-    body.byteString(nullptr, -1);
+    if (security_ == OpcUaSecurity::None) {
+        const std::uint8_t nonce = 4;
+        body.byteString(&nonce, 1);
+        body.byteString(nullptr, -1);
+    } else {
+        const std::vector<std::uint8_t> nonce = uaRandom(32);
+        body.byteString(nonce.data(), static_cast<int>(nonce.size()));
+        body.byteString(own_.der.data(), static_cast<int>(own_.der.size()));
+    }
     body.f64(60000);
     body.u32(0);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "create session send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "create session response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kCreateSessionResponse) {
         error = "create session type mismatch";
         return false;
@@ -879,7 +1141,7 @@ bool OpcUaClient::createSession(std::string& error) {
     reader.nodeId();
     authToken_ = reader.nodeId();
     reader.f64();
-    reader.skipBytes();
+    sessionNonce_ = reader.bytes();
     reader.skipBytes();
     const std::int32_t endpoints = reader.i32();
     for (std::int32_t i = 0; i < endpoints && reader.ok(); ++i) {
@@ -904,7 +1166,20 @@ bool OpcUaClient::createSession(std::string& error) {
 
 bool OpcUaClient::activateSession(std::string& error) {
     Writer token;
-    token.string("anonymous");
+    std::uint32_t tokenId = kAnonymousToken;
+    if (user_.empty()) {
+        token.string("anonymous");
+    } else {
+        std::vector<std::uint8_t> secret;
+        if (!uaEncryptSecret(peer_.der, password_, sessionNonce_, secret, error)) {
+            return false;
+        }
+        tokenId = kUserToken;
+        token.string("username");
+        token.string(user_.c_str());
+        token.byteString(secret.data(), static_cast<int>(secret.size()));
+        token.string("http://www.w3.org/2001/04/xmlenc#rsa-oaep");
+    }
     Writer body;
     body.nodeId(kActivateSessionRequest);
     body.requestHeader(authToken_, requestId_);
@@ -913,21 +1188,16 @@ bool OpcUaClient::activateSession(std::string& error) {
     body.i32(0);
     body.i32(1);
     body.string("en");
-    body.nodeId(kAnonymousToken);
+    body.nodeId(tokenId);
     body.u8(0x01);
     body.byteString(token.data(), static_cast<int>(token.size()));
     body.string(nullptr);
     body.byteString(nullptr, -1);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "activate send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "activate response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kActivateSessionResponse) {
         error = "activate type mismatch";
         return false;
@@ -961,16 +1231,11 @@ bool OpcUaClient::browse(std::uint32_t nodeId, std::vector<OpcUaReference>& out,
     body.boolean(true);
     body.u32(0);
     body.u32(63);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "browse send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "browse response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kBrowseResponse) {
         error = "browse type mismatch";
         return false;
@@ -1016,16 +1281,11 @@ bool OpcUaClient::readBool(std::uint32_t nodeId, bool& value, std::string& error
     body.u32(13);
     body.string(nullptr);
     body.qualified(0, nullptr);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "read send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "read response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kReadResponse) {
         error = "read type mismatch";
         return false;
@@ -1050,16 +1310,11 @@ bool OpcUaClient::writeBool(std::uint32_t nodeId, bool value, std::string& error
     body.u32(13);
     body.string(nullptr);
     body.dataValueBool(value);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "write send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "write response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kWriteResponse) {
         error = "write type mismatch";
         return false;
@@ -1086,16 +1341,11 @@ bool OpcUaClient::createSubscription(std::uint32_t& subscriptionId, std::string&
     body.u32(0);
     body.boolean(true);
     body.u8(0);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "subscription send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "subscription response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kSubscriptionResponse) {
         error = "subscription type mismatch";
         return false;
@@ -1132,16 +1382,11 @@ bool OpcUaClient::monitorBool(std::uint32_t subscriptionId, std::uint32_t nodeId
     body.nullExtension();
     body.u32(1);
     body.boolean(true);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "monitor send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "monitor response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kMonitorResponse) {
         error = "monitor type mismatch";
         return false;
@@ -1163,16 +1408,11 @@ bool OpcUaClient::publish(std::uint32_t& clientHandle, bool& value, std::string&
     body.nodeId(kPublishRequest);
     body.requestHeader(authToken_, requestId_);
     body.i32(0);
-    if (!sendSecure(fd_, "MSG", channelId_, true, tokenId_, nullptr, sequence_++, requestId_, body)) {
-        error = "publish send failed";
+    std::vector<std::uint8_t> reply;
+    if (!transact(body.data(), body.size(), reply, error)) {
         return false;
     }
-    Chunk chunk;
-    if (!recvChunk(fd_, chunk)) {
-        error = "publish response missing";
-        return false;
-    }
-    Reader reader(chunk.body.data(), chunk.body.size());
+    Reader reader(reply.data(), reply.size());
     if (reader.nodeId() != kPublishResponse) {
         error = "publish type mismatch";
         return false;
@@ -1218,6 +1458,145 @@ void publishPlcBool(Scene& scene, const std::string& signalName, bool value) {
 
 void publishPlcNumber(Scene& scene, const std::string& signalName, double value) {
     scene.upsertSignal(signalName, SignalType::Real).real = value;
+}
+
+namespace {
+
+std::string trimCopy(std::string text) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+        text.erase(text.begin());
+    }
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+        text.pop_back();
+    }
+    return text;
+}
+
+std::string unquote(std::string text) {
+    text = trimCopy(std::move(text));
+    if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
+        text = text.substr(1, text.size() - 2);
+    }
+    return text;
+}
+
+std::vector<std::string> splitDelimited(const std::string& line, char delimiter) {
+    std::vector<std::string> fields;
+    std::string current;
+    bool quoted = false;
+    for (char letter : line) {
+        if (letter == '"') {
+            quoted = !quoted;
+            current.push_back(letter);
+            continue;
+        }
+        if (letter == delimiter && !quoted) {
+            fields.push_back(unquote(current));
+            current.clear();
+            continue;
+        }
+        current.push_back(letter);
+    }
+    fields.push_back(unquote(current));
+    return fields;
+}
+
+bool signalTypeFromLabel(std::string label, SignalType& type) {
+    for (char& letter : label) {
+        letter = static_cast<char>(std::tolower(static_cast<unsigned char>(letter)));
+    }
+    if (label == "bool" || label == "boolean") {
+        type = SignalType::Bool;
+        return true;
+    }
+    if (label == "int" || label == "dint" || label == "word" || label == "dword" || label == "sint" || label == "uint") {
+        type = SignalType::Int;
+        return true;
+    }
+    if (label == "real" || label == "lreal" || label == "float" || label == "double") {
+        type = SignalType::Real;
+        return true;
+    }
+    return false;
+}
+
+bool headerName(const std::string& text) {
+    std::string lower = text;
+    for (char& letter : lower) {
+        letter = static_cast<char>(std::tolower(static_cast<unsigned char>(letter)));
+    }
+    return lower == "name" || lower == "tag" || lower == "symbol";
+}
+
+}  // namespace
+
+bool importSignalTable(const std::string& text, std::vector<ImportedSignal>& rows, std::string& error) {
+    rows.clear();
+    std::size_t cursor = 0;
+    while (cursor <= text.size()) {
+        const std::size_t end = text.find('\n', cursor);
+        std::string line = text.substr(cursor, end == std::string::npos ? std::string::npos : end - cursor);
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        cursor = end == std::string::npos ? text.size() + 1 : end + 1;
+        line = trimCopy(line);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        const char delimiter = line.find(';') != std::string::npos ? ';' : ',';
+        const std::vector<std::string> fields = splitDelimited(line, delimiter);
+        if (fields.empty() || fields[0].empty() || headerName(fields[0])) {
+            continue;
+        }
+        const bool tia = delimiter == ';' && fields.size() >= 3;
+        const std::size_t typeIndex = tia ? 2 : 1;
+        if (fields.size() <= typeIndex) {
+            error = "signal row needs a type: " + fields[0];
+            return false;
+        }
+        ImportedSignal row;
+        row.name = fields[0];
+        if (!signalTypeFromLabel(fields[typeIndex], row.type)) {
+            error = "unknown signal type: " + fields[typeIndex];
+            return false;
+        }
+        const std::size_t valueIndex = tia ? 3 : 2;
+        if (fields.size() > valueIndex && !fields[valueIndex].empty() && fields[valueIndex][0] != '%') {
+            row.hasValue = true;
+            if (row.type == SignalType::Bool) {
+                const std::string value = fields[valueIndex];
+                row.flag = value == "1" || value == "true" || value == "TRUE" || value == "True";
+            } else if (row.type == SignalType::Int) {
+                row.integer = std::stoll(fields[valueIndex]);
+            } else {
+                row.real = std::stod(fields[valueIndex]);
+            }
+        }
+        rows.push_back(std::move(row));
+    }
+    if (rows.empty()) {
+        error = "signal table was empty";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+void applyImportedSignals(Scene& scene, const std::vector<ImportedSignal>& rows) {
+    for (const ImportedSignal& row : rows) {
+        Signal& signal = scene.upsertSignal(row.name, row.type);
+        if (!row.hasValue) {
+            continue;
+        }
+        if (row.type == SignalType::Bool) {
+            signal.flag = row.flag;
+        } else if (row.type == SignalType::Int) {
+            signal.integer = row.integer;
+        } else {
+            signal.real = row.real;
+        }
+    }
 }
 
 }  // namespace sim
