@@ -10,3 +10,11 @@
 | GP8 | [Motoman GP7/GP8 样本](https://www.motoman.com/getmedia/1a40ce78-99c3-4e43-bbce-b9318263f464/GP7_GP8.pdf.aspx)，速度与 [Yaskawa EU GP8](https://www.yaskawa.eu.com/robotics/robots/handling-mounting/productdetail/product/gp8_694) 一致。另一份转载把 L 写成 +150°/−65°、U 写成 +255°/−113°，目录没有采用 | [gp8_macro.xacro](https://github.com/ros-industrial/motoman/blob/kinetic-devel/motoman_gp8_support/urdf/gp8_macro.xacro) |
 
 `--demo robots` 把四台一起放进场景，沿 X 每隔 1400 mm 一台。运动学页的「加入型号」只加入选中的那一台。
+
+## 加速度
+
+这四条没有公开的关节扭矩，也没有公开的连杆惯量张量，所以关节的加速度来源是速度限制：梯形规划只受上表里的 `maxSpeed` 约束，不再写 180°/s²。用户可以在关节上填写扭矩，或直接输入加速度。填写了扭矩、并且连杆有质量时，加速度改为扭矩除以惯量；法兰上的负载按平行轴定理把加速度折低。界面上的来源分别是「动力学」「用户」和「未提供扭矩或惯量，节拍只受速度限制」。
+
+导入 URDF 或 xacro 时，若 `<limit effort>` 和连杆质量都在，该关节的来源就是动力学，视觉网格随连杆进入机器人资源。
+
+欢迎页的「打开示例工程」使用 IRB 120。法兰负载 3 kg 取自样本里的额定负载。六根臂关节仍是速度限制。旁边的夹具是一根移动关节，质量 8 kg、推力 40 N，加速度由这两项估成 5000 mm/s²，来源标成动力学。
