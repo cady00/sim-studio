@@ -205,7 +205,7 @@ private:
 
 class GanttCanvas : public QWidget {
 public:
-    GanttCanvas(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) { setMinimumHeight(180); }
+    GanttCanvas(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) { setMinimumHeight(180); setMouseTracking(true); }
 
     void setDark(bool dark) {
         dark_ = dark;
@@ -273,6 +273,9 @@ protected:
             painter.drawText(QRectF(8, band.top(), label - 12, band.height()), Qt::AlignVCenter | Qt::AlignLeft,
                              nameOf(rows[static_cast<std::size_t>(row)]));
         }
+        hits_.clear();
+        plotMakespan_ = makespan;
+        plotLabel_ = label;
         auto xOf = [&](double t) { return label + (width() - label - 16) * (t / makespan); };
         auto barOf = [&](const std::string& id) -> const ScheduleBar* {
             for (const ScheduleBar& bar : report.bars) {
@@ -289,6 +292,24 @@ protected:
             }
             const double y = top + row * rowH + 6;
             const QRectF block(xOf(bar.start), y, std::max(4.0, xOf(bar.finish) - xOf(bar.start)), rowH - 12);
+            double wait = 0;
+            for (const Operation& operation : scene_.operations) {
+                if (operation.id == bar.id) {
+                    wait = std::max(0.0, operation.wait);
+                }
+            }
+            if (wait > 1e-6) {
+                const QRectF gap(xOf(bar.start - wait), y, std::max(2.0, xOf(bar.start) - xOf(bar.start - wait)), rowH - 12);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QBrush(QColor(44, 110, 206, 90), Qt::BDiagPattern));
+                painter.drawRect(gap);
+            }
+            Hit hit;
+            hit.id = bar.id;
+            hit.rect = block;
+            hit.start = bar.start;
+            hit.finish = bar.finish;
+            hits_.push_back(hit);
             painter.setBrush(bar.critical ? brand() : QColor(96, 110, 138));
             painter.setPen(QPen(bar.critical ? brandHot() : QColor(70, 80, 102), bar.critical ? 2 : 1));
             painter.drawRoundedRect(block, 3, 3);
@@ -355,10 +376,61 @@ protected:
         }
     }
 
+    void mousePressEvent(QMouseEvent* event) override {
+        dragId_.clear();
+        dragEdge_ = false;
+        for (const Hit& hit : hits_) {
+            if (!hit.rect.adjusted(-2, -2, 2, 2).contains(event->position())) {
+                continue;
+            }
+            dragId_ = hit.id;
+            dragEdge_ = event->position().x() >= hit.rect.right() - 8;
+            dragOrigin_ = event->position();
+            dragStart_ = hit.start;
+            dragFinish_ = hit.finish;
+            break;
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (dragId_.empty() || !(event->buttons() & Qt::LeftButton)) {
+            return;
+        }
+        const double plot = std::max(1.0, width() - plotLabel_ - 16.0);
+        const double dt = (event->position().x() - dragOrigin_.x()) / plot * std::max(plotMakespan_, 0.001);
+        if (dragEdge_) {
+            adjustOperationFinish(scene_.operations, scene_.layout, dragId_, dragFinish_ + dt);
+        } else {
+            adjustOperationStart(scene_.operations, scene_.layout, dragId_, dragStart_ + dt);
+        }
+        update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent*) override {
+        if (!dragId_.empty()) {
+            scene_.notify(ChangeKind::Structure);
+        }
+        dragId_.clear();
+    }
+
 private:
+    struct Hit {
+        std::string id;
+        QRectF rect;
+        double start = 0;
+        double finish = 0;
+    };
     Scene& scene_;
     bool dark_ = true;
     bool zh_ = true;
+    std::vector<Hit> hits_;
+    std::string dragId_;
+    bool dragEdge_ = false;
+    QPointF dragOrigin_;
+    double dragStart_ = 0;
+    double dragFinish_ = 0;
+    double plotMakespan_ = 1;
+    int plotLabel_ = 88;
 };
 
 void fillOperationTree(QTreeWidgetItem* parent, QTreeWidget* tree, const Scene& scene, const std::string& parentId) {
@@ -380,6 +452,7 @@ void fillOperationTree(QTreeWidgetItem* parent, QTreeWidget* tree, const Scene& 
         columns << QString::fromUtf8(opKindName(operation->kind));
         columns << QString::fromStdString(operation->station);
         columns << (operation->kind == OpKind::Task ? QString::number(operation->seconds, 'f', 1) : QString());
+        columns << QString::fromStdString(operation->timeSource);
         columns << QString::fromStdString(operation->path);
         columns << QString::fromStdString(operation->logic);
         QString after;
@@ -479,9 +552,9 @@ OperationTreeView::OperationTreeView(Scene& scene, QWidget* parent) : QWidget(pa
     layout->setContentsMargins(6, 6, 6, 6);
     badge_ = new QLabel(this);
     tree_ = new QTreeWidget(this);
-    tree_->setColumnCount(7);
+    tree_->setColumnCount(8);
     tree_->setHeaderLabels({QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("工位"), QStringLiteral("秒"),
-                            QStringLiteral("路径"), QStringLiteral("逻辑"), QStringLiteral("前置")});
+                            QStringLiteral("来源"), QStringLiteral("路径"), QStringLiteral("逻辑"), QStringLiteral("前置")});
     tree_->setRootIsDecorated(true);
     layout->addWidget(badge_);
     layout->addWidget(tree_, 1);
@@ -493,9 +566,9 @@ void OperationTreeView::setDark(bool) { reload(); }
 void OperationTreeView::setZh(bool zh) {
     zh_ = zh;
     tree_->setHeaderLabels(zh ? QStringList{QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("工位"), QStringLiteral("秒"),
-                                             QStringLiteral("路径"), QStringLiteral("逻辑"), QStringLiteral("前置")}
+                                             QStringLiteral("来源"), QStringLiteral("路径"), QStringLiteral("逻辑"), QStringLiteral("前置")}
                               : QStringList{QStringLiteral("Name"), QStringLiteral("Kind"), QStringLiteral("Station"), QStringLiteral("s"),
-                                            QStringLiteral("Path"), QStringLiteral("Logic"), QStringLiteral("After")});
+                                            QStringLiteral("Source"), QStringLiteral("Path"), QStringLiteral("Logic"), QStringLiteral("After")});
     reload();
 }
 

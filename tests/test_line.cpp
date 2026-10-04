@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 
 using Catch::Approx;
 
@@ -169,7 +170,7 @@ TEST_CASE("cycle report writes csv and a spreadsheet", "[line]") {
     sim::Scene scene;
     sim::buildExampleLine(scene);
     const sim::ScheduleReport report = sim::scheduleOperations(scene.operations, scene.layout);
-    REQUIRE(report.makespan == Approx(31));
+    REQUIRE(report.makespan == Approx(32));
     REQUIRE(report.bottleneck == "st_weld");
     const auto csvPath = std::filesystem::temp_directory_path() / "simstudio_cycle.csv";
     const auto xlsxPath = std::filesystem::temp_directory_path() / "simstudio_cycle.xlsx";
@@ -193,14 +194,41 @@ TEST_CASE("cycle report writes csv and a spreadsheet", "[line]") {
     REQUIRE(xml.find("焊接") != std::string::npos);
 }
 
-TEST_CASE("ems import is reserved and project version 8 keeps the line", "[line]") {
+TEST_CASE("ppr xml import and project version 9 keep the line", "[line]") {
     sim::Scene scene;
     sim::buildExampleLine(scene);
     const std::size_t stations = scene.layout.stations.size();
-    const sim::EmsImportResult imported = sim::importEmsXml("missing.ems.xml", scene);
-    REQUIRE_FALSE(imported.ok);
-    REQUIRE(imported.message.find("reserved") != std::string::npos);
+    const sim::EmsImportResult missing = sim::importEmsXml("missing.ems.xml", scene);
+    REQUIRE_FALSE(missing.ok);
+    REQUIRE(missing.message.find("cannot open") != std::string::npos);
     REQUIRE(scene.layout.stations.size() == stations);
+
+    const auto xmlPath = std::filesystem::temp_directory_path() / "simstudio_ppr.xml";
+    {
+        std::ofstream out(xmlPath);
+        out << "<Plant name=\"cell\"><Product id=\"p1\" name=\"bracket\"/>"
+               "<Process id=\"w1\" name=\"weld\" duration=\"3.5\" station=\"st1\"/>"
+               "<Resource id=\"r1\" name=\"robot\" station=\"st1\" resource=\"kr420\"/></Plant>";
+    }
+    sim::Scene parsed;
+    const sim::EmsImportResult imported = sim::importEmsXml(xmlPath.string(), parsed);
+    REQUIRE(imported.ok);
+    REQUIRE(parsed.ppr.products.size() == 1);
+    REQUIRE(parsed.ppr.processes.size() == 1);
+    REQUIRE(parsed.ppr.plants.size() == 2);
+    REQUIRE(parsed.operations.size() == 1);
+    REQUIRE(parsed.operations.front().seconds == Approx(3.5));
+    sim::Scene garbage;
+    garbage.layout.stations.push_back(sim::Station{});
+    const auto badPath = std::filesystem::temp_directory_path() / "simstudio_bad.xml";
+    {
+        std::ofstream out(badPath);
+        out << "<Note>hello</Note>";
+    }
+    const sim::EmsImportResult rejected = sim::importEmsXml(badPath.string(), garbage);
+    REQUIRE_FALSE(rejected.ok);
+    REQUIRE(garbage.layout.stations.size() == 1);
+    REQUIRE(garbage.ppr.products.empty());
 
     const auto path = std::filesystem::temp_directory_path() / "simstudio_line.simproj";
     REQUIRE(sim::ProjectStore::save(scene, path.string()).ok);
@@ -289,4 +317,147 @@ TEST_CASE("line commands and python read the same schedule", "[line]") {
                           output, error));
     REQUIRE(error.empty());
     REQUIRE(output.find("1 4.0 s1 False") != std::string::npos);
+}
+
+TEST_CASE("gantt drag writes wait and a pinned finish", "[line]") {
+    sim::Scene scene;
+    sim::buildExampleLine(scene);
+    REQUIRE(sim::adjustOperationStart(scene.operations, scene.layout, "unload", 30));
+    sim::Operation* unload = nullptr;
+    for (sim::Operation& operation : scene.operations) {
+        if (operation.id == "unload") {
+            unload = &operation;
+        }
+    }
+    REQUIRE(unload != nullptr);
+    REQUIRE(unload->wait > 1.0);
+    const double before = sim::scheduleOperations(scene.operations, scene.layout).makespan;
+    REQUIRE(sim::adjustOperationFinish(scene.operations, scene.layout, "unload", 40));
+    REQUIRE(unload->timeSource == "pinned");
+    REQUIRE(unload->timeNote == "gantt finish");
+    const sim::ScheduleReport after = sim::scheduleOperations(scene.operations, scene.layout);
+    REQUIRE(after.makespan > before);
+}
+
+TEST_CASE("dxf arc spline insert and a binary line", "[line]") {
+    const char* text = R"(0
+SECTION
+2
+BLOCKS
+0
+BLOCK
+2
+MARK
+0
+LINE
+8
+Marks
+10
+0
+20
+0
+11
+10
+21
+0
+0
+ENDBLK
+0
+ENDSEC
+0
+SECTION
+2
+ENTITIES
+0
+ARC
+8
+Floor
+10
+0
+20
+0
+40
+10
+50
+0
+51
+90
+0
+SPLINE
+8
+Curve
+71
+3
+10
+0
+20
+0
+10
+10
+20
+0
+10
+10
+20
+10
+10
+0
+20
+10
+0
+INSERT
+8
+Placed
+2
+MARK
+10
+100
+20
+50
+0
+ENDSEC
+0
+EOF
+)";
+    const sim::DxfResult parsed = sim::parseDxf(text, 1);
+    REQUIRE(parsed.ok);
+    REQUIRE(parsed.lines.size() > 4);
+    bool sawFloor = false;
+    bool sawPlaced = false;
+    for (const std::string& layer : parsed.layers) {
+        sawFloor = sawFloor || layer == "Floor";
+        sawPlaced = sawPlaced || layer == "Placed";
+    }
+    REQUIRE(sawFloor);
+    REQUIRE(sawPlaced);
+
+    std::string binary("AutoCAD Binary DXF\r\n\0", 22);
+    auto pushCode = [&](int code) {
+        binary.push_back(static_cast<char>(code & 0xff));
+        binary.push_back(static_cast<char>((code >> 8) & 0xff));
+    };
+    auto pushString = [&](int code, const char* value) {
+        pushCode(code);
+        binary.append(value);
+        binary.push_back('\0');
+    };
+    auto pushDouble = [&](int code, double value) {
+        pushCode(code);
+        binary.append(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
+    pushString(0, "SECTION");
+    pushString(2, "ENTITIES");
+    pushString(0, "LINE");
+    pushString(8, "Bin");
+    pushDouble(10, 0);
+    pushDouble(20, 0);
+    pushDouble(11, 25);
+    pushDouble(21, 0);
+    pushString(0, "ENDSEC");
+    pushString(0, "EOF");
+    const sim::DxfResult binaryResult = sim::parseDxf(binary, 1);
+    REQUIRE(binaryResult.ok);
+    REQUIRE(binaryResult.lines.size() == 1);
+    REQUIRE(binaryResult.layers.front() == "Bin");
+    REQUIRE(binaryResult.lines.front().second.x == Approx(25));
 }

@@ -1,6 +1,8 @@
 #include "sim/scripting/ScriptHost.hpp"
 
 #include "sim/collision/Query.hpp"
+#include "sim/io/AssetImport.hpp"
+#include "sim/motion/Motion.hpp"
 
 #include <pybind11/embed.h>
 
@@ -287,6 +289,48 @@ PYBIND11_EMBEDDED_MODULE(simstudio, module) {
         item["plants"] = static_cast<int>(scene->ppr.plants.size());
         item["example"] = scene->ppr.example;
         return item;
+    });
+    module.def("line_measure", [](bool force) {
+        Scene* scene = sceneOrThrow();
+        const MeasureResult measured = measureOperationTimes(*scene, force);
+        scene->notify(ChangeKind::Structure);
+        py::dict item;
+        item["updated"] = measured.updated;
+        item["planned"] = measured.planned;
+        item["logic"] = measured.logic;
+        item["conveyor"] = measured.conveyor;
+        item["note"] = measured.note;
+        return item;
+    }, py::arg("force") = false);
+    module.def("asset_import", [](const std::string& path) {
+        Scene* scene = sceneOrThrow();
+        const auto registry = createBuiltinRegistry();
+        const AssetImportResult imported = registry->importPath(path, *scene);
+        if (imported.ok) {
+            scene->notify(ChangeKind::Structure);
+        }
+        py::dict item;
+        item["ok"] = imported.ok;
+        item["format"] = imported.format;
+        item["message"] = imported.message;
+        item["triangles"] = imported.triangleCount;
+        return item;
+    });
+    module.def("asset_export", [](const std::string& path, const std::string& format) {
+        Scene* scene = sceneOrThrow();
+        std::string error;
+        bool ok = false;
+        if (format == "stl") {
+            ok = exportSceneStl(*scene, path, error);
+        } else if (format == "gltf" || format == "glb") {
+            ok = exportSceneGltf(*scene, path, error);
+        } else {
+            throw std::runtime_error("export format is gltf, glb, or stl");
+        }
+        if (!ok) {
+            throw std::runtime_error(error.empty() ? "export failed" : error);
+        }
+        return path;
     });
     module.def("ems_import", [](const std::string& path) {
         Scene* scene = sceneOrThrow();

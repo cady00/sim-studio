@@ -59,6 +59,10 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <unordered_map>
 #include <cmath>
 #include <functional>
 
@@ -1648,6 +1652,100 @@ void MainWindow::usePhysicsBackend(PhysicsBackend backend) {
     scene_.physicsDoc.engine = physicsBackendName(backend);
 }
 
+namespace {
+
+bool graftKr420Model(Scene& scene, const std::string& stepPath, std::string& note) {
+    Scene side;
+    StepImporter importer;
+    const ImportResult imported = importer.importFile(stepPath, side);
+    if (!imported.ok) {
+        note = imported.message;
+        return false;
+    }
+    const SuggestResult suggestion = suggestLinkGroups(side);
+    std::string error;
+    if (!applyLinkSuggestions(side, "kr420", suggestion, kr420DatasheetLimits(), error)) {
+        note = error.empty() ? suggestion.note : error;
+        return false;
+    }
+    addKr420Demonstration(side);
+    if (auto proxy = scene.findByName("KR420")) {
+        scene.removeNode(proxy->id);
+    }
+    if (auto column = scene.findByName("KR420Column")) {
+        scene.removeNode(column->id);
+    }
+    std::unordered_map<std::string, std::string> meshMap;
+    std::unordered_map<std::string, std::string> idMap;
+    std::function<void(const std::shared_ptr<SceneNode>&, const std::shared_ptr<SceneNode>&)> copy =
+        [&](const std::shared_ptr<SceneNode>& from, const std::shared_ptr<SceneNode>& parent) {
+            if (!from) {
+                return;
+            }
+            for (const auto& child : from->children) {
+                auto node = scene.makeNode(child->kind, child->name);
+                node->local = child->local;
+                node->color = child->color;
+                node->visible = child->visible;
+                node->faceAxes = child->faceAxes;
+                node->mech = child->mech;
+                if (!child->meshId.empty()) {
+                    if (meshMap.count(child->meshId) == 0) {
+                        meshMap[child->meshId] = scene.addMesh(side.mesh(child->meshId));
+                    }
+                    node->meshId = meshMap[child->meshId];
+                }
+                idMap[child->id] = node->id;
+                scene.addChild(parent, node);
+                copy(child, node);
+            }
+        };
+    scene.beginEdit();
+    if (side.root()) {
+        copy(side.root(), scene.root());
+    }
+    scene.robotPaths.erase(std::remove_if(scene.robotPaths.begin(), scene.robotPaths.end(),
+                                          [](const RobotPath& path) { return path.name == "cycle"; }),
+                           scene.robotPaths.end());
+    for (RobotPath path : side.robotPaths) {
+        scene.robotPaths.push_back(std::move(path));
+    }
+    for (KinematicResource resource : side.resources) {
+        for (KinLink& link : resource.links) {
+            const auto mapped = idMap.find(link.nodeId);
+            if (mapped != idMap.end()) {
+                link.nodeId = mapped->second;
+            }
+        }
+        bool replaced = false;
+        for (KinematicResource& existing : scene.resources) {
+            if (existing.name == resource.name) {
+                existing = resource;
+                replaced = true;
+            }
+        }
+        if (!replaced) {
+            scene.resources.push_back(std::move(resource));
+        }
+    }
+    if (Station* weld = findStation(scene.layout, "st_weld")) {
+        for (const KinematicResource& resource : scene.resources) {
+            if (resource.name != "kr420" || resource.links.empty()) {
+                continue;
+            }
+            if (auto node = scene.find(resource.links.front().nodeId)) {
+                weld->nodeName = node->name;
+            }
+        }
+    }
+    scene.proximity = side.proximity;
+    scene.endEdit();
+    note = suggestion.note.empty() ? "KR420" : suggestion.note;
+    return true;
+}
+
+}  // namespace
+
 void MainWindow::loadDemo(const QString& name) {
     collisionDemo_ = name == QStringLiteral("collision");
     kr420Demo_ = name == QStringLiteral("kr420");
@@ -1733,7 +1831,13 @@ void MainWindow::loadDemo(const QString& name) {
     } else if (lineDemo_) {
         buildExampleLine(scene_);
         demoPath_.clear();
-        statusLabel_->setText(trk("dock.floor") + QStringLiteral(" · ") + QString::fromStdString(scene_.layout.title));
+        const QString stepPath = QString::fromUtf8(SIM_SOURCE_DIR "/testdata/local/KR420_R3080_KR280_R3080.stp");
+        std::string note;
+        const bool grafted = QFile::exists(stepPath) && graftKr420Model(scene_, stepPath.toStdString(), note);
+        const MeasureResult measured = measureOperationTimes(scene_, false);
+        statusLabel_->setText(QString::fromStdString(scene_.layout.title) + QStringLiteral(" · ") +
+                              (grafted ? QStringLiteral("KR420 模型") : QStringLiteral("代理模型")) +
+                              QStringLiteral(" · 实测 ") + QString::number(measured.updated));
         applyTaskMode(0);
     } else {
         buildTurntableLiftDemo(scene_);
@@ -1773,6 +1877,60 @@ void MainWindow::loadDemo(const QString& name) {
     }
     rebuildTree();
     viewport_->fitAll();
+}
+
+void MainWindow::runLargeSceneBench(const QString& screenshot) {
+    if (treeDock_ != nullptr) {
+        treeDock_->hide();
+    }
+    if (propertyDock_ != nullptr) {
+        propertyDock_->hide();
+    }
+    buildLargeField(scene_, 100000, 256);
+    rebuildTree();
+    long long sceneTriangles = 0;
+    for (const auto& [id, mesh] : scene_.meshes()) {
+        (void)id;
+        if (mesh) {
+            sceneTriangles += static_cast<long long>(mesh->triangleCount()) * std::max(0, scene_.nodeCount() - 1);
+        }
+    }
+    viewport_->setForceDetail(true);
+    viewport_->fitAll();
+    viewport_->repaint();
+    const double fitMs = viewport_->lastDrawMs();
+    const int fitSubmitted = viewport_->lastSubmitted();
+    const int fitCulled = viewport_->lastCulled();
+    const int fitDraws = viewport_->lastDraws();
+    const int fitDrawn = viewport_->lastDrawnTriangles();
+    viewport_->setForceDetail(false);
+    viewport_->camera().target = scene_.worldBounds().center();
+    viewport_->camera().distance = 2000;
+    viewport_->repaint();
+    const double nearMs = viewport_->lastDrawMs();
+    double rssKb = 0;
+    std::ifstream status("/proc/self/status");
+    std::string label;
+    while (status >> label) {
+        if (label == "VmRSS:") {
+            status >> rssKb;
+            break;
+        }
+        status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+    std::cout << "BENCH parts=100000 triangles=" << sceneTriangles << " submitted=" << fitSubmitted << " culled=" << fitCulled
+              << " draws=" << fitDraws << " drawn_triangles=" << fitDrawn << " frame_ms=" << fitMs
+              << " fps=" << (fitMs > 0 ? 1000.0 / fitMs : 0) << " rss_mb=" << (rssKb / 1024.0)
+              << " near_submitted=" << viewport_->lastSubmitted() << " near_culled=" << viewport_->lastCulled()
+              << " near_drawn=" << viewport_->lastDrawnTriangles() << " near_frame_ms=" << nearMs
+              << " near_fps=" << (nearMs > 0 ? 1000.0 / nearMs : 0) << " resident=" << viewport_->residentMeshes()
+              << std::endl;
+    if (!screenshot.isEmpty()) {
+        setScreenshotPath(screenshot);
+        captureScreenshot();
+    } else {
+        QApplication::exit(0);
+    }
 }
 
 void MainWindow::beginHeadlessPlayback() {

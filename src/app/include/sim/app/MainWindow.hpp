@@ -49,6 +49,7 @@ public:
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
     void loadDemo(const QString& name);
+    void runLargeSceneBench(const QString& screenshot);
     void usePhysicsBackend(PhysicsBackend backend);
     void setTaskModeName(const QString& mode);
     void setThemeName(const QString& theme);

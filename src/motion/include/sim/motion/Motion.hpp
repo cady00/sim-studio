@@ -148,6 +148,20 @@ private:
 };
 
 MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotPath& path);
+
+struct MeasureResult {
+    int updated = 0;
+    int planned = 0;
+    int logic = 0;
+    int conveyor = 0;
+    std::string note;
+};
+
+// Changes when the path, zones, external values, or joint limits change.
+std::string pathFingerprint(const RobotPath& path, const KinematicResource* resource);
+// Robot tasks use planRobotPath. Logic tasks step the event machine. Conveyor tasks
+// step the builtin solver on a small belt. A pinned bar stays until its fingerprint changes.
+MeasureResult measureOperationTimes(Scene& scene, bool force);
 // Cubic Hermite on u in [0, 1]. Slopes are dq/du so a zone can match the joint velocity on both sides.
 double zoneBlend(double u, double q0, double q1, double slope0, double slope1);
 std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource);

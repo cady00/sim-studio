@@ -21,5 +21,9 @@ struct MeshData {
 };
 
 std::shared_ptr<MeshData> makeBoxMesh(Vec3 halfExtents);
+// A grid of `triangles` (rounded up to an even count) inside a square of `size` millimeters.
+std::shared_ptr<MeshData> makeTriangleGrid(int triangles, double size);
+// Vertex clustering. Larger cells drop more triangles. The result is a coarser LOD.
+std::shared_ptr<MeshData> simplifyMesh(const MeshData& source, double cell);
 
 }  // namespace sim

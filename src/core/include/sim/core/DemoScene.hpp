@@ -15,6 +15,8 @@ void buildSlipDemo(Scene& scene);
 // Four-station example line. layout.example and ppr.example are true. The KR420 is a named proxy
 // unless a caller replaces the node with an imported model.
 void buildExampleLine(Scene& scene);
+// One shared mesh and `parts` instances. `triangles` is the mesh triangle count.
+void buildLargeField(Scene& scene, int parts, int triangles);
 
 const char* pusherScriptSource();
 const char* sequenceScriptSource();

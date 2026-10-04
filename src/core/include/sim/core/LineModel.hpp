@@ -33,8 +33,12 @@ struct Underlay {
     std::string path;
     double opacity = 0.35;
     double mmPerUnit = 1;
-    // Plan segments in millimeters. Image pixels are not stored.
+    // Plan segments in millimeters. `layers` matches `lines` when a DXF entity named one.
     std::vector<std::pair<Vec3, Vec3>> lines;
+    std::vector<std::string> layers;
+    // Image bytes live in the project zip when `embedded` is set. `path` is the source file.
+    std::string embedded;
+    std::vector<std::uint8_t> bytes;
 };
 
 struct LineLayout {
@@ -52,11 +56,17 @@ struct Operation {
     std::string parent;
     OpKind kind = OpKind::Task;
     int index = 0;
-    // Stored duration for a task. Groups take their duration from their children.
+    // Work duration for a task. Groups take their duration from their children.
     double seconds = 1;
+    // Extra delay after predecessors. A gantt drag of the bar start writes this.
+    double wait = 0;
     std::vector<std::string> after;
     std::string path;
     std::string logic;
+    // plan, logic, conveyor, pinned, or stored. Empty means the authored number.
+    std::string timeSource;
+    std::string timeKey;
+    std::string timeNote;
 };
 
 struct ProductNode {
@@ -112,6 +122,7 @@ struct DxfResult {
     bool ok = false;
     std::string message;
     std::vector<std::pair<Vec3, Vec3>> lines;
+    std::vector<std::string> layers;
 };
 
 struct EmsImportResult {
@@ -138,12 +149,15 @@ const Station* findStation(const LineLayout& layout, const std::string& id);
 // A cycle sets error and leaves the bars empty.
 ScheduleReport scheduleOperations(const std::vector<Operation>& operations, const LineLayout& layout);
 
-// ASCII DXF subset: LINE, LWPOLYLINE, CIRCLE. Binary files are rejected.
+// ASCII and binary DXF: LINE, LWPOLYLINE, CIRCLE, ARC, SPLINE, INSERT, and layer names.
 DxfResult parseDxf(const std::string& text, double mmPerUnit);
+// Move a bar's start by writing `wait`, or its finish by writing `seconds` and pinning it.
+bool adjustOperationStart(std::vector<Operation>& operations, const LineLayout& layout, const std::string& id, double newStart);
+bool adjustOperationFinish(std::vector<Operation>& operations, const LineLayout& layout, const std::string& id, double newFinish);
 bool loadDxfUnderlay(LineLayout& layout, const std::string& path, double mmPerUnit, std::string& error);
 void setImageUnderlay(LineLayout& layout, const std::string& path, double opacity);
 
-// Reserved interface. Does not open or parse the file and does not edit the scene.
+// Generic product/process/plant XML. Unknown roots fail and do not invent nodes.
 EmsImportResult importEmsXml(const std::string& path, Scene& scene);
 
 bool exportScheduleCsv(const ScheduleReport& report, const std::string& path, std::string& error);

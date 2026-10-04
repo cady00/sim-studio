@@ -90,13 +90,15 @@ Qt Advanced Docking System 是 LGPL-2.1。闭源产品可以动态链接它，�
 
 GJK 和 ZIP 记录布局是公开规格，实现是这里写的。没有发现需要整段换掉的拷贝。
 
+STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、data URI 与 GLB）、ASCII/二进制 DXF 常用实体、URDF 连杆关节、通用 PPR XML 和 XLSX 的 ZIP 打包都是本仓库写的，没有再引入 DXF、glTF 或表格库。IGES 与 BREP 使用已经链接的 OCCT（LGPL-2.1 加例外），没有新增库。JT 不解码：商业 JT Open Toolkit 不链接，也不链接 GPL 的 JT 库；`IAssetImporter` 名字 `jt` 的槽会说明原因并失败。
+
 ## 接口：哪些可以换
 
 | 缝 | 接口 | 现在的实现 | 第三方是否漏出头文件 |
 | --- | --- | --- | --- |
 | 刚体 | `IPhysicsEngine`，`PhysicsBackend` | 默认 `jolt`；`builtin` 已能驱动移动副、转动副，做盒子接触、光栅和落体静止 | Jolt 头文件只在 `src/physics/src/JoltPhysicsEngine.cpp` |
 | 近距 | `ICollisionQuery` | `src/collision`，不调用 Jolt | 无 |
-| CAD | `IGeometryKernel` / `ICadImporter` | `createGeometryKernel()` 名为 `occt`。`step` 走 `StepImporter`，`obj` 走自写解析器 | OCCT 头文件只在 `StepImporter.cpp` 和 `tools/generate_sample_step.cpp` |
+| CAD | `IGeometryKernel` / `ICadImporter` / `IAssetImporter` | `step`、`iges`、`brep` 走已链接的 OCCT。STL、OBJ、PLY、glTF/GLB、DXF、URDF、通用 PPR XML、XLSX 包是自写解析器。JT 只有插件槽 | OCCT 头文件在 `StepImporter.cpp`、`OcctCadImport.cpp` 和 `tools/generate_sample_step.cpp` |
 | 渲染 | `IRenderer` | OpenGL 3.3 | Qt 只在 `src/app` 和 `src/render`。`IRenderer` 没有 Qt 类型 |
 | 界面 | 应用壳 | `src/app` 的 `QMainWindow` | 核心、运动、碰撞、物理、IO、脚本、命令层不包含 Qt |
 | 脚本 | `IScriptHost` | CPython + pybind11 | 头文件在 `src/scripting` |

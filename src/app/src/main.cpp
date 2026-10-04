@@ -102,6 +102,7 @@ int main(int argc, char* argv[]) {
     QCommandLineOption theme("theme", "Theme: dark or light.", "name");
     QCommandLineOption palette("palette", "Open the command palette before a screenshot.");
     QCommandLineOption intent("intent", "Open the AI intent bar before a screenshot.");
+    QCommandLineOption bench("bench", "Draw a 100000-part field, print BENCH, and save a screenshot.", "png");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
@@ -113,6 +114,7 @@ int main(int argc, char* argv[]) {
     parser.addOption(theme);
     parser.addOption(palette);
     parser.addOption(intent);
+    parser.addOption(bench);
     parser.process(application);
 
     sim::MainWindow window(parser.value(language));
@@ -121,7 +123,9 @@ int main(int argc, char* argv[]) {
     if (parser.isSet(theme)) {
         window.setThemeName(parser.value(theme));
     }
-    if (parser.isSet(demo)) {
+    if (parser.isSet(bench)) {
+        window.runLargeSceneBench(parser.value(bench));
+    } else if (parser.isSet(demo)) {
         window.loadDemo(parser.value(demo));
     } else if (parser.isSet(openProject)) {
         window.openProject(parser.value(openProject));

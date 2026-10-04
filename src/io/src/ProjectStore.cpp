@@ -260,6 +260,9 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
         }
         entries.push_back(ZipEntry{"meshes/" + id + ".bin", writeMesh(*mesh)});
     }
+    if (!scene.layout.underlay.embedded.empty() && !scene.layout.underlay.bytes.empty()) {
+        entries.push_back(ZipEntry{scene.layout.underlay.embedded, scene.layout.underlay.bytes});
+    }
     if (!ZipArchive::write(path, entries, result.message)) {
         return result;
     }
@@ -419,6 +422,14 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     }
     if (json.contains("layout")) {
         layoutFromJson(json.at("layout"), scene.layout);
+        if (!scene.layout.underlay.embedded.empty()) {
+            for (const ZipEntry& entry : entries) {
+                if (entry.name == scene.layout.underlay.embedded) {
+                    scene.layout.underlay.bytes = entry.data;
+                    break;
+                }
+            }
+        }
     }
     if (json.contains("operations")) {
         operationsFromJson(json.at("operations"), scene.operations);

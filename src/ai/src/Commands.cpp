@@ -2,6 +2,7 @@
 
 #include "sim/collision/Query.hpp"
 
+#include "sim/io/AssetImport.hpp"
 #include "sim/motion/Motion.hpp"
 
 #include <vector>
@@ -87,8 +88,9 @@ nlohmann::json CommandExecutor::catalog() {
         op("line_snap", "Snap every station anchor to the layout grid.", nlohmann::json::array(), true),
         op("line_align", "Align station left edges, then snap.", nlohmann::json::array(), true),
         op("line_distribute", "Distribute station anchors along X, then snap.", nlohmann::json::array(), true),
-        op("line_import_dxf", "Import an ASCII DXF underlay. LINE, LWPOLYLINE, and CIRCLE only.", {"path", "mmPerUnit"}, true),
-        op("line_set_underlay", "Remember an image underlay path. The pixels are not stored in the project.", {"path", "opacity"}, true),
+        op("line_import_dxf", "Import a DXF underlay: LINE, LWPOLYLINE, CIRCLE, ARC, SPLINE, INSERT, layers, ASCII and binary.", {"path", "mmPerUnit"}, true),
+        op("line_set_underlay", "Store an image underlay in the project.", {"path", "opacity"}, true),
+        op("line_measure", "Recompute task seconds from the path planner, logic events, or a conveyor step.", {"force"}, true),
         op("line_ops", "Operation tree: sequence, parallel, predecessors, path, and logic names.", nlohmann::json::array(), true),
         op("line_add_op", "Add or replace an operation. after is a list of finish-start ids.",
            {"id", "name", "station", "parent", "kind", "seconds", "index", "after", "path", "logic"}, true),
@@ -96,7 +98,9 @@ nlohmann::json CommandExecutor::catalog() {
         op("line_export_csv", "Write the cycle report as CSV.", {"path"}, true),
         op("line_export_xlsx", "Write the cycle report as a spreadsheet.", {"path"}, true),
         op("ppr_list", "Product, process, and plant nodes.", nlohmann::json::array(), true),
-        op("ems_import", "Reserved eMS/XML import. Does not read the file or edit the scene.", {"path"}, true),
+        op("ems_import", "Read a generic product, process, and plant XML file into the PPR model.", {"path"}, true),
+        op("asset_import", "Import a file through the asset registry. Format is chosen by extension, then by content.", {"path"}, true),
+        op("asset_export", "Export visible meshes as gltf, glb, or stl.", {"path", "format"}, true),
         op("nl_to_logic", "Future: natural language to a logic block or script.", {"text"}, false),
         op("layout_suggest", "Future: suggest a line layout. Does not edit the scene.", {"text"}, false),
         op("cycle_optimize", "Future: suggest cycle-time changes.", {"text"}, false),
@@ -753,9 +757,66 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
     if (op == "ppr_list") {
         return okValue(pprToJson(scene_.ppr));
     }
+    if (op == "line_measure") {
+        const MeasureResult measured = measureOperationTimes(scene_, command.value("force", false));
+        scene_.notify(ChangeKind::Structure);
+        return okValue({{"updated", measured.updated},
+                        {"planned", measured.planned},
+                        {"logic", measured.logic},
+                        {"conveyor", measured.conveyor},
+                        {"note", measured.note}});
+    }
     if (op == "ems_import") {
         const EmsImportResult imported = importEmsXml(command.value("path", ""), scene_);
-        return fail(imported.message);
+        if (!imported.ok) {
+            return fail(imported.message);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(imported.message);
+    }
+    if (op == "asset_import") {
+        const auto registry = createBuiltinRegistry();
+        const AssetImportResult imported = registry->importPath(command.value("path", ""), scene_);
+        if (!imported.ok) {
+            return fail(imported.message);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue({{"format", imported.format},
+                        {"nodes", imported.nodeCount},
+                        {"triangles", imported.triangleCount},
+                        {"message", imported.message}});
+    }
+    if (op == "asset_export") {
+        const std::string path = command.value("path", "");
+        std::string format = command.value("format", "");
+        if (format.empty()) {
+            const auto dot = path.find_last_of('.');
+            format = dot == std::string::npos ? "" : path.substr(dot + 1);
+        }
+        for (char& c : format) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        std::string error;
+        bool ok = false;
+        if (format == "stl") {
+            ok = exportSceneStl(scene_, path, error);
+        } else if (format == "gltf" || format == "glb") {
+            ok = exportSceneGltf(scene_, path, error);
+        } else if (format == "csv") {
+            const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+            error = report.error;
+            ok = error.empty() && exportScheduleCsv(report, path, error);
+        } else if (format == "xlsx") {
+            const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+            error = report.error;
+            ok = error.empty() && exportScheduleXlsx(report, path, error);
+        } else {
+            return fail("export format is gltf, glb, stl, csv, or xlsx");
+        }
+        if (!ok) {
+            return fail(error.empty() ? "export failed" : error);
+        }
+        return okValue(path);
     }
     if (op == "nl_to_logic" || op == "layout_suggest" || op == "cycle_optimize" || op == "explain_anomaly") {
         return fail(op + " is a documented hook and is not implemented");

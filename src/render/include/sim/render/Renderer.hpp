@@ -163,6 +163,7 @@ public:
 
     virtual int lastSubmitted() const = 0;
     virtual int lastCulled() const = 0;
+    virtual int lastDraws() const { return 0; }
 
     // CPU ray pick is the default. A GPU backend may override this later.
     virtual std::optional<PickHit> pick(const Scene& scene, const Ray& ray) const { return pickScene(scene, ray); }

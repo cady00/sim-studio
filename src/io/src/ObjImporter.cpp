@@ -156,10 +156,4 @@ ImportResult ObjImporter::importFile(const std::string& path, Scene& scene) {
     return result;
 }
 
-ImportResult GltfImporter::importFile(const std::string& path, Scene&) {
-    ImportResult result;
-    result.message = "glTF import is not implemented in Phase 1 (" + path + ")";
-    return result;
-}
-
 }  // namespace sim

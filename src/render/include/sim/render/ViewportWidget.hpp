@@ -11,6 +11,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class QMouseEvent;
@@ -45,6 +48,13 @@ public:
     void setDarkChrome(bool dark);
     // Reads the widget framebuffer through IRenderer::captureRgba.
     QImage captureView();
+    void setForceDetail(bool force) { forceDetail_ = force; }
+    double lastDrawMs() const { return drawMs_; }
+    int lastSubmitted() const;
+    int lastCulled() const { return culledFrame_; }
+    int lastDraws() const;
+    int residentMeshes() const { return static_cast<int>(resident_.size()); }
+    int lastDrawnTriangles() const { return drawnTriangles_; }
 
 signals:
     void selectionChanged(const QString& id);
@@ -105,6 +115,12 @@ private:
     QString physicsLine_;
     double fps_ = 0;
     int triangles_ = 0;
+    double drawMs_ = 0;
+    int culledFrame_ = 0;
+    int drawnTriangles_ = 0;
+    bool forceDetail_ = false;
+    std::unordered_set<std::string> resident_;
+    std::unordered_map<std::string, std::shared_ptr<MeshData>> lodCache_;
     qint64 lastFrameMs_ = 0;
     std::vector<Vec3> measurePoints_;
 };

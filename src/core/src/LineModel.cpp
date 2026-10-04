@@ -1,42 +1,19 @@
 #include "sim/core/LineModel.hpp"
 
 #include "sim/core/Scene.hpp"
+#include "sim/core/Xml.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <sstream>
 #include <unordered_map>
 
 namespace sim {
 namespace {
-
-std::string trimCopy(const std::string& text) {
-    std::size_t begin = 0;
-    while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t' || text[begin] == '\r')) {
-        ++begin;
-    }
-    std::size_t end = text.size();
-    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r')) {
-        --end;
-    }
-    return text.substr(begin, end - begin);
-}
-
-std::vector<std::string> splitLines(const std::string& text) {
-    std::vector<std::string> lines;
-    std::string line;
-    std::istringstream in(text);
-    while (std::getline(in, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        lines.push_back(line);
-    }
-    return lines;
-}
 
 std::string xmlEscape(const std::string& text) {
     std::string out;
@@ -193,20 +170,6 @@ std::string numberCell(int column, int row, double value) {
     text.precision(3);
     text << value;
     return "<c r=\"" + cellRef(column, row) + "\"><v>" + text.str() + "</v></c>";
-}
-
-void addCircle(std::vector<std::pair<Vec3, Vec3>>& lines, double cx, double cy, double radius, double scale) {
-    if (radius <= 0) {
-        return;
-    }
-    constexpr int kSegments = 16;
-    Vec3 previous{(cx + radius) * scale, cy * scale, 0};
-    for (int step = 1; step <= kSegments; ++step) {
-        const double angle = (2.0 * 3.14159265358979323846 * step) / kSegments;
-        Vec3 next{(cx + radius * std::cos(angle)) * scale, (cy + radius * std::sin(angle)) * scale, 0};
-        lines.emplace_back(previous, next);
-        previous = next;
-    }
 }
 
 }  // namespace
@@ -444,6 +407,9 @@ ScheduleReport scheduleOperations(const std::vector<Operation>& operations, cons
             for (int pred : preds[static_cast<std::size_t>(i)]) {
                 start = std::max(start, ef[static_cast<std::size_t>(pred)]);
             }
+            if (operations[static_cast<std::size_t>(i)].kind == OpKind::Task) {
+                start += std::max(0.0, operations[static_cast<std::size_t>(i)].wait);
+            }
             double finish = start;
             if (operations[static_cast<std::size_t>(i)].kind == OpKind::Task) {
                 finish = start + std::max(0.0, operations[static_cast<std::size_t>(i)].seconds);
@@ -486,7 +452,10 @@ ScheduleReport scheduleOperations(const std::vector<Operation>& operations, cons
         for (int i = count - 1; i >= 0; --i) {
             double finish = makespan;
             for (int succ : succs[static_cast<std::size_t>(i)]) {
-                finish = std::min(finish, latestStart[static_cast<std::size_t>(succ)]);
+                const double lag = operations[static_cast<std::size_t>(succ)].kind == OpKind::Task
+                                       ? std::max(0.0, operations[static_cast<std::size_t>(succ)].wait)
+                                       : 0.0;
+                finish = std::min(finish, latestStart[static_cast<std::size_t>(succ)] - lag);
             }
             const std::string& parent = operations[static_cast<std::size_t>(i)].parent;
             if (!parent.empty()) {
@@ -576,118 +545,6 @@ ScheduleReport scheduleOperations(const std::vector<Operation>& operations, cons
     return report;
 }
 
-DxfResult parseDxf(const std::string& text, double mmPerUnit) {
-    DxfResult result;
-    if (text.size() >= 18 && text.compare(0, 18, "AutoCAD Binary DXF") == 0) {
-        result.message = "binary DXF is not supported";
-        return result;
-    }
-    if (text.find('\0') != std::string::npos) {
-        result.message = "binary DXF is not supported";
-        return result;
-    }
-    const double scale = mmPerUnit > 1e-12 ? mmPerUnit : 1.0;
-    const std::vector<std::string> lines = splitLines(text);
-    if (lines.size() < 2 || lines.size() % 2 != 0) {
-        result.message = "dxf group codes are incomplete";
-        return result;
-    }
-    struct Entity {
-        std::string type;
-        std::vector<double> x;
-        std::vector<double> y;
-        std::vector<double> x2;
-        std::vector<double> y2;
-        double radius = 0;
-        int flags = 0;
-        bool alive = false;
-    } current;
-    bool inEntities = false;
-    bool pendingSection = false;
-    bool sawEntities = false;
-    auto flush = [&]() {
-        if (!current.alive) {
-            return;
-        }
-        if (current.type == "LINE" && !current.x.empty() && !current.y.empty() && !current.x2.empty() && !current.y2.empty()) {
-            result.lines.push_back({Vec3{current.x.front() * scale, current.y.front() * scale, 0},
-                                    Vec3{current.x2.front() * scale, current.y2.front() * scale, 0}});
-        } else if (current.type == "LWPOLYLINE") {
-            const std::size_t n = std::min(current.x.size(), current.y.size());
-            for (std::size_t i = 1; i < n; ++i) {
-                result.lines.push_back({Vec3{current.x[i - 1] * scale, current.y[i - 1] * scale, 0},
-                                        Vec3{current.x[i] * scale, current.y[i] * scale, 0}});
-            }
-            if ((current.flags & 1) != 0 && n >= 2) {
-                result.lines.push_back({Vec3{current.x[n - 1] * scale, current.y[n - 1] * scale, 0},
-                                        Vec3{current.x.front() * scale, current.y.front() * scale, 0}});
-            }
-        } else if (current.type == "CIRCLE" && !current.x.empty() && !current.y.empty()) {
-            addCircle(result.lines, current.x.front(), current.y.front(), current.radius, scale);
-        }
-        current = {};
-    };
-    try {
-        for (std::size_t i = 0; i + 1 < lines.size(); i += 2) {
-            const int code = std::stoi(trimCopy(lines[i]));
-            const std::string value = trimCopy(lines[i + 1]);
-            if (code == 0) {
-                flush();
-                if (value == "ENDSEC") {
-                    inEntities = false;
-                    pendingSection = false;
-                    continue;
-                }
-                if (value == "SECTION") {
-                    pendingSection = true;
-                    continue;
-                }
-                if (value == "EOF") {
-                    break;
-                }
-                if (inEntities) {
-                    current.type = value;
-                    current.alive = true;
-                }
-                continue;
-            }
-            if (code == 2 && pendingSection) {
-                inEntities = value == "ENTITIES";
-                sawEntities = sawEntities || inEntities;
-                pendingSection = false;
-                continue;
-            }
-            if (!current.alive) {
-                continue;
-            }
-            if (code == 10) {
-                current.x.push_back(std::stod(value));
-            } else if (code == 20) {
-                current.y.push_back(std::stod(value));
-            } else if (code == 11) {
-                current.x2.push_back(std::stod(value));
-            } else if (code == 21) {
-                current.y2.push_back(std::stod(value));
-            } else if (code == 40) {
-                current.radius = std::stod(value);
-            } else if (code == 70) {
-                current.flags = std::stoi(value);
-            }
-        }
-        flush();
-    } catch (const std::exception&) {
-        result.lines.clear();
-        result.message = "dxf group codes are incomplete";
-        return result;
-    }
-    if (!sawEntities) {
-        result.message = "dxf has no entities section";
-        return result;
-    }
-    result.ok = true;
-    result.message.clear();
-    return result;
-}
 
 bool loadDxfUnderlay(LineLayout& layout, const std::string& path, double mmPerUnit, std::string& error) {
     std::ifstream in(path);
@@ -706,6 +563,7 @@ bool loadDxfUnderlay(LineLayout& layout, const std::string& path, double mmPerUn
     layout.underlay.path = path;
     layout.underlay.mmPerUnit = mmPerUnit > 1e-12 ? mmPerUnit : 1;
     layout.underlay.lines = parsed.lines;
+    layout.underlay.layers = parsed.layers;
     error.clear();
     return true;
 }
@@ -715,15 +573,205 @@ void setImageUnderlay(LineLayout& layout, const std::string& path, double opacit
     layout.underlay.path = path;
     layout.underlay.opacity = std::clamp(opacity, 0.0, 1.0);
     layout.underlay.lines.clear();
+    layout.underlay.layers.clear();
+    layout.underlay.bytes.clear();
+    layout.underlay.embedded.clear();
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string bytes = buffer.str();
+    layout.underlay.bytes.assign(bytes.begin(), bytes.end());
+    const auto slash = path.find_last_of("/\\");
+    const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    layout.underlay.embedded = "underlays/" + (name.empty() ? std::string("plan.bin") : name);
 }
 
 EmsImportResult importEmsXml(const std::string& path, Scene& scene) {
-    (void)path;
-    (void)scene;
     EmsImportResult result;
-    result.ok = false;
-    result.message = "eMS/XML import is reserved and does not read the file";
+    std::ifstream in(path);
+    if (!in) {
+        result.message = "cannot open " + path;
+        return result;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    XmlNode root;
+    std::string error;
+    if (!parseXml(buffer.str(), root, error)) {
+        result.message = error.empty() ? "xml was not read" : error;
+        return result;
+    }
+    const auto local = [](std::string name) {
+        const auto colon = name.rfind(':');
+        if (colon != std::string::npos) {
+            name = name.substr(colon + 1);
+        }
+        for (char& c : name) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return name;
+    };
+    const auto attr = [](const XmlNode& node, std::initializer_list<const char*> keys) {
+        for (const char* key : keys) {
+            const auto it = node.attributes.find(key);
+            if (it != node.attributes.end() && !it->second.empty()) {
+                return it->second;
+            }
+        }
+        return std::string{};
+    };
+    int products = 0;
+    int processes = 0;
+    int plants = 0;
+    int nextId = 1;
+    const auto idOf = [&](const XmlNode& node) {
+        std::string id = attr(node, {"id", "ID", "name", "Name"});
+        if (id.empty()) {
+            id = "n" + std::to_string(nextId++);
+        }
+        return id;
+    };
+    std::function<void(const XmlNode&)> walk = [&](const XmlNode& node) {
+        const std::string kind = local(node.name);
+        const bool product = kind == "product" || kind == "part" || kind == "component" || kind == "item";
+        const bool process = kind == "process" || kind == "operation" || kind == "task" || kind == "activity";
+        const bool plant = kind == "plant" || kind == "resource" || kind == "station" || kind == "robot" || kind == "equipment";
+        if (product) {
+            ProductNode item;
+            item.id = idOf(node);
+            item.name = attr(node, {"name", "Name", "id", "ID"});
+            if (item.name.empty()) {
+                item.name = item.id;
+            }
+            item.parent = attr(node, {"parent", "Parent"});
+            item.partName = attr(node, {"part", "Part", "partName"});
+            scene.ppr.products.push_back(std::move(item));
+            ++products;
+        } else if (process) {
+            ProcessNode item;
+            item.id = idOf(node);
+            item.name = attr(node, {"name", "Name", "id", "ID"});
+            if (item.name.empty()) {
+                item.name = item.id;
+            }
+            item.parent = attr(node, {"parent", "Parent"});
+            item.operation = attr(node, {"operation", "Operation"});
+            if (item.operation.empty()) {
+                item.operation = item.id;
+            }
+            item.product = attr(node, {"product", "Product", "part", "Part"});
+            scene.ppr.processes.push_back(item);
+            Operation operation;
+            operation.id = item.operation;
+            operation.name = item.name;
+            operation.kind = OpKind::Task;
+            operation.station = attr(node, {"station", "Station", "resource", "Resource"});
+            operation.parent = item.parent;
+            const std::string seconds = attr(node, {"duration", "Duration", "seconds", "cycleTime", "CycleTime"});
+            if (!seconds.empty()) {
+                try {
+                    operation.seconds = std::stod(seconds);
+                } catch (const std::exception&) {
+                    operation.seconds = 0;
+                }
+            }
+            const std::string after = attr(node, {"after", "After", "predecessor", "Predecessor"});
+            if (!after.empty()) {
+                operation.after.push_back(after);
+            }
+            bool exists = false;
+            for (const Operation& current : scene.operations) {
+                if (current.id == operation.id) {
+                    exists = true;
+                }
+            }
+            if (!exists) {
+                scene.operations.push_back(std::move(operation));
+            }
+            ++processes;
+        } else if (plant) {
+            PlantNode item;
+            item.id = idOf(node);
+            item.name = attr(node, {"name", "Name", "id", "ID"});
+            if (item.name.empty()) {
+                item.name = item.id;
+            }
+            item.parent = attr(node, {"parent", "Parent"});
+            item.station = attr(node, {"station", "Station"});
+            if (item.station.empty()) {
+                item.station = item.id;
+            }
+            item.resource = attr(node, {"resource", "Resource"});
+            scene.ppr.plants.push_back(std::move(item));
+            ++plants;
+        }
+        for (const XmlNode& child : node.children) {
+            walk(child);
+        }
+    };
+    walk(root);
+    if (products + processes + plants == 0) {
+        result.message = "xml has no product, process, or plant elements (root " + root.name + ")";
+        return result;
+    }
+    if (scene.ppr.title.empty()) {
+        scene.ppr.title = root.name.empty() ? std::string("PPR") : root.name;
+    }
+    result.ok = true;
+    result.message = "read " + std::to_string(products) + " products, " + std::to_string(processes) + " processes, " +
+                     std::to_string(plants) + " plants";
     return result;
+}
+
+bool adjustOperationStart(std::vector<Operation>& operations, const LineLayout& layout, const std::string& id, double newStart) {
+    const ScheduleReport report = scheduleOperations(operations, layout);
+    const ScheduleBar* bar = nullptr;
+    for (const ScheduleBar& candidate : report.bars) {
+        if (candidate.id == id) {
+            bar = &candidate;
+        }
+    }
+    if (bar == nullptr) {
+        return false;
+    }
+    for (Operation& operation : operations) {
+        if (operation.id != id) {
+            continue;
+        }
+        const double base = bar->start - std::max(0.0, operation.wait);
+        operation.wait = std::max(0.0, newStart - base);
+        return true;
+    }
+    return false;
+}
+
+bool adjustOperationFinish(std::vector<Operation>& operations, const LineLayout& layout, const std::string& id, double newFinish) {
+    const ScheduleReport report = scheduleOperations(operations, layout);
+    const ScheduleBar* bar = nullptr;
+    for (const ScheduleBar& candidate : report.bars) {
+        if (candidate.id == id) {
+            bar = &candidate;
+        }
+    }
+    if (bar == nullptr) {
+        return false;
+    }
+    for (Operation& operation : operations) {
+        if (operation.id != id) {
+            continue;
+        }
+        operation.seconds = std::max(0.05, newFinish - bar->start);
+        operation.timeSource = "pinned";
+        if (operation.timeKey.empty()) {
+            operation.timeKey = "pinned";
+        }
+        operation.timeNote = "gantt finish";
+        return true;
+    }
+    return false;
 }
 
 bool exportScheduleCsv(const ScheduleReport& report, const std::string& path, std::string& error) {
@@ -823,6 +871,10 @@ nlohmann::json layoutToJson(const LineLayout& layout) {
     for (const auto& segment : layout.underlay.lines) {
         lines.push_back({segment.first.x, segment.first.y, segment.second.x, segment.second.y});
     }
+    nlohmann::json layers = nlohmann::json::array();
+    for (const std::string& layer : layout.underlay.layers) {
+        layers.push_back(layer);
+    }
     return {{"example", layout.example},
             {"title", layout.title},
             {"gridMm", layout.gridMm},
@@ -832,6 +884,8 @@ nlohmann::json layoutToJson(const LineLayout& layout) {
               {"path", layout.underlay.path},
               {"opacity", layout.underlay.opacity},
               {"mmPerUnit", layout.underlay.mmPerUnit},
+              {"embedded", layout.underlay.embedded},
+              {"layers", std::move(layers)},
               {"lines", std::move(lines)}}}};
 }
 
@@ -870,8 +924,16 @@ void layoutFromJson(const nlohmann::json& json, LineLayout& layout) {
         const auto& underlay = json.at("underlay");
         layout.underlay.kind = underlay.value("kind", std::string{});
         layout.underlay.path = underlay.value("path", std::string{});
+        layout.underlay.embedded = underlay.value("embedded", std::string{});
         layout.underlay.opacity = underlay.value("opacity", 0.35);
         layout.underlay.mmPerUnit = underlay.value("mmPerUnit", 1.0);
+        if (underlay.contains("layers") && underlay.at("layers").is_array()) {
+            for (const auto& layer : underlay.at("layers")) {
+                if (layer.is_string()) {
+                    layout.underlay.layers.push_back(layer.get<std::string>());
+                }
+            }
+        }
         if (underlay.contains("lines") && underlay.at("lines").is_array()) {
             for (const auto& line : underlay.at("lines")) {
                 if (line.is_array() && line.size() >= 4) {
@@ -893,9 +955,13 @@ nlohmann::json operationsToJson(const std::vector<Operation>& operations) {
                         {"kind", opKindName(operation.kind)},
                         {"index", operation.index},
                         {"seconds", operation.seconds},
+                        {"wait", operation.wait},
                         {"after", operation.after},
                         {"path", operation.path},
-                        {"logic", operation.logic}});
+                        {"logic", operation.logic},
+                        {"timeSource", operation.timeSource},
+                        {"timeKey", operation.timeKey},
+                        {"timeNote", operation.timeNote}});
     }
     return json;
 }
@@ -916,6 +982,10 @@ void operationsFromJson(const nlohmann::json& json, std::vector<Operation>& oper
         operation.parent = item.value("parent", std::string{});
         operation.index = item.value("index", 0);
         operation.seconds = item.value("seconds", 1.0);
+        operation.wait = item.value("wait", 0.0);
+        operation.timeSource = item.value("timeSource", std::string{});
+        operation.timeKey = item.value("timeKey", std::string{});
+        operation.timeNote = item.value("timeNote", std::string{});
         operation.path = item.value("path", std::string{});
         operation.logic = item.value("logic", std::string{});
         OpKind kind = OpKind::Task;

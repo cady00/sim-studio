@@ -2,6 +2,9 @@
 
 #include "sim/core/Mesh.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace sim {
 namespace {
 
@@ -428,12 +431,23 @@ EOF
         scene.operations.push_back(std::move(operation));
     };
     addOp("line", "节拍", "", OpKind::Sequence, 0, "", 0, "", "");
-    addOp("load", "上料", "line", OpKind::Task, 0, "st_load", 8, "", "");
+    addOp("load", "上料", "line", OpKind::Task, 0, "st_load", 8, "", "load_seq");
     addOp("weld", "焊接", "line", OpKind::Task, 1, "st_weld", 12, "cycle", "weld_seq");
     addOp("branch", "检查并行", "line", OpKind::Parallel, 2, "", 0, "", "");
     addOp("inspect", "检查", "branch", OpKind::Task, 0, "st_inspect", 6, "", "");
     addOp("prep", "夹具准备", "branch", OpKind::Task, 1, "st_inspect", 4, "", "");
     addOp("unload", "下料", "line", OpKind::Task, 3, "st_unload", 5, "", "");
+    for (Operation& operation : scene.operations) {
+        if (operation.id == "unload") {
+            operation.wait = 1;
+        }
+    }
+    if (auto pad = scene.findByName("UnloadPad")) {
+        pad->mech.kind = MechKind::Conveyor;
+        pad->mech.motion = BodyMotion::Anchored;
+        pad->mech.speed = 250;
+        pad->mech.direction = {1, 0, 0};
+    }
 
     ProductNode product;
     product.id = "prod_bracket";
@@ -482,6 +496,34 @@ EOF
     step.actions.push_back(action);
     block.steps.push_back(std::move(step));
     scene.logicBlocks.push_back(std::move(block));
+    LogicBlock load;
+    load.name = "load_seq";
+    LogicAction wait;
+    wait.kind = "wait";
+    wait.seconds = 2;
+    LogicStep loadStep;
+    loadStep.actions.push_back(wait);
+    load.steps.push_back(std::move(loadStep));
+    scene.logicBlocks.push_back(std::move(load));
+    scene.markClean();
+}
+
+void buildLargeField(Scene& scene, int parts, int triangles) {
+    scene.clear();
+    scene.name = "large_field";
+    const int count = std::max(1, parts);
+    const std::string meshId = scene.addMesh(makeTriangleGrid(std::max(2, triangles), 40));
+    const int side = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count)))));
+    scene.beginEdit();
+    for (int i = 0; i < count; ++i) {
+        auto node = scene.makeNode(NodeKind::Part, "p" + std::to_string(i));
+        node->meshId = meshId;
+        node->local.translation = {static_cast<double>(i % side) * 80.0, static_cast<double>(i / side) * 80.0, 0};
+        const double tint = 0.15 + static_cast<double>(i % 7) * 0.08;
+        node->color = {tint, 0.42, 0.78};
+        scene.addChild(scene.root(), node);
+    }
+    scene.endEdit();
     scene.markClean();
 }
 

@@ -5,6 +5,8 @@ add_library(sim_io
     src/GeometryKernel.cpp
     src/StepImporter.cpp
     src/ObjImporter.cpp
+    src/AssetImport.cpp
+    src/OcctCadImport.cpp
 )
 target_include_directories(sim_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(sim_io SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})

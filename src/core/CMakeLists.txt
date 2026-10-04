@@ -9,6 +9,7 @@ add_library(sim_core
     src/Proximity.cpp
     src/Scene.cpp
     src/LineModel.cpp
+    src/Dxf.cpp
     src/DemoScene.cpp
     src/Pick.cpp
     src/I18n.cpp

@@ -1,6 +1,7 @@
 #include "sim/render/OpenGLRenderer.hpp"
 
 #include <algorithm>
+#include <string>
 #include <unordered_map>
 
 namespace sim {
@@ -9,20 +10,27 @@ namespace {
 const char* kMeshVertex = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec4 iM0;
+layout(location = 3) in vec4 iM1;
+layout(location = 4) in vec4 iM2;
+layout(location = 5) in vec4 iM3;
+layout(location = 6) in vec4 iColor;
+layout(location = 7) in float iOpacity;
 uniform mat4 uViewProj;
-uniform mat4 uModel;
-uniform vec4 uColor;
 uniform vec3 uEye;
 out vec3 vNormal;
 out vec3 vWorld;
 out vec3 vColor;
 out float vHighlight;
+out float vOpacity;
 void main() {
+    mat4 uModel = mat4(iM0, iM1, iM2, iM3);
     vec4 world = uModel * vec4(aPos, 1.0);
     vWorld = world.xyz;
     vNormal = normalize(mat3(uModel) * aNormal);
-    vColor = uColor.rgb;
-    vHighlight = uColor.a;
+    vColor = iColor.rgb;
+    vHighlight = iColor.a;
+    vOpacity = iOpacity;
     gl_Position = uViewProj * world;
 }
 )";
@@ -32,8 +40,8 @@ in vec3 vNormal;
 in vec3 vWorld;
 in vec3 vColor;
 in float vHighlight;
+in float vOpacity;
 uniform vec3 uEye;
-uniform float uOpacity;
 out vec4 fragColor;
 void main() {
     vec3 n = normalize(vNormal);
@@ -46,7 +54,7 @@ void main() {
     if (vHighlight > 0.5) {
         color = mix(color, vec3(0.239, 0.525, 0.910), 0.42);
     }
-    fragColor = vec4(color, uOpacity);
+    fragColor = vec4(color, vOpacity);
 }
 )";
 
@@ -129,6 +137,7 @@ bool OpenGLRenderer::initialize(std::string& error) {
     }
     glGenVertexArrays(1, &lineVao_);
     glGenBuffers(1, &lineVbo_);
+    glGenBuffers(1, &instanceVbo_);
     ready_ = true;
     return true;
 }
@@ -147,6 +156,10 @@ void OpenGLRenderer::clearMeshes() {
 
 void OpenGLRenderer::shutdown() {
     clearMeshes();
+    if (instanceVbo_ != 0) {
+        glDeleteBuffers(1, &instanceVbo_);
+        instanceVbo_ = 0;
+    }
     if (lineVbo_ != 0) {
         glDeleteBuffers(1, &lineVbo_);
         lineVbo_ = 0;
@@ -203,43 +216,48 @@ void OpenGLRenderer::beginFrame(const FrameParams& frame) {
     frame_ = frame;
     submitted_ = 0;
     culled_ = 0;
+    draws_ = 0;
     glViewport(0, 0, frame.width, frame.height);
     glClearColor(static_cast<float>(frame.clearColor.x), static_cast<float>(frame.clearColor.y),
                  static_cast<float>(frame.clearColor.z), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
-void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>& instances) {
+void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>& instances, bool blend) {
     const int count = static_cast<int>(instances.size() / 21);
-    if (count <= 0 || meshProgram_ == 0) {
+    if (count <= 0 || meshProgram_ == 0 || instanceVbo_ == 0) {
         return;
     }
-    // One uniform draw per copy. Instanced matrix attributes did not deliver
-    // translation on the software GL context, so a moving base stayed put.
-    const int modelLoc = glGetUniformLocation(meshProgram_, "uModel");
-    const int colorLoc = glGetUniformLocation(meshProgram_, "uColor");
-    const int opacityLoc = glGetUniformLocation(meshProgram_, "uOpacity");
-    glBindVertexArray(mesh.vao);
-    for (int i = 0; i < count; ++i) {
-        const float* record = instances.data() + static_cast<std::size_t>(i) * 21;
-        const float opacity = record[20];
-        const bool translucent = opacity < 0.999f;
-        if (translucent) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glDepthMask(GL_FALSE);
-        }
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, record);
-        glUniform4fv(colorLoc, 1, record + 16);
-        glUniform1f(opacityLoc, opacity);
-        glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr);
-        if (translucent) {
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
-        }
+    if (blend) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
     }
+    glBindVertexArray(mesh.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, instanceVbo_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(instances.size() * sizeof(float)), instances.data(), GL_DYNAMIC_DRAW);
+    const int stride = 21 * static_cast<int>(sizeof(float));
+    for (int column = 0; column < 4; ++column) {
+        const unsigned location = static_cast<unsigned>(2 + column);
+        glEnableVertexAttribArray(location);
+        glVertexAttribPointer(location, 4, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<void*>(static_cast<std::uintptr_t>(column * 4 * sizeof(float))));
+        glVertexAttribDivisor(location, 1);
+    }
+    glEnableVertexAttribArray(6);
+    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(static_cast<std::uintptr_t>(16 * sizeof(float))));
+    glVertexAttribDivisor(6, 1);
+    glEnableVertexAttribArray(7);
+    glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(static_cast<std::uintptr_t>(20 * sizeof(float))));
+    glVertexAttribDivisor(7, 1);
+    glDrawElementsInstanced(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr, count);
     glBindVertexArray(0);
+    if (blend) {
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
     submitted_ += count;
+    ++draws_;
 }
 
 void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instances) {
@@ -252,11 +270,19 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
             ++culled_;
             continue;
         }
-        const int lod = selectLodLevel(instance.distanceMm, instance.lodLevels);
-        (void)lod;
+        std::string key = instance.meshKey;
+        if (instance.lodLevels > 1) {
+            const int lod = selectLodLevel(instance.distanceMm, instance.lodLevels);
+            if (lod > 0) {
+                const std::string lodKey = instance.meshKey + "#lod" + std::to_string(lod);
+                if (meshes_.find(lodKey) != meshes_.end()) {
+                    key = lodKey;
+                }
+            }
+        }
         float model[16];
         toGl(instance.world, model);
-        auto& batch = batches[instance.meshKey];
+        auto& batch = batches[key + (instance.material.opacity < 0.999f ? "#blend" : "")];
         batch.insert(batch.end(), model, model + 16);
         batch.push_back(static_cast<float>(instance.material.color.x));
         batch.push_back(static_cast<float>(instance.material.color.y));
@@ -271,11 +297,13 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
     glUniform3f(glGetUniformLocation(meshProgram_, "uEye"), static_cast<float>(frame_.eye.x),
                 static_cast<float>(frame_.eye.y), static_cast<float>(frame_.eye.z));
     for (const auto& [key, batch] : batches) {
-        const auto mesh = meshes_.find(key);
+        const bool blend = key.size() >= 6 && key.compare(key.size() - 6, 6, "#blend") == 0;
+        const std::string meshKey = blend ? key.substr(0, key.size() - 6) : key;
+        const auto mesh = meshes_.find(meshKey);
         if (mesh == meshes_.end()) {
             continue;
         }
-        drawInstances(mesh->second, batch);
+        drawInstances(mesh->second, batch, blend);
     }
 }
 

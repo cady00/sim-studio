@@ -1,6 +1,6 @@
 # .simproj 项目格式
 
-当前版本 8，格式标识 `simstudio.project`。扩展名 `.simproj`。读取器接受版本 1 到 8。版本 1 没有机构、信号和脚本字段，打开后这些内容为空。版本 2 没有运动学、逻辑块和路径。版本 3 没有碰撞集和凸分解缓存，打开后近距阈值用默认 5 mm，碰撞集为空。版本 4 的节点没有 `faceAxes`，打开后该数组为空。版本 5 没有外部轴字段，打开后关节不是外部轴，冗余模式是固定，路径锁住外部轴。版本 6 没有文档级 `physics` 和 `motors`；打开后物理用默认步长，电机列表为空。没有 `motion` 字段的旧机构按 `kinematic` 和种类推断运动方式。版本 7 没有 `layout`、`operations` 和 `ppr`，打开后工位、操作树和产品-工艺-工厂为空。
+当前版本 9，格式标识 `simstudio.project`。扩展名 `.simproj`。读取器接受版本 1 到 9。版本 1 没有机构、信号和脚本字段，打开后这些内容为空。版本 2 没有运动学、逻辑块和路径。版本 3 没有碰撞集和凸分解缓存，打开后近距阈值用默认 5 mm，碰撞集为空。版本 4 的节点没有 `faceAxes`，打开后该数组为空。版本 5 没有外部轴字段，打开后关节不是外部轴，冗余模式是固定，路径锁住外部轴。版本 6 没有文档级 `physics` 和 `motors`；打开后物理用默认步长，电机列表为空。没有 `motion` 字段的旧机构按 `kinematic` 和种类推断运动方式。版本 7 没有 `layout`、`operations` 和 `ppr`，打开后工位、操作树和产品-工艺-工厂为空。版本 8 的操作没有 `wait`、`timeSource`、`timeKey`、`timeNote`，底图没有 `layers` 和 `embedded`。
 
 文件是 **store-only ZIP**（压缩方法 0，UTF-8 文件名标志，CRC32）。不使用 ZIP64，单个成员建议小于 4 GiB。读取器拒绝方法 8，因此不要用通用压缩工具重新打包。
 
@@ -10,6 +10,7 @@
 | --- | --- |
 | `project.json` | UTF-8 JSON |
 | `meshes/<id>.bin` | 显示网格，魔数 `SIMMESH1` |
+| `underlays/<file>` | 底图像素。仅当 `layout.underlay.embedded` 指向它 |
 
 `project.json`：
 
@@ -170,4 +171,15 @@
 
 `ppr`：`products`（`part` 为零件名）、`processes`（`operation`、`product`）、`plants`（`station`、`resource`）。`example` 同样标记示例数据。
 
-eMS/XML 导入接口不读取文件，因此项目里没有专有 XML 字段。
+## 版本 9：实测节拍与嵌入底图
+
+操作增加可选字段。旧文件没有它们时，`wait` 为 0，来源字符串为空，节拍仍是存储的 `seconds`。
+
+- `wait`：前置完成后的额外等待，秒。甘特图拖动条的起点会改它。
+- `timeSource`：`plan`、`logic`、`conveyor`、`pinned` 或空。空表示作者填的秒数。
+- `timeKey`：规划指纹或钉住标记。路径或关节参数变了，下一次测量会解开 `pinned` 并重算。
+- `timeNote`：测量留下的说明。
+
+`underlay` 增加 `layers`（与 `lines` 对齐的图层名）和 `embedded`（项目包内的像素路径）。图片字节写在 ZIP 成员里，不写进 JSON。DXF 仍只存线段，不存原始文件。
+
+通用 PPR XML 读入产品、工艺、工厂节点后写入 `ppr` 和操作树。它不是某家软件的完整模式，项目里也不保存那份 XML。
