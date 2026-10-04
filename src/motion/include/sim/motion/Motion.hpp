@@ -313,6 +313,8 @@ struct CatalogRobot {
 // Geometry is a box on each link.
 const std::vector<CatalogRobot>& robotCatalog();
 bool addCatalogRobot(Scene& scene, const std::string& name, Vec3 station, std::string& error);
+// Layout, welds, a path, a clamp, OPC UA signal names, and a sequence. The robot is IRB120, not a private model.
+void buildPublicCell(Scene& scene);
 // Hides meshed parts whose names are outside the proximity sets. The caller shows them again.
 std::vector<std::shared_ptr<SceneNode>> hidePartsOutsideProximity(Scene& scene);
 // Obstacle, tint is already applied by applyLinkSuggestions. Adds a PTP/LIN path named "cycle".

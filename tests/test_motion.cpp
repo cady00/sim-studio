@@ -1238,3 +1238,44 @@ TEST_CASE("joint acceleration comes from torque inertia payload or the user") {
     REQUIRE(move.duration < 1.0);
     REQUIRE(move.duration == Catch::Approx(0.09).margin(0.02));
 }
+
+TEST_CASE("the public example cell covers layout welds path clamp signals and cycle time") {
+    sim::Scene scene;
+    sim::buildPublicCell(scene);
+    REQUIRE(sim::findResource(scene.resources, "kr420") == nullptr);
+    sim::KinematicResource* robot = sim::findResource(scene.resources, "IRB120");
+    REQUIRE(robot != nullptr);
+    REQUIRE(robot->payload == Catch::Approx(3));
+    REQUIRE(sim::jointAccelLimit(*robot, robot->joints.front()).source == "velocity");
+    sim::KinematicResource* clamp = sim::findResource(scene.resources, "clamp");
+    REQUIRE(clamp != nullptr);
+    const sim::JointAccelLimit slide = sim::jointAccelLimit(*clamp, *sim::findJoint(*clamp, "slide"));
+    REQUIRE(slide.source == "dynamics");
+    REQUIRE(slide.value == Catch::Approx(5000));
+    REQUIRE(scene.layout.stations.size() == 3);
+    REQUIRE(scene.welds.size() == 3);
+    REQUIRE(scene.robotPaths.size() == 1);
+    REQUIRE(scene.robotPaths.front().name == "weld");
+    REQUIRE(scene.logicBlocks.size() == 1);
+    REQUIRE(scene.findSignal("part_seen") != nullptr);
+    REQUIRE(scene.findSignal("weld_done") != nullptr);
+    REQUIRE(scene.findSignal("clamp") != nullptr);
+    const sim::ScheduleReport report = sim::scheduleSequence(scene.operations, scene.sequence, scene.layout);
+    REQUIRE(report.error.empty());
+    const sim::ScheduleBar* unload = nullptr;
+    for (const sim::ScheduleBar& bar : report.bars) {
+        if (bar.id == "unload") {
+            unload = &bar;
+        }
+    }
+    REQUIRE(unload != nullptr);
+    const sim::ScheduleBar* weld = nullptr;
+    for (const sim::ScheduleBar& bar : report.bars) {
+        if (bar.id == "weld") {
+            weld = &bar;
+        }
+    }
+    REQUIRE(weld != nullptr);
+    REQUIRE(unload->start == Catch::Approx(weld->finish + 0.4));
+    REQUIRE(report.makespan > weld->finish);
+}

@@ -41,6 +41,7 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFrame>
 #include <QFileDialog>
 #include <QSurfaceFormat>
 #include <QFormLayout>
@@ -139,6 +140,7 @@ MainWindow::MainWindow(QString locale) {
     applyTaskMode(0);
     setThemeName("dark");
     refreshStatus();
+    updateWelcome();
     if (recovered_ && statusLabel_ != nullptr) {
         statusLabel_->setText(trk("msg.recovered"));
     }
@@ -400,6 +402,30 @@ void MainWindow::buildUi() {
     ganttDock_->setObjectName("dock.gantt");
     ganttDock_->setWidget(gantt_);
     addDockWidget(Qt::BottomDockWidgetArea, ganttDock_);
+
+    sequence_ = new SequenceEditor(scene_, this);
+    sequenceDock_ = new QDockWidget(this);
+    sequenceDock_->setObjectName("dock.sequence");
+    sequenceDock_->setWidget(sequence_);
+    addDockWidget(Qt::BottomDockWidgetArea, sequenceDock_);
+    splitDockWidget(ganttDock_, sequenceDock_, Qt::Horizontal);
+
+    welcome_ = new QFrame(this);
+    welcome_->setObjectName("welcome");
+    welcome_->setFrameShape(QFrame::StyledPanel);
+    auto* welcomeLayout = new QVBoxLayout(welcome_);
+    auto* welcomeTitle = new QLabel(welcome_);
+    welcomeTitle->setObjectName("welcome.title");
+    auto* welcomeBody = new QLabel(welcome_);
+    welcomeBody->setObjectName("welcome.body");
+    welcomeBody->setWordWrap(true);
+    auto* welcomeOpen = new QPushButton(welcome_);
+    welcomeOpen->setObjectName("welcome.openExample");
+    connect(welcomeOpen, &QPushButton::clicked, this, [this] { loadDemo(QStringLiteral("cell")); });
+    welcomeLayout->addWidget(welcomeTitle);
+    welcomeLayout->addWidget(welcomeBody);
+    welcomeLayout->addWidget(welcomeOpen);
+    welcome_->setStyleSheet(QStringLiteral("QFrame#welcome { background: #1b2133; border: 1px solid #2a3550; border-radius: 8px; }"));
 
     tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
     tray_->setToolTip(QStringLiteral("Sim Studio"));
@@ -743,6 +769,10 @@ void MainWindow::bindScene() {
             if (gantt_ != nullptr) {
                 gantt_->reload();
             }
+            if (sequence_ != nullptr) {
+                sequence_->reload();
+            }
+            updateWelcome();
             if (logicCanvas_ != nullptr) {
                 logicCanvas_->reload();
             }
@@ -857,6 +887,18 @@ void MainWindow::retranslate() {
     if (auto* dock = findChild<QDockWidget*>("dock.gantt")) {
         dock->setWindowTitle(trk("dock.gantt"));
     }
+    if (auto* dock = findChild<QDockWidget*>("dock.sequence")) {
+        dock->setWindowTitle(trk("dock.sequence"));
+    }
+    if (auto* title = findChild<QLabel*>("welcome.title")) {
+        title->setText(trk("welcome.title"));
+    }
+    if (auto* body = findChild<QLabel*>("welcome.body")) {
+        body->setText(trk("welcome.body"));
+    }
+    if (auto* open = findChild<QPushButton*>("welcome.openExample")) {
+        open->setText(trk("welcome.openExample"));
+    }
     const bool zh = i18n_.locale() == "zh_CN";
     if (floor_ != nullptr) {
         floor_->setZh(zh);
@@ -866,6 +908,9 @@ void MainWindow::retranslate() {
     }
     if (gantt_ != nullptr) {
         gantt_->setZh(zh);
+    }
+    if (sequence_ != nullptr) {
+        sequence_->setZh(zh);
     }
     if (physicsShelf_ != nullptr) {
         physicsShelf_->reload();
@@ -1165,6 +1210,7 @@ void MainWindow::newProject() {
     projectPath_.clear();
     viewport_->fitAll();
     applyTaskMode(taskMode_);
+    updateWelcome();
 }
 
 void MainWindow::openProjectInteractive() {
@@ -1191,6 +1237,7 @@ void MainWindow::openProject(const QString& path) {
     viewport_->fitAll();
     refreshStatus();
     applyTaskMode(taskMode_);
+    updateWelcome();
 }
 
 bool MainWindow::saveProject(const QString& path) {
@@ -1441,6 +1488,7 @@ void MainWindow::captureScreenshot() {
     }
     // update() only queues a paint. The simulation clock is advanced before the
     // event loop runs, so the widget FBO would still show the pose from fitAll.
+    updateWelcome();
     viewport_->repaint();
     if (scope_ != nullptr && scope_->isVisible()) {
         scope_->repaint();
@@ -1465,6 +1513,7 @@ void MainWindow::captureScreenshot() {
         };
         stamp(palette_);
         stamp(intent_);
+        stamp(welcome_);
     }
     const QImage& output = window.isNull() ? view : window;
     const bool saved = !output.isNull() && output.save(screenshotPath_);
@@ -2186,6 +2235,19 @@ void MainWindow::loadDemo(const QString& name) {
         } else {
             applyTaskMode(0);
         }
+    } else if (name == QStringLiteral("cell")) {
+        buildPublicCell(scene_);
+        demoPath_.clear();
+        const ScheduleReport schedule = scheduleSequence(scene_.operations, scene_.sequence, scene_.layout);
+        viewport_->setCallout(QStringLiteral("IRB 120 · 焊点 %1 · 路径 weld · 夹具 · OPC UA part_seen / weld_done / clamp · 节拍 %2 s")
+                                  .arg(static_cast<int>(scene_.welds.size()))
+                                  .arg(schedule.makespan, 0, 'f', 1));
+        applyTaskMode(0);
+        if (sequenceDock_ != nullptr) {
+            sequenceDock_->show();
+            sequenceDock_->raise();
+            resizeDocks({sequenceDock_, ganttDock_}, {420, 280}, Qt::Horizontal);
+        }
     } else if (name == QStringLiteral("robots")) {
         scene_.clear();
         scene_.name = "robot_catalog";
@@ -2239,6 +2301,10 @@ void MainWindow::loadDemo(const QString& name) {
     if (gantt_ != nullptr) {
         gantt_->reload();
     }
+    if (sequence_ != nullptr) {
+        sequence_->reload();
+    }
+    updateWelcome();
     if (lineDemo_) {
         arrangeLineDocks();
     }
@@ -2571,6 +2637,25 @@ void MainWindow::positionFloaters() {
     if (intent_ != nullptr) {
         intent_->move(std::max(12, (width() - intent_->width()) / 2), std::max(80, height() - intent_->height() - 40));
     }
+    updateWelcome();
+}
+
+void MainWindow::updateWelcome() {
+    if (welcome_ == nullptr || viewport_ == nullptr) {
+        return;
+    }
+    const bool empty = scene_.resources.empty() && scene_.operations.empty() && scene_.nodeCount() <= 1;
+    const bool show = empty && !importing_;
+    welcome_->setVisible(show);
+    if (!show) {
+        return;
+    }
+    const int boxWidth = std::min(520, std::max(280, viewport_->width() - 48));
+    const int boxHeight = std::min(240, std::max(180, viewport_->height() / 3));
+    const QPoint origin = viewport_->mapTo(this, QPoint(0, 0));
+    welcome_->setGeometry(origin.x() + std::max(12, (viewport_->width() - boxWidth) / 2),
+                          origin.y() + std::max(12, (viewport_->height() - boxHeight) / 2), boxWidth, boxHeight);
+    welcome_->raise();
 }
 
 void MainWindow::setTaskModeName(const QString& mode) {
@@ -2612,6 +2697,7 @@ void MainWindow::applyTaskMode(int mode) {
     show(floorDock_, showLine);
     show(operationDock_, showLine);
     show(ganttDock_, showLine);
+    show(sequenceDock_, showLine);
     show(weldDock_, taskMode_ == 3 || lineFocus_ == QStringLiteral("weld"));
     if (lineDemo_) {
         arrangeLineDocks();
@@ -2660,6 +2746,9 @@ void MainWindow::setThemeName(const QString& theme) {
     }
     if (gantt_ != nullptr) {
         gantt_->setDark(themeName_ == "dark");
+    }
+    if (sequence_ != nullptr) {
+        sequence_->setDark(themeName_ == "dark");
     }
     if (operations_ != nullptr) {
         operations_->setDark(themeName_ == "dark");

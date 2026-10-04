@@ -18,6 +18,7 @@ class QCloseEvent;
 class QResizeEvent;
 class QComboBox;
 class QDockWidget;
+class QFrame;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -55,6 +56,7 @@ public:
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
     void loadDemo(const QString& name);
+    void updateWelcome();
     void runLargeSceneBench(const QString& screenshot);
     void finishLargeSceneBench();
     void usePhysicsBackend(PhysicsBackend backend);
@@ -264,9 +266,12 @@ private:
     class FloorPlanView* floor_ = nullptr;
     class OperationTreeView* operations_ = nullptr;
     class GanttView* gantt_ = nullptr;
+    class SequenceEditor* sequence_ = nullptr;
+    QFrame* welcome_ = nullptr;
     QDockWidget* floorDock_ = nullptr;
     QDockWidget* operationDock_ = nullptr;
     QDockWidget* ganttDock_ = nullptr;
+    QDockWidget* sequenceDock_ = nullptr;
     bool lineDemo_ = false;
     QString lineFocus_;
     QSystemTrayIcon* tray_ = nullptr;

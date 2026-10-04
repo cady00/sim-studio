@@ -307,4 +307,173 @@ void buildEditorDevices(Scene& scene) {
     applyResource(scene, hoist);
 }
 
+void buildPublicCell(Scene& scene) {
+    scene.clear();
+    scene.name = "公开参数焊装示例";
+    std::string error;
+
+    KinematicResource& clamp = ensureResource(scene, "clamp");
+    addLink(scene, clamp, "frame", "", {});
+    Transform jawLocal;
+    jawLocal.translation = {0, -700, 400};
+    addLink(scene, clamp, "jaw", "frame", jawLocal);
+    KinLink* jaw = findLink(clamp, "jaw");
+    jaw->hasInertia = true;
+    jaw->mass = 8;
+    KinJoint& slide = addJoint(clamp, scene, "slide", "frame", "jaw", JointMotion::Prismatic, {0, 1, 0}, jawLocal.translation);
+    slide.lower = 0;
+    slide.upper = 80;
+    slide.maxSpeed = 200;
+    slide.effort = 40;
+    slide.accelSource = "dynamics";
+    slide.maxAccel = 0;
+    if (auto frame = scene.find(findLink(clamp, "frame")->nodeId)) {
+        addBox(scene, frame, "ClampFrame", {40, 30, 80}, {0.45, 0.48, 0.52}, {0, -700, 360});
+    }
+    if (auto jawNode = scene.find(jaw->nodeId)) {
+        addBox(scene, jawNode, "ClampJaw", {24, 16, 20}, {0.85, 0.55, 0.2}, {0, 0, 0});
+    }
+    clamp.source = "夹具质量 8 kg，推力 40 N，加速度由这两项估算。";
+    applyResource(scene, clamp);
+
+    if (!addCatalogRobot(scene, "IRB120", {0, 0, 0}, error)) {
+        scene.name += " (" + error + ")";
+    }
+    if (KinematicResource* robot = findResource(scene.resources, "IRB120")) {
+        robot->payload = 3;
+        robot->source += "\n额定负载 3 kg（ABB IRB 120 公开样本）。关节扭矩未提供，加速度只受速度限制。";
+        applyResource(scene, *robot);
+    }
+
+    Station load;
+    load.id = "st_load";
+    load.name = "上件";
+    load.x = -1600;
+    load.kind = StationKind::Manual;
+    Station weldStation;
+    weldStation.id = "st_weld";
+    weldStation.name = "焊接";
+    weldStation.x = 0;
+    weldStation.kind = StationKind::Robot;
+    weldStation.resource = "IRB120";
+    Station unload;
+    unload.id = "st_out";
+    unload.name = "下件";
+    unload.x = 1600;
+    unload.kind = StationKind::Manual;
+    scene.layout.title = "公开参数焊装示例";
+    scene.layout.example = true;
+    scene.layout.stations = {load, weldStation, unload};
+
+    const Vec3 spots[] = {{420, 40, 280}, {480, -30, 260}, {390, 90, 300}};
+    for (int i = 0; i < 3; ++i) {
+        WeldSpot spot;
+        spot.id = "w" + std::to_string(i + 1);
+        spot.name = "焊点" + std::to_string(i + 1);
+        spot.position = spots[i];
+        spot.normal = {0, 0, 1};
+        spot.example = true;
+        spot.electrode = "IRB120";
+        scene.welds.push_back(spot);
+    }
+
+    RobotPath path;
+    path.name = "weld";
+    path.resource = "IRB120";
+    PathPoint home;
+    home.name = "home";
+    home.move = PathMove::Ptp;
+    home.joints = {0, 0, 0, 0, 0, 0};
+    PathPoint approach;
+    approach.name = "approach";
+    approach.move = PathMove::Ptp;
+    approach.joints = {15, -25, 20, 10, 25, 0};
+    approach.speed = 200;
+    path.points = {home, approach};
+    scene.robotPaths.push_back(path);
+    if (KinematicResource* robot = findResource(scene.resources, "IRB120")) {
+        const MotionPlan plan = planRobotPath(scene, *robot, scene.robotPaths.back());
+        if (plan.seconds > 0) {
+            scene.robotPaths.back().points.back().speed = 200;
+        }
+    }
+
+    scene.upsertSignal("part_seen", SignalType::Bool).flag = true;
+    scene.upsertSignal("weld_done", SignalType::Bool).flag = false;
+    scene.upsertSignal("clamp", SignalType::Bool).flag = false;
+    LogicBlock block;
+    block.name = "clamp";
+    block.resource = "clamp";
+    block.runSignal = "part_seen";
+    block.inputs = {"part_seen"};
+    block.outputs = {"clamp"};
+    LogicStep step;
+    LogicAction action;
+    action.kind = "set_output";
+    action.signal = "clamp";
+    step.actions.push_back(action);
+    block.steps.push_back(step);
+    scene.logicBlocks.push_back(block);
+
+    auto task = [](const std::string& id, const std::string& name, const std::string& station, double seconds, int index) {
+        Operation operation;
+        operation.id = id;
+        operation.name = name;
+        operation.station = station;
+        operation.kind = OpKind::Task;
+        operation.seconds = seconds;
+        operation.index = index;
+        return operation;
+    };
+    Operation loadOp = task("load", "上件", "st_load", 2, 0);
+    Operation weldOp = task("weld", "焊接", "st_weld", 4, 1);
+    weldOp.after = {"load"};
+    weldOp.path = "weld";
+    weldOp.logic = "clamp";
+    if (KinematicResource* robot = findResource(scene.resources, "IRB120")) {
+        const MotionPlan plan = planRobotPath(scene, *robot, scene.robotPaths.front());
+        if (plan.ok && plan.seconds > 0) {
+            weldOp.seconds = plan.seconds;
+            weldOp.timeSource = "plan";
+            weldOp.timeNote = "IRB120 路径";
+        }
+    }
+    Operation outOp = task("unload", "下件", "st_out", 2, 2);
+    scene.operations = {loadOp, weldOp, outOp};
+
+    SequenceEvent transition;
+    transition.id = "tr_weld_out";
+    transition.name = "焊接到下件";
+    transition.kind = "transition";
+    transition.operation = "weld";
+    transition.target = "unload";
+    transition.delay = 0.4;
+    SequenceEvent setDone;
+    setDone.id = "sig_done";
+    setDone.name = "weld_done";
+    setDone.kind = "signal";
+    setDone.operation = "weld";
+    setDone.edge = "finish";
+    setDone.signal = "weld_done";
+    setDone.action = "set";
+    setDone.flag = true;
+    SequenceEvent setSeen;
+    setSeen.id = "sig_seen";
+    setSeen.name = "part_seen";
+    setSeen.kind = "signal";
+    setSeen.operation = "load";
+    setSeen.edge = "start";
+    setSeen.signal = "part_seen";
+    setSeen.action = "set";
+    SequenceEvent waitDone;
+    waitDone.id = "wait_done";
+    waitDone.name = "下件等待 weld_done";
+    waitDone.kind = "signal";
+    waitDone.operation = "unload";
+    waitDone.edge = "start";
+    waitDone.signal = "weld_done";
+    waitDone.action = "wait";
+    scene.sequence = {transition, setDone, setSeen, waitDone};
+}
+
 }  // namespace sim
