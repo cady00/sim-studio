@@ -45,6 +45,7 @@ public:
 private:
     Scene& scene_;
     QWidget* canvas_ = nullptr;
+    bool zh_ = true;
 };
 
 }  // namespace sim

@@ -183,6 +183,15 @@ struct ProductionStats {
     std::vector<StationAccount> stations;
 };
 
+// One row of the discrete-event premise. timeSource is empty for the authored table.
+struct ProductionTerm {
+    std::string station;
+    std::string operation;
+    double seconds = 0;
+    double wait = 0;
+    std::string timeSource;
+};
+
 // One-piece flow. The source keeps a single input slot full on its interval.
 // A station is busy while it works, blocked when the next station still holds a part, and starved when it has none.
 class LineProduction {
@@ -190,6 +199,8 @@ public:
     bool start(const Scene& scene, std::string& error);
     void step(double dt);
     ProductionStats stats() const;
+    // Discrete one-piece flow from the operation table. Never a mesh-collision hour.
+    std::string note(bool chinese) const;
 
 private:
     struct Stage {
@@ -215,6 +226,7 @@ private:
     int output_ = 0;
     double sourceBlocked_ = 0;
     bool running_ = false;
+    std::vector<ProductionTerm> terms_;
 };
 // Cubic Hermite on u in [0, 1]. Slopes are dq/du so a zone can match the joint velocity on both sides.
 double zoneBlend(double u, double q0, double q1, double slope0, double slope1);

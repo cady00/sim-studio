@@ -618,7 +618,7 @@ GanttView::GanttView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(sc
         }
         production.step(3600.0);
         const ProductionStats stats = production.stats();
-        QString text = QStringLiteral("产量 %1 · JPH %2").arg(stats.output).arg(stats.jobsPerHour, 0, 'f', 1);
+        QString text = QString::fromStdString(production.note(zh_));
         for (const StationAccount& station : stats.stations) {
             const double util = stats.time > 1e-9 ? 100.0 * station.busySeconds / stats.time : 0;
             text += QStringLiteral(" · %1 利用率 %2% 阻塞 %3 s 饥饿 %4 s")
@@ -664,6 +664,7 @@ void GanttView::setDark(bool dark) {
 }
 
 void GanttView::setZh(bool zh) {
+    zh_ = zh;
     if (auto* canvas = static_cast<GanttCanvas*>(canvas_)) {
         canvas->setZh(zh);
     }

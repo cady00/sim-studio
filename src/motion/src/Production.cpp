@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 
 namespace sim {
 namespace {
@@ -80,6 +82,21 @@ bool LineProduction::start(const Scene& scene, std::string& error) {
         return false;
     }
     interval_ = stages_.front().process;
+    terms_.clear();
+    for (const Stage& stage : stages_) {
+        for (const Operation& operation : scene.operations) {
+            if (operation.kind != OpKind::Task || operation.station != stage.id) {
+                continue;
+            }
+            ProductionTerm term;
+            term.station = stage.id;
+            term.operation = operation.name.empty() ? operation.id : operation.name;
+            term.seconds = operation.seconds;
+            term.wait = operation.wait;
+            term.timeSource = operation.timeSource;
+            terms_.push_back(std::move(term));
+        }
+    }
     std::vector<std::shared_ptr<SceneNode>> stack{scene.root()};
     while (!stack.empty()) {
         auto node = stack.back();
@@ -214,6 +231,80 @@ ProductionStats LineProduction::stats() const {
         stats.stations.push_back(std::move(account));
     }
     return stats;
+}
+
+namespace {
+
+const char* timeSourceLabel(const std::string& source, bool chinese) {
+    if (source == "plan") {
+        return chinese ? "路径规划" : "path plan";
+    }
+    if (source == "logic") {
+        return chinese ? "逻辑步进" : "logic step";
+    }
+    if (source == "sensor") {
+        return chinese ? "传感器步进" : "sensor step";
+    }
+    if (source == "conveyor") {
+        return chinese ? "输送步进" : "conveyor step";
+    }
+    if (source == "pinned") {
+        return chinese ? "钉住" : "pinned";
+    }
+    return chinese ? "工序表" : "operation table";
+}
+
+std::string oneDecimal(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1) << value;
+    return out.str();
+}
+
+}  // namespace
+
+std::string LineProduction::note(bool chinese) const {
+    const ProductionStats current = stats();
+    std::ostringstream out;
+    if (chinese) {
+        out << "估算。离散一件流，按工位占用和投料间隔推演，不含网格碰撞，也不是一小时接触计数。";
+        out << "投料间隔 " << oneDecimal(interval_) << " s。";
+    } else {
+        out << "Estimate. Discrete one-piece flow from station occupancy and the feeder interval. ";
+        out << "Not a mesh-collision hour and not an hour of contact counts. ";
+        out << "Feeder interval " << oneDecimal(interval_) << " s. ";
+    }
+    for (const StationAccount& station : current.stations) {
+        if (chinese) {
+            out << station.id << " 占用 " << oneDecimal(station.processSeconds) << " s（";
+        } else {
+            out << station.id << " occupancy " << oneDecimal(station.processSeconds) << " s (";
+        }
+        bool any = false;
+        for (const ProductionTerm& term : terms_) {
+            if (term.station != station.id) {
+                continue;
+            }
+            if (any) {
+                out << "；";
+            }
+            any = true;
+            out << term.operation << " " << oneDecimal(term.seconds) << " s";
+            if (term.wait > 1e-9) {
+                out << (chinese ? " + 等待 " : " + wait ") << oneDecimal(term.wait) << " s";
+            }
+            out << "，" << timeSourceLabel(term.timeSource, chinese);
+        }
+        if (!any) {
+            out << (chinese ? "工序表" : "operation table");
+        }
+        out << (chinese ? "）。" : "). ");
+    }
+    if (chinese) {
+        out << "产量 " << current.output << "。JPH " << oneDecimal(current.jobsPerHour) << "。";
+    } else {
+        out << "Output " << current.output << ". JPH " << oneDecimal(current.jobsPerHour) << ".";
+    }
+    return out.str();
 }
 
 }  // namespace sim

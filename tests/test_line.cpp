@@ -822,4 +822,31 @@ TEST_CASE("the example line keeps feeding for an hour", "[line]") {
     std::cout << "LINE_JPH output=" << stats.output << " jph=" << stats.jobsPerHour << " weld_util="
               << (weld->busySeconds / stats.time) << " weld_block=" << weld->blockedSeconds
               << " weld_starve=" << weld->starvedSeconds << " source_block=" << stats.sourceBlockedSeconds << std::endl;
+
+    const std::string note = production.note(true);
+    REQUIRE(note.find("估算") != std::string::npos);
+    REQUIRE(note.find("不含网格碰撞") != std::string::npos);
+    REQUIRE(note.find("也不是一小时接触计数") != std::string::npos);
+    REQUIRE(note.find("st_weld 占用 12.0 s") != std::string::npos);
+    REQUIRE(note.find("工序表") != std::string::npos);
+    REQUIRE(note.find("路径规划") == std::string::npos);
+    REQUIRE(note.find("实测") == std::string::npos);
+    REQUIRE(stats.jobsPerHour < 360);
+
+    for (sim::Operation& operation : scene.operations) {
+        if (operation.id == "weld") {
+            operation.seconds = 6;
+            operation.timeSource = "plan";
+        }
+    }
+    sim::LineProduction planned;
+    REQUIRE(planned.start(scene, error));
+    planned.step(3600);
+    const std::string plannedNote = planned.note(true);
+    REQUIRE(plannedNote.find("估算") != std::string::npos);
+    REQUIRE(plannedNote.find("路径规划") != std::string::npos);
+    REQUIRE(plannedNote.find("st_weld 占用 6.0 s") != std::string::npos);
+    REQUIRE(plannedNote.find("实测") == std::string::npos);
+    REQUIRE(plannedNote.find("不含网格碰撞") != std::string::npos);
+    REQUIRE(planned.stats().jobsPerHour != Approx(stats.jobsPerHour));
 }
