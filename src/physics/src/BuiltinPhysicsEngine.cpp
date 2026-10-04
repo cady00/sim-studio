@@ -45,6 +45,7 @@ struct Touch {
     Vec3 push{0, 0, 1};
     double depth = 0;
     Vec3 point{};
+    std::vector<Vec3> points;
     std::string otherId;
     std::string otherName;
     bool conveyor = false;
@@ -184,6 +185,26 @@ void integrateBall(JointState& joint, SceneNode& node, double dt) {
         const Quat delta = Quat::fromAxisAngle(normalize(joint.omega), deg2rad(rate * dt));
         joint.swing = (delta * joint.swing).normalized();
     }
+    if (node.mech.limited) {
+        const double cone = std::max(0.0, node.mech.upper);
+        const Vec3 rest = length(joint.axis) > 1e-8 ? normalize(joint.axis) : Vec3{0, 0, 1};
+        const Vec3 swung = joint.swing.rotate(rest);
+        const double cosine = std::clamp(dot(rest, normalize(swung)), -1.0, 1.0);
+        const double angle = rad2deg(std::acos(cosine));
+        if (angle > cone + 1e-3) {
+            Vec3 correction = cross(swung, rest);
+            if (length(correction) < 1e-8) {
+                correction = std::abs(rest.z) < 0.9 ? cross(rest, Vec3{0, 0, 1}) : cross(rest, Vec3{1, 0, 0});
+            }
+            correction = normalize(correction);
+            const Quat back = Quat::fromAxisAngle(correction, deg2rad(angle - cone));
+            joint.swing = (back * joint.swing).normalized();
+            const double closing = dot(joint.omega, correction);
+            if (closing < 0) {
+                joint.omega = joint.omega - correction * closing;
+            }
+        }
+    }
     node.local.rotation = (joint.swing * joint.restRotation).normalized();
     node.local.translation = joint.restTranslation;
 }
@@ -227,6 +248,46 @@ public:
             }
         }
         error.clear();
+        return true;
+    }
+
+    bool stopAtImpact(BodyState& body, SceneNode& node, double dt) {
+        const Box self = boxOf(node);
+        double best = dt + 1.0;
+        Vec3 normal{0, 0, 1};
+        bool hit = false;
+        for (const BodyState& other : bodies_) {
+            if (other.id == body.id || other.dynamic) {
+                continue;
+            }
+            auto obstacle = scene_->find(other.id);
+            if (!obstacle) {
+                continue;
+            }
+            double toi = 0;
+            Vec3 hitNormal{0, 0, 1};
+            bool found = false;
+            if (obstacle->mech.shape == CollisionShape::Mesh) {
+                if (const TriangleBvh* bvh = trianglesFor(*obstacle)) {
+                    found = sweepAabbMesh(self.center, self.half, body.velocity, dt, *bvh, obstacle->worldMatrix(), toi, hitNormal);
+                }
+            } else {
+                const Box box = boxOf(*obstacle);
+                found = sweepAabbToi(self.center, self.half, body.velocity, dt, box.center, box.half, toi, hitNormal);
+            }
+            if (found && toi < best) {
+                best = toi;
+                normal = hitNormal;
+                hit = true;
+            }
+        }
+        if (!hit) {
+            return false;
+        }
+        node.local.translation = node.local.translation + body.velocity * std::max(0.0, best);
+        if (dot(body.velocity, normal) < 0) {
+            body.velocity = body.velocity - normal * dot(body.velocity, normal);
+        }
         return true;
     }
 
@@ -290,11 +351,14 @@ public:
             if (node->mech.asleep && node->mech.allowSleep) {
                 continue;
             }
-            const int slices = node->mech.continuous ? 4 : 1;
-            const double sub = dt / static_cast<double>(slices);
-            for (int slice = 0; slice < slices; ++slice) {
-                body.velocity.z += kGravity * sub;
-                node->local.translation = node->local.translation + body.velocity * sub;
+            if (node->mech.continuous) {
+                body.velocity.z += kGravity * dt;
+                if (!stopAtImpact(body, *node, dt)) {
+                    node->local.translation = node->local.translation + body.velocity * dt;
+                }
+            } else {
+                body.velocity.z += kGravity * dt;
+                node->local.translation = node->local.translation + body.velocity * dt;
             }
             if (node->mech.allowSleep && length(body.velocity) < 2.0) {
                 node->mech.asleep = true;
@@ -492,6 +556,24 @@ private:
     }
 
     std::vector<Probe> narrowProbes(const SceneNode& moving, const SceneNode& obstacle) {
+        if (moving.mech.shape == CollisionShape::Mesh && obstacle.mech.shape == CollisionShape::Mesh) {
+            const TriangleBvh* first = trianglesFor(moving);
+            const TriangleBvh* second = trianglesFor(obstacle);
+            std::vector<Probe> probes;
+            if (first != nullptr && second != nullptr) {
+                const std::vector<NarrowContact> hits =
+                    queryMeshMesh(*first, moving.worldMatrix(), *second, obstacle.worldMatrix(), 8);
+                for (std::size_t i = 0; i < hits.size(); i += 2) {
+                    Probe probe;
+                    probe.hit = true;
+                    probe.push = hits[i].normal;
+                    probe.depth = hits[i].depth;
+                    probe.point = hits[i].point;
+                    probes.push_back(probe);
+                }
+            }
+            return probes;
+        }
         if (obstacle.mech.shape == CollisionShape::Mesh) {
             if (const TriangleBvh* bvh = trianglesFor(obstacle)) {
                 const Box box = boxOf(moving);
@@ -558,16 +640,20 @@ private:
             velocity = velocity - slip * (reduce / slipLength);
         }
         body.velocity = velocity;
-        ContactNotice notice;
-        notice.self = node.name;
-        notice.other = touch.otherName;
-        notice.impulse = massKilograms(node.mech) * std::abs(normalDelta);
-        notice.normal = push;
-        notice.point = touch.point;
-        scene_->contactNotices.push_back(notice);
+        const double impulseValue = massKilograms(node.mech) * std::abs(normalDelta);
+        const std::vector<Vec3> points = touch.points.empty() ? std::vector<Vec3>{touch.point} : touch.points;
+        for (const Vec3& point : points) {
+            ContactNotice notice;
+            notice.self = node.name;
+            notice.other = touch.otherName;
+            notice.impulse = impulseValue;
+            notice.normal = push;
+            notice.point = point;
+            scene_->contactNotices.push_back(notice);
+        }
         scene_->upsertSignal("contact", SignalType::Bool).flag = true;
         Signal& impulse = scene_->upsertSignal("contact_impulse", SignalType::Real);
-        impulse.real = std::max(impulse.real, notice.impulse);
+        impulse.real = std::max(impulse.real, impulseValue);
         if (touch.ride) {
             body.dynamic = false;
             body.riding = true;
@@ -773,12 +859,16 @@ private:
                     Touch& touch = touches[index];
                     if (!touch.used || deepest->depth > touch.depth) {
                         if (!touch.used) {
-                            scene_->physicsDoc.stats.contacts += 1;
+                            scene_->physicsDoc.stats.contacts += static_cast<int>(probes.size());
                         }
                         touch.used = true;
                         touch.push = deepest->push;
                         touch.depth = deepest->depth;
                         touch.point = deepest->point;
+                        touch.points.clear();
+                        for (const Probe& probe : probes) {
+                            touch.points.push_back(probe.point);
+                        }
                         touch.otherId = obstacle->id;
                         touch.otherName = obstacle->name;
                         touch.conveyor = obstacle->mech.kind == MechKind::Conveyor;

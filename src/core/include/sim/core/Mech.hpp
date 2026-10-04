@@ -67,6 +67,7 @@ struct Mech {
     Vec3 spin{0, 0, 0};
     bool limited = true;
     double lower = 0;
+    // Hinge and slider travel stops. On a ball joint, upper is the swing-cone half-angle in degrees.
     double upper = 0;
     DriveMode drive = DriveMode::None;
     double target = 0;
