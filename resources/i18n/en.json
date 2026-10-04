@@ -63,6 +63,7 @@
   "msg.importFail": "Import failed: %1",
   "msg.objFail": "OBJ import failed: %1",
   "msg.saveOk": "Saved %1",
+  "msg.recovered": "Restored the last autosave",
   "msg.saveFail": "Save failed: %1",
   "msg.openFail": "Open failed: %1",
   "dialog.unsaved.title": "Unsaved changes",

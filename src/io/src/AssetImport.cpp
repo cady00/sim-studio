@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
@@ -179,8 +180,7 @@ std::shared_ptr<MeshData> meshFromStl(const std::string& bytes, std::string& err
         }
         std::uint32_t triangles = 0;
         std::memcpy(&triangles, bytes.data() + 80, 4);
-        const std::size_t need = 84ull + static_cast<std::size_t>(triangles) * 50ull;
-        if (bytes.size() < need) {
+        if (triangles > (bytes.size() - 84) / 50) {
             error = "stl triangle count does not match the file";
             return {};
         }
@@ -599,7 +599,7 @@ AssetImportResult importGltfFile(const std::string& path, Scene& scene) {
             std::memcpy(&chunkLength, bytes.data() + cursor, 4);
             std::memcpy(&chunkType, bytes.data() + cursor + 4, 4);
             cursor += 8;
-            if (cursor + chunkLength > bytes.size()) {
+            if (chunkLength > bytes.size() - cursor) {
                 result.message = "glb chunk is truncated";
                 return result;
             }
@@ -640,7 +640,12 @@ AssetImportResult importGltfFile(const std::string& path, Scene& scene) {
             }
         }
     }
-    return importGltfBytes(json, buffers, scene);
+    try {
+        return importGltfBytes(json, buffers, scene);
+    } catch (const std::exception& ex) {
+        result.message = ex.what();
+        return result;
+    }
 }
 
 std::vector<double> splitNumbers(const std::string& text) {
@@ -970,7 +975,14 @@ public:
             result.message = error;
             return result;
         }
-        return adoptMesh(scene, meshFromStl(bytes, error), "stl", format());
+        auto mesh = meshFromStl(bytes, error);
+        if (!mesh) {
+            AssetImportResult result;
+            result.format = format();
+            result.message = error.empty() ? "stl produced an empty mesh" : error;
+            return result;
+        }
+        return adoptMesh(scene, std::move(mesh), "stl", format());
     }
 };
 
@@ -1183,7 +1195,14 @@ AssetImportResult AssetRegistry::importPath(const std::string& path, Scene& scen
         result.message = "no importer for " + path;
         return result;
     }
-    result = importer->importFile(path, scene);
+    try {
+        result = importer->importFile(path, scene);
+    } catch (const std::exception& ex) {
+        result.ok = false;
+        result.message = ex.what();
+        result.format = importer->format();
+        return result;
+    }
     if (result.format.empty()) {
         result.format = importer->format();
     }

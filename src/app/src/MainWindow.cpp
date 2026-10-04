@@ -35,6 +35,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QTimer>
 #include <QDoubleSpinBox>
@@ -102,6 +103,15 @@ MainWindow::MainWindow(QString locale) {
     scripting_->bind(&scene_);
     scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
                                 [this](const std::string& id) { physics_->releaseBody(id); });
+    if (QCoreApplication::applicationName().isEmpty()) {
+        QCoreApplication::setApplicationName(QStringLiteral("Sim Studio"));
+    }
+    recoveryDir_ = (QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/recovery")).toStdString();
+    if (ProjectStore::sessionInterrupted(recoveryDir_)) {
+        const ProjectResult restored = ProjectStore::restoreAutosave(recoveryDir_, scene_);
+        recovered_ = restored.ok;
+    }
+    ProjectStore::markSession(recoveryDir_);
     QSettings settings;
     if (locale.isEmpty()) {
         locale = settings.value("locale", QString::fromLatin1(I18nCatalog::kDefaultLocale)).toString();
@@ -127,6 +137,18 @@ MainWindow::MainWindow(QString locale) {
     applyTaskMode(0);
     setThemeName("dark");
     refreshStatus();
+    if (recovered_ && statusLabel_ != nullptr) {
+        statusLabel_->setText(trk("msg.recovered"));
+    }
+    autosaveTimer_ = new QTimer(this);
+    autosaveTimer_->setInterval(45000);
+    connect(autosaveTimer_, &QTimer::timeout, this, [this] {
+        if (importing_ || recoveryDir_.empty() || !scene_.dirty()) {
+            return;
+        }
+        ProjectStore::autosave(scene_, recoveryDir_);
+    });
+    autosaveTimer_->start();
 }
 
 MainWindow::~MainWindow() {
@@ -137,6 +159,9 @@ MainWindow::~MainWindow() {
     cancelImport_.store(true);
     if (importThread_.joinable()) {
         importThread_.join();
+    }
+    if (!recoveryDir_.empty()) {
+        ProjectStore::clearSession(recoveryDir_);
     }
 }
 

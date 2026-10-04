@@ -141,6 +141,9 @@ private:
     std::string pendingPath_;
     std::vector<double> jointRest_;
     QTimer* simTimer_ = nullptr;
+    QTimer* autosaveTimer_ = nullptr;
+    std::string recoveryDir_;
+    bool recovered_ = false;
     ViewportWidget* viewport_ = nullptr;
     class SceneTreeModel* treeModel_ = nullptr;
     QTreeView* tree_ = nullptr;

@@ -5,8 +5,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cerrno>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <unordered_map>
+
+#include <signal.h>
+#include <unistd.h>
 
 namespace sim {
 namespace {
@@ -458,6 +464,66 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     result.ok = true;
     result.message.clear();
     return result;
+}
+
+namespace {
+
+std::filesystem::path recoveryFile(const std::string& directory, const char* name) {
+    return std::filesystem::path(directory) / name;
+}
+
+}  // namespace
+
+ProjectResult ProjectStore::autosave(const Scene& scene, const std::string& directory) {
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        ProjectResult result;
+        result.message = error.message();
+        return result;
+    }
+    return save(scene, recoveryFile(directory, "autosave.simproj").string());
+}
+
+void ProjectStore::markSession(const std::string& directory) {
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    std::ofstream out(recoveryFile(directory, "session.pid"));
+    if (out) {
+        out << static_cast<long>(getpid());
+    }
+}
+
+void ProjectStore::clearSession(const std::string& directory) {
+    std::error_code error;
+    std::filesystem::remove(recoveryFile(directory, "session.pid"), error);
+    std::filesystem::remove(recoveryFile(directory, "autosave.simproj"), error);
+}
+
+bool ProjectStore::sessionInterrupted(const std::string& directory) {
+    std::ifstream in(recoveryFile(directory, "session.pid"));
+    if (!in) {
+        return false;
+    }
+    long pid = 0;
+    in >> pid;
+    if (pid <= 0 || pid == static_cast<long>(getpid())) {
+        return false;
+    }
+    if (kill(static_cast<pid_t>(pid), 0) == 0) {
+        return false;
+    }
+    return errno == ESRCH;
+}
+
+ProjectResult ProjectStore::restoreAutosave(const std::string& directory, Scene& scene) {
+    const std::filesystem::path path = recoveryFile(directory, "autosave.simproj");
+    if (!std::filesystem::exists(path)) {
+        ProjectResult result;
+        result.message = "no autosave";
+        return result;
+    }
+    return load(path.string(), scene);
 }
 
 }  // namespace sim
