@@ -2,6 +2,7 @@
 
 #include "sim/core/I18n.hpp"
 #include "sim/core/Scene.hpp"
+#include "sim/io/EditHistory.hpp"
 #include "sim/motion/Motion.hpp"
 #include "sim/physics/PhysicsEngine.hpp"
 #include "sim/scripting/ScriptHost.hpp"
@@ -119,6 +120,7 @@ private:
     void arrangeLineDocks();
 
     Scene scene_;
+    EditHistory history_;
     I18nCatalog i18n_;
     std::unique_ptr<IPhysicsEngine> physics_;
     std::unique_ptr<IScriptHost> scripting_;

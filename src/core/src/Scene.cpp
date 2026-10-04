@@ -532,6 +532,8 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     interlocks.clear();
     proximity = {};
     convexCache.clear();
+    physicsDoc = {};
+    motors.clear();
     contactNotices.clear();
     layout = {};
     operations.clear();

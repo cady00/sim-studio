@@ -120,6 +120,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
     if (op == "set_bool") {
         Signal& signal = scene_.upsertSignal(command.value("name", ""), SignalType::Bool);
         signal.flag = command.value("value", false);
+        scene_.notify(ChangeKind::Structure);
         return okValue(signal.flag);
     }
     if (op == "get_int") {
@@ -129,6 +130,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
     if (op == "set_int") {
         Signal& signal = scene_.upsertSignal(command.value("name", ""), SignalType::Int);
         signal.integer = command.value("value", 0);
+        scene_.notify(ChangeKind::Structure);
         return okValue(signal.integer);
     }
     if (op == "get_real") {
@@ -138,6 +140,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
     if (op == "set_real") {
         Signal& signal = scene_.upsertSignal(command.value("name", ""), SignalType::Real);
         signal.real = command.value("value", 0.0);
+        scene_.notify(ChangeKind::Structure);
         return okValue(signal.real);
     }
     if (op == "set_joint_target" || op == "set_joint_speed") {
@@ -151,6 +154,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (op == "set_joint_speed") {
             node->mech.drive = DriveMode::Speed;
         }
+        scene_.notify(ChangeKind::Transform);
         return okValue(node->mech.target);
     }
     if (op == "get_transform") {
@@ -170,6 +174,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             return error;
         }
         node->local.translation = {command.value("x", 0.0), command.value("y", 0.0), command.value("z", 0.0)};
+        scene_.notify(ChangeKind::Transform);
         return okValue(true);
     }
     if (op == "spawn") {
@@ -280,6 +285,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         joint->position = clampJoint(*joint, command.value("value", 0.0));
         applyResource(scene_, *resource);
+        scene_.notify(ChangeKind::Transform);
         return okValue(jointCommand(*resource, *joint));
     }
     if (op == "kin_fk") {
@@ -308,6 +314,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (command.value("apply", true) && solved.ok) {
             setJointVector(*resource, solved.joints);
             applyResource(scene_, *resource);
+            scene_.notify(ChangeKind::Transform);
         }
         return solved.ok ? okValue({{"joints", solved.joints}, {"warning", solved.warning}, {"approximated", solved.approximated}})
                          : fail(solved.warning.empty() ? "inverse kinematics failed" : solved.warning);
@@ -346,6 +353,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (command.value("apply", true) && solved.ok) {
             setJointVector(*resource, solved.values);
             applyResource(scene_, *resource);
+            scene_.notify(ChangeKind::Transform);
         }
         return solved.ok ? okValue({{"joints", solved.values}, {"residual", solved.residual}, {"solver", solved.solver},
                                     {"iterations", solved.iterations}})
@@ -363,6 +371,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         node->mech.motion = motion;
         syncMotionFlags(node->mech);
+        scene_.notify(ChangeKind::Structure);
         return okValue(bodyMotionName(node->mech.motion));
     }
     if (op == "physics_pair") {
@@ -377,10 +386,12 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             if ((pair.a == a && pair.b == b) || (pair.a == b && pair.b == a)) {
                 pair.friction = friction;
                 pair.restitution = restitution;
+                scene_.notify(ChangeKind::Structure);
                 return okValue(pair.friction);
             }
         }
         scene_.physicsDoc.pairs.push_back(GradePair{a, b, friction, restitution});
+        scene_.notify(ChangeKind::Structure);
         return okValue(friction);
     }
     if (op == "motor_profile") {
@@ -416,6 +427,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (command.contains("running")) {
             motor->running = command.value("running", false);
         }
+        scene_.notify(ChangeKind::Structure);
         return okValue({{"name", motor->name}, {"target", motor->targetSpeed}, {"running", motor->running}});
     }
     if (op == "kin_move_pose") {
@@ -433,6 +445,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             advanceMove(*resource, move, Simulation::kFixedDt);
         }
         applyResource(scene_, *resource);
+        scene_.notify(ChangeKind::Transform);
         return okValue(jointVector(*resource));
     }
     if (op == "logic_start") {
@@ -487,6 +500,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             if (!detachTool(scene_, node->id, error)) {
                 return fail(error);
             }
+            scene_.notify(ChangeKind::Structure);
             return okValue(true);
         }
         KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
@@ -501,6 +515,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (!attachTool(scene_, *resource, node->id, error)) {
             return fail(error);
         }
+        scene_.notify(ChangeKind::Structure);
         return okValue(true);
     }
     if (op == "collision_query" || op == "min_distance" || op == "sweep_check") {

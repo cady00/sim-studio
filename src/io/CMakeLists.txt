@@ -2,6 +2,7 @@ add_library(sim_io
     src/OcctEnvironment.cpp
     src/ZipArchive.cpp
     src/ProjectStore.cpp
+    src/EditHistory.cpp
     src/GeometryKernel.cpp
     src/StepImporter.cpp
     src/ObjImporter.cpp

@@ -5,10 +5,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <unordered_map>
 
 #include <signal.h>
@@ -464,6 +466,67 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     result.ok = true;
     result.message.clear();
     return result;
+}
+
+namespace {
+
+std::filesystem::path historyTempPath() {
+    static std::atomic<unsigned> sequence{0};
+    const unsigned id = sequence.fetch_add(1);
+    return std::filesystem::temp_directory_path() /
+           ("simstudio-hist-" + std::to_string(static_cast<long>(::getpid())) + "-" + std::to_string(id) + ".simproj");
+}
+
+struct TempProject {
+    std::filesystem::path path;
+    ~TempProject() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+};
+
+}  // namespace
+
+ProjectResult ProjectStore::saveBytes(const Scene& scene, std::vector<std::uint8_t>& out) {
+    TempProject temp{historyTempPath()};
+    ProjectResult result = save(scene, temp.path.string());
+    if (!result.ok) {
+        return result;
+    }
+    std::ifstream in(temp.path, std::ios::binary);
+    if (!in) {
+        result.ok = false;
+        result.message = "could not read the history snapshot";
+        return result;
+    }
+    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    if (out.empty()) {
+        result.ok = false;
+        result.message = "history snapshot is empty";
+    }
+    return result;
+}
+
+ProjectResult ProjectStore::loadBytes(const std::vector<std::uint8_t>& bytes, Scene& scene) {
+    ProjectResult result;
+    if (bytes.empty()) {
+        result.message = "history snapshot is empty";
+        return result;
+    }
+    TempProject temp{historyTempPath()};
+    {
+        std::ofstream file(temp.path, std::ios::binary);
+        if (!file) {
+            result.message = "could not write the history snapshot";
+            return result;
+        }
+        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!file) {
+            result.message = "could not write the history snapshot";
+            return result;
+        }
+    }
+    return load(temp.path.string(), scene);
 }
 
 namespace {

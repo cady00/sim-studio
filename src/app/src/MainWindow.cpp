@@ -48,6 +48,7 @@
 #include <QHeaderView>
 #include <QKeySequence>
 #include <QLabel>
+#include <QKeySequence>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
@@ -132,6 +133,7 @@ MainWindow::MainWindow(QString locale) {
     i18n_.setLocale(locale.toStdString());
     buildUi();
     bindScene();
+    history_.watch(scene_);
     retranslate();
     resize(1440, 900);
     applyTaskMode(0);
@@ -472,7 +474,25 @@ void MainWindow::buildUi() {
             plain->undo();
             return;
         }
-        undoIntent();
+        if (!history_.undo()) {
+            undoIntent();
+        }
+    });
+    auto* redoAction = new QAction(this);
+    redoAction->setShortcuts({QKeySequence::Redo, QKeySequence(Qt::CTRL | Qt::Key_Y)});
+    redoAction->setShortcutContext(Qt::WindowShortcut);
+    addAction(redoAction);
+    connect(redoAction, &QAction::triggered, this, [this] {
+        QWidget* focus = QApplication::focusWidget();
+        if (auto* line = qobject_cast<QLineEdit*>(focus)) {
+            line->redo();
+            return;
+        }
+        if (auto* plain = qobject_cast<QPlainTextEdit*>(focus)) {
+            plain->redo();
+            return;
+        }
+        history_.redo();
     });
 
     newAction_ = new QAction(this);
@@ -1584,6 +1604,7 @@ void MainWindow::onScriptChanged(int index) {
 }
 
 void MainWindow::playSimulation() {
+    history_.setRecording(false);
     commitScriptEditor();
     if (scriptIndex_ >= 0 && scriptIndex_ < static_cast<int>(scene_.scripts.size())) {
         scene_.activeScript = scene_.scripts[static_cast<std::size_t>(scriptIndex_)].name;
@@ -1644,9 +1665,13 @@ void MainWindow::playSimulation() {
     }
 }
 
-void MainWindow::pauseSimulation() { simulation_->pause(); }
+void MainWindow::pauseSimulation() {
+    simulation_->pause();
+    history_.setRecording(true);
+}
 
 void MainWindow::stopSimulation() {
+    history_.setRecording(false);
     simulation_->stop();
     std::size_t cursor = 0;
     for (KinematicResource& resource : scene_.resources) {
@@ -1660,6 +1685,7 @@ void MainWindow::stopSimulation() {
     if (timeLabel_ != nullptr) {
         timeLabel_->setText(trk("status.simTime").arg(0.0, 0, 'f', 2));
     }
+    history_.setRecording(true);
     refreshSignals();
 }
 
@@ -2697,6 +2723,11 @@ bool MainWindow::applyIntent(const std::string& text) {
     intentSignals_ = scene_.signals;
     intentUndoValid_ = true;
     CommandExecutor executor(scene_, simulation_.get(), physics_.get());
+    // One history step for the whole intent, instead of one snapshot per command.
+    const bool batch = !plan.steps.empty();
+    if (batch) {
+        scene_.beginEdit();
+    }
     bool any = false;
     for (const PlanStep& step : plan.steps) {
         if (step.risk == "R3" || (step.risk == "R2" && intent_ != nullptr && !intent_->allowsStructuralEdits())) {
@@ -2708,6 +2739,9 @@ bool MainWindow::applyIntent(const std::string& text) {
             any = true;
         }
     }
+    if (batch) {
+        scene_.endEdit();
+    }
     if (viewport_ != nullptr) {
         viewport_->setPreviewMode(false);
         viewport_->setGhost(false);
@@ -2718,6 +2752,13 @@ bool MainWindow::applyIntent(const std::string& text) {
 }
 
 void MainWindow::undoIntent() {
+    if (history_.undo()) {
+        intentUndoValid_ = false;
+        if (intent_ != nullptr) {
+            intent_->note("已撤销上一次意图事务");
+        }
+        return;
+    }
     if (!intentUndoValid_) {
         if (intent_ != nullptr) {
             intent_->note("没有可撤销的意图事务");
