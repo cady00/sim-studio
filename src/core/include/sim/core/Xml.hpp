@@ -13,6 +13,8 @@ struct XmlNode {
     std::map<std::string, std::string> attributes;
     std::vector<XmlNode> children;
     std::string text;
+    // Exact source of this element, from '<' through the closing tag. Comments use the same field.
+    std::string raw;
 };
 
 // A small XML reader for URDF and PPR documents. It skips declarations, comments,
@@ -76,6 +78,7 @@ inline bool parseXml(const std::string& text, XmlNode& root, std::string& error)
             error = "xml element was expected";
             return false;
         }
+        const std::size_t elementStart = cursor;
         ++cursor;
         if (cursor < text.size() && (text[cursor] == '/' || text[cursor] == '!')) {
             error = "xml element was expected";
@@ -131,6 +134,7 @@ inline bool parseXml(const std::string& text, XmlNode& root, std::string& error)
                 return false;
             }
             ++cursor;
+            node.raw = text.substr(elementStart, cursor - elementStart);
             return true;
         }
         if (cursor >= text.size() || text[cursor] != '>') {
@@ -146,6 +150,11 @@ inline bool parseXml(const std::string& text, XmlNode& root, std::string& error)
                     error = "xml comment is not closed";
                     return false;
                 }
+                XmlNode comment;
+                comment.name = "#comment";
+                comment.raw = text.substr(cursor, end + 3 - cursor);
+                comment.text = text.substr(cursor + 4, end - (cursor + 4));
+                node.children.push_back(std::move(comment));
                 cursor = end + 3;
                 continue;
             }
@@ -164,6 +173,7 @@ inline bool parseXml(const std::string& text, XmlNode& root, std::string& error)
                 }
                 ++cursor;
                 node.text = decode(textRun);
+                node.raw = text.substr(elementStart, cursor - elementStart);
                 return true;
             }
             if (text[cursor] == '<') {

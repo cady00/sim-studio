@@ -343,6 +343,14 @@ PYBIND11_EMBEDDED_MODULE(simstudio, module) {
         item["unchanged"] = scene->layout.stations.size() == stations;
         return item;
     });
+    module.def("ems_export", [](const std::string& path) {
+        Scene* scene = sceneOrThrow();
+        const EmsImportResult written = exportEmsXml(*scene, path);
+        if (!written.ok) {
+            throw std::runtime_error(written.message.empty() ? "export failed" : written.message);
+        }
+        return path;
+    });
 }
 
 class PythonScriptHost final : public IScriptHost {

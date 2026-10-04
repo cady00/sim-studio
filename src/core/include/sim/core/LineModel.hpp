@@ -94,12 +94,27 @@ struct PlantNode {
     std::string resource;
 };
 
+// One element from an eBOP / PPR XML file. Unrecognized nodes keep `raw` so export
+// can write them back unchanged. Recognized nodes are rewritten from the scene.
+struct EmsNode {
+    std::string name;
+    std::vector<std::pair<std::string, std::string>> attributes;
+    std::string text;
+    std::string raw;
+    bool recognized = false;
+    // operation:<id>, product:<id>, plant:<id>, weld:<id>, path:<name>, xform:<name>, point:<path>:<index>
+    std::string bind;
+    std::vector<EmsNode> children;
+};
+
 struct PprDocument {
     bool example = false;
     std::string title;
     std::vector<ProductNode> products;
     std::vector<ProcessNode> processes;
     std::vector<PlantNode> plants;
+    bool hasEms = false;
+    EmsNode ems;
 };
 
 // A transition releases `target` after `operation` finishes, plus `delay`.
@@ -182,8 +197,13 @@ bool adjustOperationFinish(std::vector<Operation>& operations, const LineLayout&
 bool loadDxfUnderlay(LineLayout& layout, const std::string& path, double mmPerUnit, std::string& error);
 void setImageUnderlay(LineLayout& layout, const std::string& path, double opacity);
 
-// Generic product/process/plant XML. Unknown roots fail and do not invent nodes.
+// eBOP-style product, process, and plant XML. Operations, resources, parts, weld
+// points, robot paths, and placements are mapped. Other elements stay in `ppr.ems`
+// and are written back unchanged. A file with none of those elements fails.
 EmsImportResult importEmsXml(const std::string& path, Scene& scene);
+EmsImportResult exportEmsXml(const Scene& scene, const std::string& path);
+nlohmann::json emsNodeToJson(const EmsNode& node);
+void emsNodeFromJson(const nlohmann::json& json, EmsNode& node);
 
 bool exportScheduleCsv(const ScheduleReport& report, const std::string& path, std::string& error);
 bool exportScheduleXlsx(const ScheduleReport& report, const std::string& path, std::string& error);

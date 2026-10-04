@@ -911,3 +911,120 @@ TEST_CASE("sequence transitions and signal waits shift the timeline") {
     REQUIRE(loaded.sequence.size() == 3);
     REQUIRE(loaded.sequence.front().delay == Approx(0.4));
 }
+
+TEST_CASE("ems xml round-trips operations resources parts welds paths and placements", "[line]") {
+    const std::string unknown = "<CustomNote id=\"keep\" note=\"a&amp;b\">inner <Extra v=\"1\"/> text</CustomNote>";
+    const std::string comment = "<!--keep-me-->";
+    const auto xmlPath = std::filesystem::temp_directory_path() / "simstudio_ems_round.xml";
+    {
+        std::ofstream out(xmlPath);
+        out << "<eBOP name=\"cell\">" << comment << "<Part id=\"p1\" name=\"bracket\" part=\"bracket\">"
+               "<Location x=\"10\" y=\"20\" z=\"30\" rx=\"10\" ry=\"20\" rz=\"30\"/>"
+               "</Part>"
+               "<Operation id=\"weld\" name=\"焊接\" duration=\"4.5\" station=\"st_weld\" path=\"weld\" after=\"load\"/>"
+               "<Resource id=\"r1\" name=\"IRB120\" station=\"st_weld\" resource=\"IRB120\"/>"
+               "<WeldPoint id=\"s1\" name=\"spot1\" x=\"100\" y=\"0\" z=\"20\" nx=\"0\" ny=\"0\" nz=\"1\" part=\"bracket\"/>"
+               "<RobotPath name=\"weld\" resource=\"IRB120\">"
+               "<Location name=\"home\" motion=\"ptp\" joints=\"0 0 0 0 0 0\" speed=\"200\"/>"
+               "<Location name=\"approach\" motion=\"lin\" x=\"15\" y=\"-25\" z=\"20\" speed=\"80\"/>"
+               "</RobotPath>"
+            << unknown << "</eBOP>";
+    }
+    sim::Scene scene;
+    const sim::EmsImportResult imported = sim::importEmsXml(xmlPath.string(), scene);
+    REQUIRE(imported.ok);
+    REQUIRE(scene.ppr.products.size() == 1);
+    REQUIRE(scene.ppr.products.front().partName == "bracket");
+    REQUIRE(scene.operations.size() == 1);
+    REQUIRE(scene.operations.front().seconds == Approx(4.5));
+    REQUIRE(scene.operations.front().path == "weld");
+    REQUIRE(scene.operations.front().after.front() == "load");
+    REQUIRE(scene.ppr.plants.size() == 1);
+    REQUIRE(scene.ppr.plants.front().resource == "IRB120");
+    REQUIRE(scene.welds.size() == 1);
+    REQUIRE(scene.welds.front().position.x == Approx(100));
+    REQUIRE(scene.welds.front().normal.z == Approx(1));
+    REQUIRE(scene.robotPaths.size() == 1);
+    REQUIRE(scene.robotPaths.front().points.size() == 2);
+    REQUIRE(scene.robotPaths.front().points[0].joints.size() == 6);
+    REQUIRE(scene.robotPaths.front().points[1].move == sim::PathMove::Lin);
+    REQUIRE(scene.robotPaths.front().points[1].position.y == Approx(-25));
+    const auto bracket = scene.findByName("bracket");
+    REQUIRE(bracket != nullptr);
+    REQUIRE(bracket->local.translation.z == Approx(30));
+    double rx = 0;
+    double ry = 0;
+    double rz = 0;
+    bracket->local.rotation.toEulerXYZ(rx, ry, rz);
+    REQUIRE(sim::rad2deg(ry) == Approx(20).margin(0.05));
+
+    scene.operations.front().seconds = 6.25;
+    scene.welds.front().position.y = 8;
+    bracket->local.translation.x = 12;
+    const auto outPath = std::filesystem::temp_directory_path() / "simstudio_ems_out.xml";
+    REQUIRE(sim::exportEmsXml(scene, outPath.string()).ok);
+    std::ifstream written(outPath);
+    std::stringstream buffer;
+    buffer << written.rdbuf();
+    const std::string text = buffer.str();
+    REQUIRE(text.find(unknown) != std::string::npos);
+    REQUIRE(text.find(comment) != std::string::npos);
+    REQUIRE(text.find("duration=\"6.25\"") != std::string::npos);
+
+    sim::Scene again;
+    REQUIRE(sim::importEmsXml(outPath.string(), again).ok);
+    REQUIRE(again.operations.front().seconds == Approx(6.25));
+    REQUIRE(again.welds.front().position.y == Approx(8));
+    REQUIRE(again.findByName("bracket")->local.translation.x == Approx(12));
+    REQUIRE(again.robotPaths.front().points[0].joints[0] == Approx(0));
+    REQUIRE(again.ppr.hasEms);
+
+    sim::Scene built;
+    built.ppr.products.push_back({"p1", "panel", "", "panel"});
+    auto panel = built.makeNode(sim::NodeKind::Part, "panel");
+    panel->local.translation = {1, 2, 3};
+    panel->local.rotation = sim::Quat::fromEulerXYZ(sim::deg2rad(10), 0, 0);
+    built.addChild(built.root(), panel);
+    built.ppr.plants.push_back({"r1", "IRB120", "", "st_weld", "IRB120"});
+    sim::Operation job;
+    job.id = "weld";
+    job.name = "weld";
+    job.seconds = 3;
+    job.station = "st_weld";
+    job.path = "weld";
+    built.operations.push_back(job);
+    sim::WeldSpot spot;
+    spot.id = "s1";
+    spot.position = {4, 5, 6};
+    spot.normal = {0, 1, 0};
+    built.welds.push_back(spot);
+    sim::RobotPath path;
+    path.name = "weld";
+    path.resource = "IRB120";
+    sim::PathPoint home;
+    home.name = "home";
+    home.joints = {1, 2, 3};
+    home.speed = 50;
+    path.points.push_back(home);
+    built.robotPaths.push_back(path);
+    const auto synthPath = std::filesystem::temp_directory_path() / "simstudio_ems_synth.xml";
+    REQUIRE(sim::exportEmsXml(built, synthPath.string()).ok);
+    sim::Scene synth;
+    REQUIRE(sim::importEmsXml(synthPath.string(), synth).ok);
+    REQUIRE(synth.operations.front().seconds == Approx(3));
+    REQUIRE(synth.ppr.plants.front().resource == "IRB120");
+    REQUIRE(synth.welds.front().normal.y == Approx(1));
+    REQUIRE(synth.robotPaths.front().points.front().joints[2] == Approx(3));
+    REQUIRE(synth.findByName("panel")->local.translation.z == Approx(3));
+    const auto stored = std::filesystem::temp_directory_path() / "simstudio_ems.simproj";
+    REQUIRE(sim::ProjectStore::save(again, stored.string()).ok);
+    sim::Scene fromProject;
+    REQUIRE(sim::ProjectStore::load(stored.string(), fromProject).ok);
+    REQUIRE(fromProject.ppr.hasEms);
+    const auto kept = std::filesystem::temp_directory_path() / "simstudio_ems_kept.xml";
+    REQUIRE(sim::exportEmsXml(fromProject, kept.string()).ok);
+    std::ifstream keptFile(kept);
+    std::stringstream keptText;
+    keptText << keptFile.rdbuf();
+    REQUIRE(keptText.str().find(unknown) != std::string::npos);
+}

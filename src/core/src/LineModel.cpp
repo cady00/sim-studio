@@ -1,7 +1,6 @@
 #include "sim/core/LineModel.hpp"
 
 #include "sim/core/Scene.hpp"
-#include "sim/core/Xml.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -669,143 +668,6 @@ void setImageUnderlay(LineLayout& layout, const std::string& path, double opacit
     layout.underlay.embedded = "underlays/" + (name.empty() ? std::string("plan.bin") : name);
 }
 
-EmsImportResult importEmsXml(const std::string& path, Scene& scene) {
-    EmsImportResult result;
-    std::ifstream in(path);
-    if (!in) {
-        result.message = "cannot open " + path;
-        return result;
-    }
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    XmlNode root;
-    std::string error;
-    if (!parseXml(buffer.str(), root, error)) {
-        result.message = error.empty() ? "xml was not read" : error;
-        return result;
-    }
-    const auto local = [](std::string name) {
-        const auto colon = name.rfind(':');
-        if (colon != std::string::npos) {
-            name = name.substr(colon + 1);
-        }
-        for (char& c : name) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-        return name;
-    };
-    const auto attr = [](const XmlNode& node, std::initializer_list<const char*> keys) {
-        for (const char* key : keys) {
-            const auto it = node.attributes.find(key);
-            if (it != node.attributes.end() && !it->second.empty()) {
-                return it->second;
-            }
-        }
-        return std::string{};
-    };
-    int products = 0;
-    int processes = 0;
-    int plants = 0;
-    int nextId = 1;
-    const auto idOf = [&](const XmlNode& node) {
-        std::string id = attr(node, {"id", "ID", "name", "Name"});
-        if (id.empty()) {
-            id = "n" + std::to_string(nextId++);
-        }
-        return id;
-    };
-    std::function<void(const XmlNode&)> walk = [&](const XmlNode& node) {
-        const std::string kind = local(node.name);
-        const bool product = kind == "product" || kind == "part" || kind == "component" || kind == "item";
-        const bool process = kind == "process" || kind == "operation" || kind == "task" || kind == "activity";
-        const bool plant = kind == "plant" || kind == "resource" || kind == "station" || kind == "robot" || kind == "equipment";
-        if (product) {
-            ProductNode item;
-            item.id = idOf(node);
-            item.name = attr(node, {"name", "Name", "id", "ID"});
-            if (item.name.empty()) {
-                item.name = item.id;
-            }
-            item.parent = attr(node, {"parent", "Parent"});
-            item.partName = attr(node, {"part", "Part", "partName"});
-            scene.ppr.products.push_back(std::move(item));
-            ++products;
-        } else if (process) {
-            ProcessNode item;
-            item.id = idOf(node);
-            item.name = attr(node, {"name", "Name", "id", "ID"});
-            if (item.name.empty()) {
-                item.name = item.id;
-            }
-            item.parent = attr(node, {"parent", "Parent"});
-            item.operation = attr(node, {"operation", "Operation"});
-            if (item.operation.empty()) {
-                item.operation = item.id;
-            }
-            item.product = attr(node, {"product", "Product", "part", "Part"});
-            scene.ppr.processes.push_back(item);
-            Operation operation;
-            operation.id = item.operation;
-            operation.name = item.name;
-            operation.kind = OpKind::Task;
-            operation.station = attr(node, {"station", "Station", "resource", "Resource"});
-            operation.parent = item.parent;
-            const std::string seconds = attr(node, {"duration", "Duration", "seconds", "cycleTime", "CycleTime"});
-            if (!seconds.empty()) {
-                try {
-                    operation.seconds = std::stod(seconds);
-                } catch (const std::exception&) {
-                    operation.seconds = 0;
-                }
-            }
-            const std::string after = attr(node, {"after", "After", "predecessor", "Predecessor"});
-            if (!after.empty()) {
-                operation.after.push_back(after);
-            }
-            bool exists = false;
-            for (const Operation& current : scene.operations) {
-                if (current.id == operation.id) {
-                    exists = true;
-                }
-            }
-            if (!exists) {
-                scene.operations.push_back(std::move(operation));
-            }
-            ++processes;
-        } else if (plant) {
-            PlantNode item;
-            item.id = idOf(node);
-            item.name = attr(node, {"name", "Name", "id", "ID"});
-            if (item.name.empty()) {
-                item.name = item.id;
-            }
-            item.parent = attr(node, {"parent", "Parent"});
-            item.station = attr(node, {"station", "Station"});
-            if (item.station.empty()) {
-                item.station = item.id;
-            }
-            item.resource = attr(node, {"resource", "Resource"});
-            scene.ppr.plants.push_back(std::move(item));
-            ++plants;
-        }
-        for (const XmlNode& child : node.children) {
-            walk(child);
-        }
-    };
-    walk(root);
-    if (products + processes + plants == 0) {
-        result.message = "xml has no product, process, or plant elements (root " + root.name + ")";
-        return result;
-    }
-    if (scene.ppr.title.empty()) {
-        scene.ppr.title = root.name.empty() ? std::string("PPR") : root.name;
-    }
-    result.ok = true;
-    result.message = "read " + std::to_string(products) + " products, " + std::to_string(processes) + " processes, " +
-                     std::to_string(plants) + " plants";
-    return result;
-}
-
 bool adjustOperationStart(std::vector<Operation>& operations, const LineLayout& layout, const std::string& id, double newStart) {
     const ScheduleReport report = scheduleOperations(operations, layout);
     const ScheduleBar* bar = nullptr;
@@ -1155,11 +1017,15 @@ nlohmann::json pprToJson(const PprDocument& ppr) {
                           {"station", node.station},
                           {"resource", node.resource}});
     }
-    return {{"example", ppr.example},
-            {"title", ppr.title},
-            {"products", std::move(products)},
-            {"processes", std::move(processes)},
-            {"plants", std::move(plants)}};
+    nlohmann::json json = {{"example", ppr.example},
+                           {"title", ppr.title},
+                           {"products", std::move(products)},
+                           {"processes", std::move(processes)},
+                           {"plants", std::move(plants)}};
+    if (ppr.hasEms) {
+        json["ems"] = emsNodeToJson(ppr.ems);
+    }
+    return json;
 }
 
 void pprFromJson(const nlohmann::json& json, PprDocument& ppr) {
@@ -1206,6 +1072,10 @@ void pprFromJson(const nlohmann::json& json, PprDocument& ppr) {
                 ppr.plants.push_back(std::move(node));
             }
         }
+    }
+    if (json.contains("ems") && json.at("ems").is_object()) {
+        emsNodeFromJson(json.at("ems"), ppr.ems);
+        ppr.hasEms = !ppr.ems.name.empty();
     }
 }
 

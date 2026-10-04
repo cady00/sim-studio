@@ -102,7 +102,8 @@ nlohmann::json CommandExecutor::catalog() {
         op("line_export_csv", "Write the cycle report as CSV.", {"path"}, true),
         op("line_export_xlsx", "Write the cycle report as a spreadsheet.", {"path"}, true),
         op("ppr_list", "Product, process, and plant nodes.", nlohmann::json::array(), true),
-        op("ems_import", "Read a generic product, process, and plant XML file into the PPR model.", {"path"}, true),
+        op("ems_import", "Read eBOP-style XML into operations, resources, parts, welds, paths, and placements.", {"path"}, true),
+        op("ems_export", "Write operations, resources, parts, welds, paths, and placements to eBOP-style XML.", {"path"}, true),
         op("asset_import", "Import a file through the asset registry. Format is chosen by extension, then by content.", {"path"}, true),
         op("asset_export", "Export visible meshes as gltf, glb, or stl.", {"path", "format"}, true),
         op("logic_upsert", "Create or replace a logic block. steps is a list of actions.", {"name", "steps", "repeat"}, true),
@@ -794,6 +795,13 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         scene_.notify(ChangeKind::Structure);
         return okValue(imported.message);
+    }
+    if (op == "ems_export") {
+        const EmsImportResult written = exportEmsXml(scene_, command.value("path", ""));
+        if (!written.ok) {
+            return fail(written.message);
+        }
+        return okValue(written.message);
     }
     if (op == "asset_import") {
         const auto registry = createBuiltinRegistry();
