@@ -35,6 +35,20 @@ private:
     bool zh_ = true;
 };
 
+class SequenceEditor : public QWidget {
+public:
+    explicit SequenceEditor(Scene& scene, QWidget* parent = nullptr);
+    void setDark(bool dark);
+    void setZh(bool zh);
+    void reload();
+
+private:
+    Scene& scene_;
+    QWidget* canvas_ = nullptr;
+    QLabel* summary_ = nullptr;
+    bool zh_ = true;
+};
+
 class GanttView : public QWidget {
 public:
     explicit GanttView(Scene& scene, QWidget* parent = nullptr);

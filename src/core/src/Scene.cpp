@@ -112,6 +112,7 @@ void Scene::clear() {
     contactNotices.clear();
     layout = {};
     operations.clear();
+    sequence.clear();
     ppr = {};
     dirty_ = false;
     ++structureRevision_;
@@ -153,6 +154,7 @@ void Scene::steal(Scene& other) {
     contactNotices = std::move(other.contactNotices);
     layout = std::move(other.layout);
     operations = std::move(other.operations);
+    sequence = std::move(other.sequence);
     ppr = std::move(other.ppr);
     selected_.clear();
     selection_.clear();
@@ -175,6 +177,7 @@ void Scene::steal(Scene& other) {
     other.contactNotices.clear();
     other.layout = {};
     other.operations.clear();
+    other.sequence.clear();
     other.ppr = {};
     if (!root_) {
         clear();
@@ -539,6 +542,7 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     contactNotices.clear();
     layout = {};
     operations.clear();
+    sequence.clear();
     ppr = {};
     selected_.clear();
     selection_.clear();

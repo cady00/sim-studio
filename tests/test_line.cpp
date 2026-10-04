@@ -850,3 +850,64 @@ TEST_CASE("the example line keeps feeding for an hour", "[line]") {
     REQUIRE(plannedNote.find("不含网格碰撞") != std::string::npos);
     REQUIRE(planned.stats().jobsPerHour != Approx(stats.jobsPerHour));
 }
+
+TEST_CASE("sequence transitions and signal waits shift the timeline") {
+    sim::Operation load;
+    load.id = "load";
+    load.seconds = 2;
+    sim::Operation weld;
+    weld.id = "weld";
+    weld.seconds = 4;
+    weld.after = {"load"};
+    sim::Operation unload;
+    unload.id = "unload";
+    unload.seconds = 2;
+    sim::Operation hold;
+    hold.id = "hold";
+    hold.seconds = 1;
+    sim::SequenceEvent transition;
+    transition.id = "tr";
+    transition.kind = "transition";
+    transition.operation = "weld";
+    transition.target = "unload";
+    transition.delay = 0.4;
+    sim::SequenceEvent setDone;
+    setDone.id = "set";
+    setDone.kind = "signal";
+    setDone.operation = "weld";
+    setDone.edge = "finish";
+    setDone.signal = "weld_done";
+    setDone.action = "set";
+    sim::SequenceEvent waitDone;
+    waitDone.id = "wait";
+    waitDone.kind = "signal";
+    waitDone.operation = "hold";
+    waitDone.signal = "weld_done";
+    waitDone.action = "wait";
+    const sim::ScheduleReport report =
+        sim::scheduleSequence({load, weld, unload, hold}, {transition, setDone, waitDone}, {});
+    REQUIRE(report.error.empty());
+    const auto bar = [&](const std::string& id) {
+        for (const sim::ScheduleBar& item : report.bars) {
+            if (item.id == id) {
+                return item;
+            }
+        }
+        return sim::ScheduleBar{};
+    };
+    REQUIRE(bar("weld").start == Approx(2));
+    REQUIRE(bar("weld").finish == Approx(6));
+    REQUIRE(bar("unload").start == Approx(6.4));
+    REQUIRE(bar("hold").start == Approx(6));
+    REQUIRE(report.makespan == Approx(8.4));
+
+    sim::Scene scene;
+    scene.operations = {load, weld, unload, hold};
+    scene.sequence = {transition, setDone, waitDone};
+    const auto path = std::filesystem::temp_directory_path() / "simstudio_sequence.simproj";
+    REQUIRE(sim::ProjectStore::save(scene, path.string()).ok);
+    sim::Scene loaded;
+    REQUIRE(sim::ProjectStore::load(path.string(), loaded).ok);
+    REQUIRE(loaded.sequence.size() == 3);
+    REQUIRE(loaded.sequence.front().delay == Approx(0.4));
+}

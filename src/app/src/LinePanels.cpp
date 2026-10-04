@@ -97,7 +97,7 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing);
         painter.fillRect(rect(), dark_ ? QColor(18, 24, 42) : QColor(244, 246, 251));
         const PlanView view = fitPlan(scene_, width(), height());
-        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        const ScheduleReport report = scheduleSequence(scene_.operations, scene_.sequence, scene_.layout);
         const double grid = scene_.layout.gridMm > 1 ? scene_.layout.gridMm : 500;
         painter.setPen(QPen(dark_ ? QColor(42, 53, 80) : QColor(210, 216, 230), 1));
         const double minX = -view.originX / view.scale;
@@ -224,7 +224,7 @@ protected:
         painter.fillRect(rect(), dark_ ? QColor(18, 24, 42) : QColor(244, 246, 251));
         const QColor ink = dark_ ? QColor(230, 232, 242) : QColor(23, 29, 56);
         painter.setPen(ink);
-        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        const ScheduleReport report = scheduleSequence(scene_.operations, scene_.sequence, scene_.layout);
         if (!report.error.empty()) {
             painter.drawText(rect().adjusted(12, 12, -12, -12), QString::fromStdString(report.error));
             return;
@@ -470,6 +470,81 @@ void fillOperationTree(QTreeWidgetItem* parent, QTreeWidget* tree, const Scene& 
     }
 }
 
+class SequenceCanvas : public QWidget {
+public:
+    SequenceCanvas(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) { setMinimumHeight(160); setObjectName("sequence.timeline"); }
+
+    void setDark(bool dark) {
+        dark_ = dark;
+        update();
+    }
+    void setZh(bool zh) {
+        zh_ = zh;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.fillRect(rect(), dark_ ? QColor(18, 24, 42) : QColor(244, 246, 251));
+        const QColor ink = dark_ ? QColor(230, 232, 242) : QColor(23, 29, 56);
+        painter.setPen(ink);
+        const ScheduleReport report = scheduleSequence(scene_.operations, scene_.sequence, scene_.layout);
+        if (!report.error.empty()) {
+            painter.drawText(rect().adjusted(12, 12, -12, -12), QString::fromStdString(report.error));
+            return;
+        }
+        const double makespan = std::max(report.makespan, 0.001);
+        const int label = 96;
+        const int top = 28;
+        painter.drawText(QRect(12, 4, width() - 24, 20),
+                         (zh_ ? QStringLiteral("时间轴 · 节拍 %1 s") : QStringLiteral("Timeline · cycle %1 s")).arg(makespan, 0, 'f', 1));
+        if (report.bars.empty()) {
+            painter.drawText(rect(), Qt::AlignCenter, zh_ ? QStringLiteral("没有操作") : QStringLiteral("No operations"));
+            return;
+        }
+        const double rowH = std::max(22.0, (height() - top - 28) / static_cast<double>(report.bars.size()));
+        auto xOf = [&](double time) {
+            return label + (width() - label - 16) * (time / makespan);
+        };
+        for (int i = 0; i < static_cast<int>(report.bars.size()); ++i) {
+            const ScheduleBar& bar = report.bars[static_cast<std::size_t>(i)];
+            const QRectF band(0, top + i * rowH, width(), rowH);
+            painter.setPen(ink);
+            painter.drawText(QRectF(8, band.top(), label - 12, band.height()), Qt::AlignVCenter | Qt::AlignLeft,
+                             QString::fromStdString(bar.name.empty() ? bar.id : bar.name));
+            const QRectF box(xOf(bar.start), band.top() + 4, std::max(4.0, xOf(bar.finish) - xOf(bar.start)), band.height() - 8);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(bar.critical ? brandHot() : brand());
+            painter.drawRoundedRect(box, 3, 3);
+        }
+        painter.setBrush(amber());
+        painter.setPen(Qt::NoPen);
+        for (const SequenceEvent& event : scene_.sequence) {
+            double time = event.offset;
+            for (const ScheduleBar& bar : report.bars) {
+                if (bar.id != event.operation) {
+                    continue;
+                }
+                time = (event.edge == "start" ? bar.start : bar.finish) + (event.kind == "transition" ? 0 : event.offset);
+                if (event.kind == "transition") {
+                    time = bar.finish;
+                }
+            }
+            const double x = xOf(std::clamp(time, 0.0, makespan));
+            QPolygonF mark;
+            mark << QPointF(x, height() - 18) << QPointF(x + 6, height() - 12) << QPointF(x, height() - 6) << QPointF(x - 6, height() - 12);
+            painter.drawPolygon(mark);
+        }
+    }
+
+private:
+    Scene& scene_;
+    bool dark_ = true;
+    bool zh_ = true;
+};
+
 }  // namespace
 
 FloorPlanView::FloorPlanView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
@@ -636,7 +711,7 @@ GanttView::GanttView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(sc
             return;
         }
         std::string error;
-        exportScheduleCsv(scheduleOperations(scene_.operations, scene_.layout), path.toStdString(), error);
+        exportScheduleCsv(scheduleSequence(scene_.operations, scene_.sequence, scene_.layout), path.toStdString(), error);
     });
     QObject::connect(xlsx, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("XLSX"), {}, QStringLiteral("XLSX (*.xlsx)"));
@@ -644,7 +719,7 @@ GanttView::GanttView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(sc
             return;
         }
         std::string error;
-        exportScheduleXlsx(scheduleOperations(scene_.operations, scene_.layout), path.toStdString(), error);
+        exportScheduleXlsx(scheduleSequence(scene_.operations, scene_.sequence, scene_.layout), path.toStdString(), error);
     });
     row->addWidget(measure);
     row->addWidget(produce);
@@ -680,6 +755,141 @@ void GanttView::reload() {
     if (canvas_ != nullptr) {
         canvas_->update();
     }
+}
+
+namespace {
+
+const Operation* taskAt(const Scene& scene, int ordinal) {
+    int seen = 0;
+    for (const Operation& operation : scene.operations) {
+        if (operation.kind != OpKind::Task) {
+            continue;
+        }
+        if (seen == ordinal) {
+            return &operation;
+        }
+        ++seen;
+    }
+    return nullptr;
+}
+
+SequenceEvent& addEvent(Scene& scene, const std::string& kind) {
+    SequenceEvent event;
+    event.id = "ev" + std::to_string(scene.sequence.size() + 1);
+    event.kind = kind;
+    const Operation* first = taskAt(scene, 0);
+    const Operation* second = taskAt(scene, 1);
+    if (first != nullptr) {
+        event.operation = first->id;
+        event.name = first->name;
+    }
+    if (kind == "transition" && second != nullptr) {
+        event.target = second->id;
+        event.delay = 0.2;
+        event.name = (first != nullptr ? first->name : event.operation) + " → " + second->name;
+    } else if (kind == "signal") {
+        event.signal = "weld_done";
+        event.action = "set";
+        event.edge = "finish";
+        event.name = event.signal;
+    }
+    scene.sequence.push_back(std::move(event));
+    return scene.sequence.back();
+}
+
+}  // namespace
+
+SequenceEditor::SequenceEditor(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(6, 6, 6, 6);
+    auto* row = new QHBoxLayout;
+    auto add = [this, row](const char* name, const QString& text, auto handler) {
+        auto* button = new QPushButton(text, this);
+        button->setObjectName(name);
+        QObject::connect(button, &QPushButton::clicked, this, handler);
+        row->addWidget(button);
+    };
+    add("sequence.transition", QStringLiteral("过渡"), [this] {
+        addEvent(scene_, "transition");
+        scene_.notify(ChangeKind::Structure);
+    });
+    add("sequence.signalSet", QStringLiteral("信号置位"), [this] {
+        SequenceEvent& event = addEvent(scene_, "signal");
+        event.action = "set";
+        scene_.notify(ChangeKind::Structure);
+    });
+    add("sequence.signalWait", QStringLiteral("事件触发"), [this] {
+        SequenceEvent& event = addEvent(scene_, "signal");
+        event.action = "wait";
+        event.edge = "start";
+        const Operation* second = taskAt(scene_, 1);
+        if (second != nullptr) {
+            event.operation = second->id;
+            event.name = second->name + " 等待 " + event.signal;
+        }
+        scene_.notify(ChangeKind::Structure);
+    });
+    row->addStretch(1);
+    layout->addLayout(row);
+    summary_ = new QLabel(this);
+    summary_->setObjectName("sequence.summary");
+    summary_->setWordWrap(true);
+    layout->addWidget(summary_);
+    canvas_ = new SequenceCanvas(scene_, this);
+    layout->addWidget(canvas_, 1);
+    reload();
+}
+
+void SequenceEditor::setDark(bool dark) {
+    if (auto* canvas = static_cast<SequenceCanvas*>(canvas_)) {
+        canvas->setDark(dark);
+    }
+}
+
+void SequenceEditor::setZh(bool zh) {
+    zh_ = zh;
+    if (auto* canvas = static_cast<SequenceCanvas*>(canvas_)) {
+        canvas->setZh(zh);
+    }
+    if (auto* button = findChild<QPushButton*>("sequence.transition")) {
+        button->setText(zh ? QStringLiteral("过渡") : QStringLiteral("Transition"));
+    }
+    if (auto* button = findChild<QPushButton*>("sequence.signalSet")) {
+        button->setText(zh ? QStringLiteral("信号置位") : QStringLiteral("Set signal"));
+    }
+    if (auto* button = findChild<QPushButton*>("sequence.signalWait")) {
+        button->setText(zh ? QStringLiteral("事件触发") : QStringLiteral("Wait for event"));
+    }
+    reload();
+}
+
+void SequenceEditor::reload() {
+    if (canvas_ != nullptr) {
+        canvas_->update();
+    }
+    if (summary_ == nullptr) {
+        return;
+    }
+    const ScheduleReport report = scheduleSequence(scene_.operations, scene_.sequence, scene_.layout);
+    QString text = (zh_ ? QStringLiteral("操作 %1 · 事件 %2 · 节拍 %3 s") : QStringLiteral("Operations %1 · events %2 · cycle %3 s"))
+                       .arg(static_cast<int>(scene_.operations.size()))
+                       .arg(static_cast<int>(scene_.sequence.size()))
+                       .arg(report.makespan, 0, 'f', 1);
+    if (!report.error.empty()) {
+        text += QStringLiteral(" · ") + QString::fromStdString(report.error);
+    }
+    for (const SequenceEvent& event : scene_.sequence) {
+        text += QStringLiteral(" · ");
+        if (event.kind == "transition") {
+            text += (zh_ ? QStringLiteral("过渡 ") : QStringLiteral("transition ")) + QString::fromStdString(event.operation) +
+                    QStringLiteral("→") + QString::fromStdString(event.target) + QStringLiteral(" ") +
+                    QString::number(event.delay, 'f', 1) + QStringLiteral(" s");
+        } else {
+            text += QString::fromStdString(event.signal) + QStringLiteral(" ") +
+                    QString::fromStdString(event.action == "wait" ? (zh_ ? "等待" : "wait") : (zh_ ? "置位" : "set"));
+        }
+    }
+    summary_->setText(text);
 }
 
 }  // namespace sim

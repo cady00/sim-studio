@@ -130,6 +130,7 @@ public:
     std::vector<ContactNotice> contactNotices;
     LineLayout layout;
     std::vector<Operation> operations;
+    std::vector<SequenceEvent> sequence;
     PprDocument ppr;
 
     bool dirty() const { return dirty_; }

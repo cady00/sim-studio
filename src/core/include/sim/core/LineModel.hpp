@@ -102,6 +102,26 @@ struct PprDocument {
     std::vector<PlantNode> plants;
 };
 
+// A transition releases `target` after `operation` finishes, plus `delay`.
+// A signal event sets or waits on `signal` at the start or finish of `operation`.
+struct SequenceEvent {
+    std::string id;
+    std::string name;
+    // "transition" or "signal".
+    std::string kind;
+    std::string operation;
+    std::string target;
+    double delay = 0;
+    // "start" or "finish".
+    std::string edge = "finish";
+    double offset = 0;
+    std::string signal;
+    // "set" or "wait".
+    std::string action;
+    bool flag = true;
+    double value = 0;
+};
+
 struct ScheduleBar {
     std::string id;
     std::string name;
@@ -150,6 +170,9 @@ const Station* findStation(const LineLayout& layout, const std::string& id);
 // Finish-start graph: explicit `after`, plus the previous sibling when the parent is a sequence.
 // A cycle sets error and leaves the bars empty.
 ScheduleReport scheduleOperations(const std::vector<Operation>& operations, const LineLayout& layout);
+// Finish-start schedule plus transition delays and signal waits. An empty event list matches scheduleOperations.
+ScheduleReport scheduleSequence(const std::vector<Operation>& operations, const std::vector<SequenceEvent>& events,
+                                const LineLayout& layout);
 
 // ASCII and binary DXF: LINE, LWPOLYLINE, CIRCLE, ARC, SPLINE, INSERT, and layer names.
 DxfResult parseDxf(const std::string& text, double mmPerUnit);
@@ -169,6 +192,8 @@ nlohmann::json layoutToJson(const LineLayout& layout);
 void layoutFromJson(const nlohmann::json& json, LineLayout& layout);
 nlohmann::json operationsToJson(const std::vector<Operation>& operations);
 void operationsFromJson(const nlohmann::json& json, std::vector<Operation>& operations);
+nlohmann::json sequenceToJson(const std::vector<SequenceEvent>& events);
+void sequenceFromJson(const nlohmann::json& json, std::vector<SequenceEvent>& events);
 nlohmann::json pprToJson(const PprDocument& ppr);
 void pprFromJson(const nlohmann::json& json, PprDocument& ppr);
 nlohmann::json scheduleToJson(const ScheduleReport& report);

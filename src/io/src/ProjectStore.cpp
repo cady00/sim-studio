@@ -254,6 +254,7 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     }
     json["layout"] = layoutToJson(scene.layout);
     json["operations"] = operationsToJson(scene.operations);
+    json["sequence"] = sequenceToJson(scene.sequence);
     json["ppr"] = pprToJson(scene.ppr);
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
@@ -457,6 +458,9 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     }
     if (json.contains("operations")) {
         operationsFromJson(json.at("operations"), scene.operations);
+    }
+    if (json.contains("sequence")) {
+        sequenceFromJson(json.at("sequence"), scene.sequence);
     }
     if (json.contains("ppr")) {
         pprFromJson(json.at("ppr"), scene.ppr);

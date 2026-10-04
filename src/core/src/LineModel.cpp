@@ -545,6 +545,86 @@ ScheduleReport scheduleOperations(const std::vector<Operation>& operations, cons
     return report;
 }
 
+ScheduleReport scheduleSequence(const std::vector<Operation>& operations, const std::vector<SequenceEvent>& events,
+                                const LineLayout& layout) {
+    std::vector<Operation> copy = operations;
+    std::unordered_map<std::string, int> index;
+    for (int i = 0; i < static_cast<int>(copy.size()); ++i) {
+        index[copy[static_cast<std::size_t>(i)].id] = i;
+    }
+    for (const SequenceEvent& event : events) {
+        if (event.kind != "transition") {
+            continue;
+        }
+        const auto target = index.find(event.target);
+        const auto from = index.find(event.operation);
+        if (target == index.end() || from == index.end()) {
+            continue;
+        }
+        Operation& operation = copy[static_cast<std::size_t>(target->second)];
+        if (std::find(operation.after.begin(), operation.after.end(), event.operation) == operation.after.end()) {
+            operation.after.push_back(event.operation);
+        }
+        operation.wait = std::max(operation.wait, event.delay);
+    }
+    ScheduleReport report = scheduleOperations(copy, layout);
+    if (!report.error.empty() || events.empty()) {
+        return report;
+    }
+    const int limit = static_cast<int>(copy.size()) + 2;
+    for (int pass = 0; pass < limit; ++pass) {
+        bool moved = false;
+        for (const SequenceEvent& event : events) {
+            if (event.kind != "signal" || event.action != "wait") {
+                continue;
+            }
+            const auto self = index.find(event.operation);
+            if (self == index.end()) {
+                continue;
+            }
+            const ScheduleBar* bar = nullptr;
+            for (const ScheduleBar& item : report.bars) {
+                if (item.id == event.operation) {
+                    bar = &item;
+                }
+            }
+            if (bar == nullptr) {
+                continue;
+            }
+            double ready = event.offset;
+            bool found = false;
+            for (const SequenceEvent& set : events) {
+                if (set.kind != "signal" || set.action != "set" || set.signal != event.signal || set.operation == event.operation) {
+                    continue;
+                }
+                const ScheduleBar* source = nullptr;
+                for (const ScheduleBar& item : report.bars) {
+                    if (item.id == set.operation) {
+                        source = &item;
+                    }
+                }
+                if (source == nullptr) {
+                    continue;
+                }
+                const double time = (set.edge == "start" ? source->start : source->finish) + set.offset;
+                ready = found ? std::max(ready, time) : time;
+                found = true;
+            }
+            if (bar->start + 1e-6 < ready) {
+                copy[static_cast<std::size_t>(self->second)].wait += ready - bar->start;
+                moved = true;
+            }
+        }
+        if (!moved) {
+            break;
+        }
+        report = scheduleOperations(copy, layout);
+        if (!report.error.empty()) {
+            return report;
+        }
+    }
+    return report;
+}
 
 bool loadDxfUnderlay(LineLayout& layout, const std::string& path, double mmPerUnit, std::string& error) {
     std::ifstream in(path);
@@ -966,6 +1046,53 @@ nlohmann::json operationsToJson(const std::vector<Operation>& operations) {
                         {"timeNote", operation.timeNote}});
     }
     return json;
+}
+
+nlohmann::json sequenceToJson(const std::vector<SequenceEvent>& events) {
+    nlohmann::json json = nlohmann::json::array();
+    for (const SequenceEvent& event : events) {
+        json.push_back({{"id", event.id},
+                        {"name", event.name},
+                        {"kind", event.kind},
+                        {"operation", event.operation},
+                        {"target", event.target},
+                        {"delay", event.delay},
+                        {"edge", event.edge},
+                        {"offset", event.offset},
+                        {"signal", event.signal},
+                        {"action", event.action},
+                        {"flag", event.flag},
+                        {"value", event.value}});
+    }
+    return json;
+}
+
+void sequenceFromJson(const nlohmann::json& json, std::vector<SequenceEvent>& events) {
+    events.clear();
+    if (!json.is_array()) {
+        return;
+    }
+    for (const auto& item : json) {
+        if (!item.is_object()) {
+            continue;
+        }
+        SequenceEvent event;
+        event.id = item.value("id", std::string{});
+        event.name = item.value("name", std::string{});
+        event.kind = item.value("kind", std::string{});
+        event.operation = item.value("operation", std::string{});
+        event.target = item.value("target", std::string{});
+        event.delay = item.value("delay", 0.0);
+        event.edge = item.value("edge", std::string{"finish"});
+        event.offset = item.value("offset", 0.0);
+        event.signal = item.value("signal", std::string{});
+        event.action = item.value("action", std::string{});
+        event.flag = item.value("flag", true);
+        event.value = item.value("value", 0.0);
+        if (!event.id.empty()) {
+            events.push_back(std::move(event));
+        }
+    }
 }
 
 void operationsFromJson(const nlohmann::json& json, std::vector<Operation>& operations) {
