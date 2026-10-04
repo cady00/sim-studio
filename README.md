@@ -55,7 +55,7 @@ ctest --preset windows-msvc-release --output-on-failure
 
 ## 在 Windows 上直接运行（不用自己编译）
 
-GitHub Actions 的 `Windows vcpkg` 任务会上传制品 `SimStudio-win64`，里面是 `SimStudio-0.3.0-win64.zip`。解压后运行 `SimStudio\simstudio.exe`。压缩包带有 Qt / OCCT / Jolt / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。上一版 Windows 任务在链 OCCT 8 时找不到 `TKSTEPBase.lib`（7.8 起改为 `TKDESTEP`），配置阶段还从源码编了 Qt。现在只链接存在的 toolkit，Qt 改为预编译包。
+Windows 安装包不随每次推送自动编。在 GitHub 的 Actions 页手动运行工作流 `CI`（`workflow_dispatch`）才会编 `SimStudio-win64`，里面是 `SimStudio-0.3.0-win64.zip`。解压后运行 `SimStudio\simstudio.exe`。压缩包带有 Qt / OCCT / Jolt / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。私有仓库的 Windows 分钟按两倍计算，所以这条任务不要改回自动触发。上一版自动任务在链 OCCT 8 时找不到 `TKSTEPBase.lib`（7.8 起改为 `TKDESTEP`），配置阶段还从源码编了 Qt。现在只链接存在的 toolkit，Qt 用预编译包。拉取请求只跑 Linux 测试；只改 `docs/` 或 Markdown 不会启动任务。
 
 1. 在该次 Actions 运行的 Artifacts 里下载 `SimStudio-win64` 并解压。
 2. 双击 `simstudio.exe`。

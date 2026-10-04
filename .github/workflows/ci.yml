@@ -1,12 +1,26 @@
 name: CI
 
+# Linux runs on pull requests only (not on every push) so a branch push and its
+# PR do not bill the same minutes twice. Docs-only changes do not start a job.
+# Windows packaging is manual: workflow_dispatch. Windows minutes count double
+# on private repos, so do not put that job back on push or pull_request.
 on:
-  push:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE.txt'
+      - '.gitignore'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
     name: Linux tests
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +32,7 @@ jobs:
             libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
             libocct-data-exchange-dev libocct-ocaf-dev libocct-visualization-dev \
             nlohmann-json3-dev catch2 libtbb-dev libfontconfig1-dev \
-            pybind11-dev python3-dev
+            pybind11-dev python3-dev git
       - name: Configure
         run: cmake --preset linux-system
       - name: Build
@@ -27,9 +41,10 @@ jobs:
         run: ctest --preset linux-system --output-on-failure
 
   windows:
-    name: Windows vcpkg
+    name: Windows package
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
-    timeout-minutes: 180
+    timeout-minutes: 120
     env:
       VCPKG_ROOT: C:\vcpkg
       VCPKG_DISABLE_METRICS: "1"
@@ -55,7 +70,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path C:\vcpkg\vcpkg.exe)) {
-            git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git C:\vcpkg
             C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           }
       - name: Configure
