@@ -66,6 +66,19 @@ struct PathSweepHit {
 double profileDuration(ProfileKind kind, double q0, double q1, double vmax, double amax);
 double profileSample(ProfileKind kind, double q0, double q1, double vmax, double amax, double time, bool* done);
 
+// Acceleration used by a joint move. `source` is "dynamics", "user", or "velocity".
+// "velocity" means torque or inertia was not provided, so the value is large and the move is speed-limited.
+struct JointAccelLimit {
+    double value = 1.0e9;
+    std::string source = "velocity";
+    bool payloadScaled = false;
+};
+
+JointAccelLimit jointAccelLimit(const KinematicResource& resource, const KinJoint& joint);
+// Lowers a Cartesian acceleration so the implied joint acceleration stays inside jointAccelLimit.
+double cartesianAccelCap(const KinematicResource& resource, const std::vector<double>& start, const std::vector<double>& goal,
+                         double distance, double requested);
+
 double jointCommand(const KinematicResource& resource, const KinJoint& joint);
 CartesianPose forwardModel(const KinematicResource& resource);
 IkResult inverseModel(const KinematicResource& resource, const CartesianPose& target, const std::vector<double>& seed);
@@ -283,7 +296,7 @@ struct SuggestResult {
 SuggestResult suggestLinkGroups(const Scene& scene);
 bool axisFromCylindricalFace(const Scene& scene, const std::string& nodeId, Vec3 point, Vec3 normal, Vec3& origin,
                              Vec3& direction, double& radius);
-// `limits` apply in chain order. Acceleration is not taken from a datasheet; it is set to 180 deg/s^2.
+// `limits` apply in chain order. Acceleration is left velocity-limited unless the user or a dynamics estimate sets it.
 bool applyLinkSuggestions(Scene& scene, const std::string& resourceName, const SuggestResult& suggestion,
                           const std::vector<RevoluteLimit>& limits, std::string& error);
 // Public KR 420 R3080 ranges and speeds. See docs/KR420.md. Six entries, A1 through A6.
@@ -296,7 +309,8 @@ struct CatalogRobot {
 
 // KUKA KR 6 R900 sixx, ABB IRB 120, FANUC LR Mate 200iD, Yaskawa GP8.
 // Limits, speeds, and link origins are copied from the public pages named in `source`.
-// Acceleration is the 180 deg/s^2 placeholder. Geometry is a box on each link.
+// Acceleration is velocity-limited until a torque and an inertia are present, or the user types a value.
+// Geometry is a box on each link.
 const std::vector<CatalogRobot>& robotCatalog();
 bool addCatalogRobot(Scene& scene, const std::string& name, Vec3 station, std::string& error);
 // Hides meshed parts whose names are outside the proximity sets. The caller shows them again.

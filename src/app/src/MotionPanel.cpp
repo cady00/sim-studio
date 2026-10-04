@@ -172,6 +172,14 @@ void MotionPanel::buildUi() {
     speedSpin_->setValue(90);
     accelSpin_ = spinBox(0, 1e7);
     accelSpin_->setValue(360);
+    accelSpin_->setObjectName("motion.accel");
+    effortSpin_ = spinBox(0, 1e9);
+    effortSpin_->setObjectName("motion.effort");
+    payloadSpin_ = spinBox(0, 1e6);
+    payloadSpin_->setObjectName("motion.payload");
+    accelSourceLabel_ = new QLabel;
+    accelSourceLabel_->setObjectName("motion.accelSource");
+    accelSourceLabel_->setWordWrap(true);
     coupleCombo_ = new QComboBox;
     ratioSpin_ = spinBox(-100, 100);
     ratioSpin_->setValue(1);
@@ -202,7 +210,10 @@ void MotionPanel::buildUi() {
     kinForm->addRow(lowerSpin_);
     kinForm->addRow(upperSpin_);
     kinForm->addRow(speedSpin_);
-    kinForm->addRow(accelSpin_);
+    kinForm->addRow(trk("motion.accel"), accelSpin_);
+    kinForm->addRow(trk("motion.effort"), effortSpin_);
+    kinForm->addRow(trk("motion.payload"), payloadSpin_);
+    kinForm->addRow(trk("motion.accelSource"), accelSourceLabel_);
     kinForm->addRow(trk("motion.couple"), coupleCombo_);
     kinForm->addRow(trk("motion.ratio"), ratioSpin_);
     carrierName_ = new QLineEdit("kl");
@@ -258,6 +269,17 @@ void MotionPanel::buildUi() {
         kinButtons->addWidget(button);
         return button;
     };
+    addButton("motion.estimateAccel", [this] {
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        if (KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString())) {
+            joint->accelSource = "dynamics";
+            syncJointSlider();
+            refreshLive();
+        }
+    });
     addButton("motion.addCatalog", [this] {
         if (catalogCombo_ == nullptr) {
             return;
@@ -344,6 +366,8 @@ void MotionPanel::buildUi() {
         joint.upper = upperSpin_->value();
         joint.maxSpeed = speedSpin_->value();
         joint.maxAccel = accelSpin_->value();
+        joint.accelSource = "user";
+        joint.effort = effortSpin_->value();
         applyResource(scene_, *current);
         refresh();
     });
@@ -410,6 +434,45 @@ void MotionPanel::buildUi() {
     jointSlider_->setObjectName("motion.jointSlider");
     jointSlider_->setRange(0, 1000);
     jointSlider_->setEnabled(false);
+    connect(accelSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+        if (refreshing_) {
+            return;
+        }
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString());
+        if (joint == nullptr) {
+            return;
+        }
+        joint->accelSource = "user";
+        joint->maxAccel = value;
+        refreshLive();
+    });
+    connect(effortSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+        if (refreshing_) {
+            return;
+        }
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        if (KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString())) {
+            joint->effort = value;
+            refreshLive();
+        }
+    });
+    connect(payloadSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+        if (refreshing_) {
+            return;
+        }
+        if (KinematicResource* current = resource()) {
+            current->payload = value;
+            syncJointSlider();
+            refreshLive();
+        }
+    });
     connect(jointSlider_, &QSlider::valueChanged, this, [this](int value) {
         if (refreshing_) {
             return;
@@ -893,6 +956,36 @@ void MotionPanel::syncJointSlider() {
     }
     KinematicResource* current = resource();
     KinJoint* joint = current == nullptr || jointCombo_ == nullptr ? nullptr : findJoint(*current, jointCombo_->currentText().toStdString());
+    if (accelSourceLabel_ != nullptr) {
+        QString note = trk("motion.accel.velocity");
+        if (current != nullptr && joint != nullptr) {
+            const JointAccelLimit limit = jointAccelLimit(*current, *joint);
+            if (limit.source == "dynamics") {
+                note = trk("motion.accel.dynamics");
+            } else if (limit.source == "user" && limit.payloadScaled) {
+                note = trk("motion.accel.userPayload");
+            } else if (limit.source == "user") {
+                note = trk("motion.accel.user");
+            }
+            if (limit.source != "velocity") {
+                note += QStringLiteral(" ") + QString::number(limit.value, 'f', 1) +
+                        (joint->motion == JointMotion::Prismatic ? QStringLiteral(" mm/s²") : QStringLiteral(" °/s²"));
+            }
+            if (accelSpin_ != nullptr && limit.source != "velocity") {
+                const QSignalBlocker block(*accelSpin_);
+                accelSpin_->setValue(limit.source == "user" ? joint->maxAccel : limit.value);
+            }
+            if (effortSpin_ != nullptr) {
+                const QSignalBlocker block(*effortSpin_);
+                effortSpin_->setValue(joint->effort);
+            }
+        }
+        accelSourceLabel_->setText(note);
+    }
+    if (payloadSpin_ != nullptr && current != nullptr) {
+        const QSignalBlocker block(*payloadSpin_);
+        payloadSpin_->setValue(current->payload);
+    }
     const QSignalBlocker blocker(jointSlider_);
     if (joint == nullptr || !joint->coupledTo.empty()) {
         jointSlider_->setEnabled(false);
@@ -1199,6 +1292,7 @@ void MotionPanel::refreshLive() {
         liveLabel_->setText(QString());
         return;
     }
+    syncJointSlider();
     QString text;
     for (const KinJoint& joint : current->joints) {
         if (!text.isEmpty()) {
@@ -1218,8 +1312,10 @@ void MotionPanel::refreshLive() {
         }
         text += QString::fromStdString(current->source);
     }
+    if (accelSourceLabel_ != nullptr && !accelSourceLabel_->text().isEmpty()) {
+        text += QStringLiteral("\n") + accelSourceLabel_->text();
+    }
     liveLabel_->setText(text);
-    syncJointSlider();
 }
 
 }  // namespace sim

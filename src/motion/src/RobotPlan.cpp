@@ -64,7 +64,9 @@ void pushCartesian(KinematicResource& resource, const CartesianPose& goal, doubl
                    std::vector<std::string>& warnings) {
     const CartesianPose start = poseNow(resource);
     const double distance = std::max(length(goal.position - start.position), 1e-6);
-    const double accel = std::max(speed * 4.0, 1.0);
+    const std::vector<double> q0 = jointVector(resource);
+    const std::vector<double> q1 = ikOrHold(resource, goal, warnings);
+    const double accel = cartesianAccelCap(resource, q0, q1, distance, std::max(speed * 4.0, 1.0));
     const double duration = profileDuration(ProfileKind::Trapezoid, 0, distance, std::max(speed, 1e-3), accel);
     chunk.frames.push_back(jointVector(resource));
     if (duration <= 1e-6) {
@@ -208,7 +210,10 @@ void pushCoupled(KinematicResource& resource, const RobotPath& path, const PathP
     }
 
     const double speed = std::max(point.speed, 1e-3);
-    const double accel = std::max(speed * 4.0, 1.0);
+    const std::vector<double> arm0 = jointVector(resource);
+    std::vector<std::string> ignored;
+    const std::vector<double> arm1 = ikOrHold(resource, goal, ignored);
+    const double accel = cartesianAccelCap(resource, arm0, arm1, distance, std::max(speed * 4.0, 1.0));
     double duration = profileDuration(ProfileKind::Trapezoid, 0, distance, speed, accel);
     double driver0 = 0;
     double driver1 = distance;
@@ -219,14 +224,15 @@ void pushCoupled(KinematicResource& resource, const RobotPath& path, const PathP
             continue;
         }
         const KinJoint& joint = resource.joints[static_cast<std::size_t>(external[k])];
+        const JointAccelLimit limit = jointAccelLimit(resource, joint);
         const double jointDuration =
-            profileDuration(ProfileKind::Trapezoid, ext0[k], ext1[k], std::max(joint.maxSpeed, 1e-6), std::max(joint.maxAccel, 1e-6));
+            profileDuration(ProfileKind::Trapezoid, ext0[k], ext1[k], std::max(joint.maxSpeed, 1e-6), std::max(limit.value, 1e-6));
         if (jointDuration > duration) {
             duration = jointDuration;
             driver0 = ext0[k];
             driver1 = ext1[k];
             driverV = std::max(joint.maxSpeed, 1e-6);
-            driverA = std::max(joint.maxAccel, 1e-6);
+            driverA = std::max(limit.value, 1e-6);
         }
     }
 
@@ -636,13 +642,16 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
                 const double radius = length(start.position - center);
                 const double distance = std::abs(radius * sweep);
                 const double speed = std::max(point.speed, 1e-3);
-                const double duration = profileDuration(ProfileKind::Trapezoid, 0, std::max(distance, 1e-6), speed, speed * 4.0);
+                const std::vector<double> circ0 = jointVector(resource);
+                const std::vector<double> circ1 = ikOrHold(resource, goal, plan.warnings);
+                const double circAccel = cartesianAccelCap(resource, circ0, circ1, std::max(distance, 1e-6), speed * 4.0);
+                const double duration = profileDuration(ProfileKind::Trapezoid, 0, std::max(distance, 1e-6), speed, circAccel);
                 chunks[i].frames.push_back(jointVector(resource));
                 const int steps = std::max(1, static_cast<int>(std::ceil(duration / plan.dt)));
                 for (int step = 1; step <= steps; ++step) {
                     bool done = false;
                     const double along =
-                        profileSample(ProfileKind::Trapezoid, 0, std::max(distance, 1e-6), speed, speed * 4.0, step * plan.dt, &done);
+                        profileSample(ProfileKind::Trapezoid, 0, std::max(distance, 1e-6), speed, circAccel, step * plan.dt, &done);
                     const double u = distance <= 1e-6 ? 1.0 : std::clamp(along / distance, 0.0, 1.0);
                     CartesianPose pose;
                     pose.position = rotateAbout(start.position, center, axis, sweep * u);

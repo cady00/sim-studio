@@ -420,7 +420,8 @@ bool applyLinkSuggestions(Scene& scene, const std::string& resourceName, const S
                 joint.upper = limit.upper;
                 joint.maxSpeed = limit.speed;
             }
-            joint.maxAccel = 180;
+            joint.maxAccel = 0;
+            joint.accelSource = "velocity";
             joint.position = 0;
             ++jointIndex;
         }

@@ -148,6 +148,7 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
     json["name"] = resource.name;
     json["source"] = resource.source;
     json["ik"] = resource.ik;
+    json["payload"] = resource.payload;
     json["wrist"] = {{"d1", resource.wrist.d1},
                      {"shoulder", resource.wrist.shoulder},
                      {"a2", resource.wrist.a2},
@@ -182,6 +183,8 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
                                   {"upper", joint.upper},
                                   {"maxSpeed", joint.maxSpeed},
                                   {"maxAccel", joint.maxAccel},
+                                  {"effort", joint.effort},
+                                  {"accelSource", joint.accelSource},
                                   {"coupledTo", joint.coupledTo},
                                   {"coupleRatio", joint.coupleRatio},
                                   {"position", joint.position},
@@ -221,6 +224,7 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
     resource.name = json.at("name").get<std::string>();
     resource.source = json.value("source", std::string{});
     resource.ik = json.value("ik", std::string("none"));
+    resource.payload = json.value("payload", 0.0);
     if (json.contains("wrist")) {
         const auto& wrist = json.at("wrist");
         resource.wrist.d1 = wrist.value("d1", resource.wrist.d1);
@@ -296,6 +300,8 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
             joint.upper = item.value("upper", 0.0);
             joint.maxSpeed = item.value("maxSpeed", 90.0);
             joint.maxAccel = item.value("maxAccel", 360.0);
+            joint.effort = item.value("effort", 0.0);
+            joint.accelSource = item.value("accelSource", std::string{});
             joint.coupledTo = item.value("coupledTo", std::string{});
             joint.coupleRatio = item.value("coupleRatio", 1.0);
             joint.position = item.value("position", 0.0);

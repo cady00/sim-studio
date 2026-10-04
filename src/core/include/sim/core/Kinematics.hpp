@@ -46,6 +46,11 @@ struct KinJoint {
     double upper = 180;
     double maxSpeed = 90;
     double maxAccel = 360;
+    // Motor torque in N·m (revolute) or force in N (prismatic). Zero means the URDF or the user did not give one.
+    double effort = 0;
+    // "" keeps an older file that stored maxAccel. "user" is a typed limit. "dynamics" is torque over inertia.
+    // "velocity" means planning is limited by maxSpeed because torque or inertia is missing.
+    std::string accelSource;
     // Follower position is master * coupleRatio. Empty means independent.
     std::string coupledTo;
     double coupleRatio = 1;
@@ -111,6 +116,8 @@ struct KinematicResource {
     std::string source;
     // none | scara | spherical_wrist | numerical
     std::string ik = "none";
+    // Kilograms carried at the flange. Zero is an empty tool. Planning reduces acceleration when link inertia is known.
+    double payload = 0;
     SphericalWrist wrist;
     ScaraArm scara;
     std::vector<KinLink> links;

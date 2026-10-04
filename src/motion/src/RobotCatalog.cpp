@@ -166,7 +166,8 @@ bool addCatalogRobot(Scene& scene, const std::string& name, Vec3 station, std::s
         joint.lower = row.lower;
         joint.upper = row.upper;
         joint.maxSpeed = row.speed;
-        joint.maxAccel = 180;
+        joint.maxAccel = 0;
+        joint.accelSource = "velocity";
         if (KinLink* parentLink = findLink(resource, parent)) {
             addBar(scene, scene.find(parentLink->nodeId), std::string(model->name) + "_" + parent, local.translation, model->color);
         }

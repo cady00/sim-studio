@@ -79,6 +79,9 @@ private:
     QDoubleSpinBox* upperSpin_ = nullptr;
     QDoubleSpinBox* speedSpin_ = nullptr;
     QDoubleSpinBox* accelSpin_ = nullptr;
+    QDoubleSpinBox* effortSpin_ = nullptr;
+    QDoubleSpinBox* payloadSpin_ = nullptr;
+    QLabel* accelSourceLabel_ = nullptr;
     QComboBox* coupleCombo_ = nullptr;
     QDoubleSpinBox* ratioSpin_ = nullptr;
     QLineEdit* poseName_ = nullptr;

@@ -310,7 +310,8 @@ TEST_CASE("flat solids can be grouped and a cylinder face supplies an axis") {
     REQUIRE(resource->joints[0].lower == -185);
     REQUIRE(resource->joints[1].upper == 20);
     REQUIRE(resource->joints[5].maxSpeed == 130);
-    REQUIRE(std::abs(resource->joints[0].maxAccel - 180) < 1e-6);
+    REQUIRE(resource->joints[0].accelSource == "velocity");
+    REQUIRE(sim::jointAccelLimit(*resource, resource->joints[0]).source == "velocity");
     const bool footInBase = std::find(suggestion.links[0].partIds.begin(), suggestion.links[0].partIds.end(), foot->id) !=
                             suggestion.links[0].partIds.end();
     const bool screwFollows = std::find(suggestion.links[0].partIds.begin(), suggestion.links[0].partIds.end(), fastener->id) !=
@@ -1136,7 +1137,9 @@ TEST_CASE("robot catalog copies published limits and link origins") {
         REQUIRE(resource->source.find("待核实") != std::string::npos);
         for (const sim::KinJoint& joint : resource->joints) {
             REQUIRE(joint.motion == sim::JointMotion::Revolute);
-            REQUIRE(joint.maxAccel == Catch::Approx(180));
+            REQUIRE(joint.accelSource == "velocity");
+            REQUIRE(sim::jointAccelLimit(*resource, joint).source == "velocity");
+            REQUIRE(sim::jointAccelLimit(*resource, joint).value > 1.0e8);
         }
         sim::KinematicResource loaded;
         REQUIRE(sim::kinematicsFromJson(sim::kinematicsToJson(*resource), loaded, error));
@@ -1180,4 +1183,58 @@ TEST_CASE("robot catalog copies published limits and link origins") {
 
     std::string error;
     REQUIRE_FALSE(sim::addCatalogRobot(scene, "no-such-robot", {}, error));
+}
+
+TEST_CASE("joint acceleration comes from torque inertia payload or the user") {
+    sim::Scene scene;
+    sim::KinematicResource& resource = sim::ensureResource(scene, "dyn");
+    sim::addLink(scene, resource, "base", "", {});
+    sim::Transform local;
+    local.translation = {1000, 0, 0};
+    sim::addLink(scene, resource, "arm", "base", local);
+    sim::KinJoint& joint = sim::addJoint(resource, scene, "j", "base", "arm", sim::JointMotion::Revolute, {0, 0, 1}, {0, 0, 0});
+    joint.effort = 10;
+    joint.accelSource = "dynamics";
+    joint.maxAccel = 0;
+    joint.maxSpeed = 1000;
+    sim::KinLink* arm = sim::findLink(resource, "arm");
+    REQUIRE(arm != nullptr);
+    arm->hasInertia = true;
+    arm->mass = 2;
+    const sim::JointAccelLimit unloaded = sim::jointAccelLimit(resource, joint);
+    REQUIRE(unloaded.source == "dynamics");
+    REQUIRE(unloaded.value == Catch::Approx(10.0 / 2.0 * 180.0 / 3.14159265358979323846));
+
+    resource.payload = 2;
+    const sim::JointAccelLimit loaded = sim::jointAccelLimit(resource, joint);
+    REQUIRE(loaded.source == "dynamics");
+    REQUIRE(loaded.payloadScaled);
+    REQUIRE(loaded.value == Catch::Approx(10.0 / 4.0 * 180.0 / 3.14159265358979323846));
+    REQUIRE(loaded.value < unloaded.value);
+
+    joint.accelSource = "user";
+    joint.maxAccel = 100;
+    const sim::JointAccelLimit typed = sim::jointAccelLimit(resource, joint);
+    REQUIRE(typed.source == "user");
+    REQUIRE(typed.payloadScaled);
+    REQUIRE(typed.value == Catch::Approx(50));
+
+    joint.accelSource = "velocity";
+    joint.effort = 0;
+    const sim::JointAccelLimit speedOnly = sim::jointAccelLimit(resource, joint);
+    REQUIRE(speedOnly.source == "velocity");
+    REQUIRE(speedOnly.value > 1.0e8);
+
+    joint.accelSource = "dynamics";
+    joint.effort = 10;
+    resource.payload = 2;
+    sim::ActiveMove move;
+    std::string error;
+    REQUIRE(sim::beginJointMove(resource, {90}, sim::ProfileKind::Trapezoid, move, error));
+    REQUIRE(move.duration == Catch::Approx(sim::profileDuration(sim::ProfileKind::Trapezoid, 0, 90, 1000, loaded.value)));
+
+    joint.accelSource = "velocity";
+    REQUIRE(sim::beginJointMove(resource, {90}, sim::ProfileKind::Trapezoid, move, error));
+    REQUIRE(move.duration < 1.0);
+    REQUIRE(move.duration == Catch::Approx(0.09).margin(0.02));
 }
