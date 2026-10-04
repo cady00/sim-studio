@@ -232,6 +232,11 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     }
     json["proximity"] = proximityToJson(scene.proximity);
     json["convexCache"] = convexCacheToJson(scene.convexCache);
+    json["physics"] = physicsToJson(scene.physicsDoc);
+    json["motors"] = nlohmann::json::array();
+    for (const MotorAspect& motor : scene.motors) {
+        json["motors"].push_back(motorToJson(motor));
+    }
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
         json["signals"].push_back(signalToJson(signal));
@@ -398,6 +403,16 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     }
     if (json.contains("convexCache")) {
         convexCacheFromJson(json.at("convexCache"), scene.convexCache);
+    }
+    if (json.contains("physics")) {
+        physicsFromJson(json.at("physics"), scene.physicsDoc);
+    }
+    if (json.contains("motors") && json.at("motors").is_array()) {
+        for (const auto& item : json.at("motors")) {
+            MotorAspect motor;
+            motorFromJson(item, motor);
+            scene.motors.push_back(std::move(motor));
+        }
     }
     result.ok = true;
     result.message.clear();

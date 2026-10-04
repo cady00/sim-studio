@@ -394,6 +394,11 @@ void ViewportWidget::paintGL() {
 
 void ViewportWidget::setSimTime(double seconds) { simTime_ = seconds; }
 
+void ViewportWidget::setPhysicsLine(const QString& text) {
+    physicsLine_ = text;
+    update();
+}
+
 void ViewportWidget::setCallout(const QString& text) {
     callout_ = text;
     update();
@@ -458,11 +463,14 @@ void ViewportWidget::paintOverlay() {
     if (!ghostCaption_.isEmpty()) {
         hud += "  ·  " + ghostCaption_;
     }
+    if (!physicsLine_.isEmpty()) {
+        hud += "\n" + physicsLine_;
+    }
     if (fps_ > 0 && fps_ < 30) {
         hud += "  ·  建议检查显示负载";
     }
-    const bool wideHud = !ghostCaption_.isEmpty();
-    const QRect hudRect(16, 16, std::min(width() - 140, wideHud ? std::max(280, width() - 150) : 520), wideHud ? 46 : 28);
+    const bool wideHud = !ghostCaption_.isEmpty() || !physicsLine_.isEmpty();
+    const QRect hudRect(16, 16, std::min(width() - 140, wideHud ? std::max(360, width() - 150) : 520), wideHud ? 52 : 28);
     capsule(hudRect);
     painter.setPen(muted);
     painter.drawText(hudRect.adjusted(10, 4, -10, -4), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap, hud);

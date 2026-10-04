@@ -36,6 +36,7 @@ public:
     void setGizmoMode(GizmoMode mode);
     GizmoMode gizmoMode() const { return gizmoMode_; }
     void setSimTime(double seconds);
+    void setPhysicsLine(const QString& text);
     void setCallout(const QString& text);
     void setMeasureMode(bool enabled);
     void setPreviewMode(bool enabled);
@@ -101,6 +102,7 @@ private:
     QPoint cubePressPos_;
     QString ghostCaption_;
     double simTime_ = 0;
+    QString physicsLine_;
     double fps_ = 0;
     int triangles_ = 0;
     qint64 lastFrameMs_ = 0;

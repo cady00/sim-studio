@@ -104,6 +104,8 @@ void Scene::clear() {
     robotPaths.clear();
     proximity = {};
     convexCache.clear();
+    physicsDoc = {};
+    motors.clear();
     dirty_ = false;
     ++structureRevision_;
     if (!mute_ && onChanged) {
@@ -136,6 +138,8 @@ void Scene::steal(Scene& other) {
     robotPaths = std::move(other.robotPaths);
     proximity = std::move(other.proximity);
     convexCache = std::move(other.convexCache);
+    physicsDoc = std::move(other.physicsDoc);
+    motors = std::move(other.motors);
     selected_.clear();
     selection_.clear();
     other.root_.reset();
@@ -149,6 +153,8 @@ void Scene::steal(Scene& other) {
     other.robotPaths.clear();
     other.proximity = {};
     other.convexCache.clear();
+    other.physicsDoc = {};
+    other.motors.clear();
     if (!root_) {
         clear();
         return;

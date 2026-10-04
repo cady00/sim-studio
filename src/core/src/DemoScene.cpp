@@ -150,4 +150,94 @@ void buildConveyorLine(Scene& scene) {
     scene.markClean();
 }
 
+void buildTransferLine(Scene& scene) {
+    scene.clear();
+    scene.name = "transfer_line";
+    scene.physicsDoc.engine = "builtin";
+    scene.physicsDoc.referenceFriction = 0.5;
+    scene.physicsDoc.defaultFriction = 0.2;
+    scene.physicsDoc.grades = {{"rubber", 0.6, 0.05}, {"steel", 0.3, 0.02}, {"slick", 0.05, 0.01}};
+    scene.physicsDoc.pairs = {
+        {"rubber", "rubber", 0.8, 0.05},
+        {"slick", "rubber", 0.05, 0.02},
+        {"rubber", "steel", 0.4, 0.04},
+        {"slick", "steel", 0.02, 0.01},
+    };
+
+    Mech roller;
+    roller.kind = MechKind::Conveyor;
+    roller.motion = BodyMotion::Driven;
+    roller.kinematic = true;
+    roller.surface = "rubber";
+    roller.direction = {1, 0, 0};
+    roller.speed = 300;
+    roller.grip = 1;
+    roller.guide = 90;
+    roller.nextName = "Belt";
+    roller.motor = "rollerDrive";
+    roller.halfExtents = {400, 90, 20};
+    addBox(scene, "Roller", roller.halfExtents, {0, 0, 20}, {0.18, 0.32, 0.62}, roller);
+
+    Mech belt;
+    belt.kind = MechKind::Conveyor;
+    belt.motion = BodyMotion::Driven;
+    belt.kinematic = true;
+    belt.surface = "steel";
+    belt.direction = {1, 0, 0};
+    belt.speed = 220;
+    belt.grip = 1;
+    belt.guide = 90;
+    belt.halfExtents = {400, 90, 20};
+    addBox(scene, "Belt", belt.halfExtents, {920, 0, 20}, {0.45, 0.48, 0.52}, belt);
+
+    Mech gate;
+    gate.kind = MechKind::Collision;
+    gate.motion = BodyMotion::Anchored;
+    gate.kinematic = true;
+    gate.handoff = true;
+    gate.halfExtents = {70, 120, 40};
+    addBox(scene, "Handoff", gate.halfExtents, {460, 0, 70}, {0.95, 0.62, 0.2}, gate);
+
+    Mech rubber;
+    rubber.kind = MechKind::Rigid;
+    rubber.motion = BodyMotion::Surface;
+    rubber.surfaceRide = true;
+    rubber.kinematic = true;
+    rubber.surface = "rubber";
+    rubber.autoMass = true;
+    rubber.density = 600;
+    rubber.nextName = "Belt";
+    rubber.halfExtents = {30, 30, 30};
+    addBox(scene, "RubberBox", rubber.halfExtents, {-220, -36, 65}, {0.72, 0.28, 0.22}, rubber);
+
+    Mech slick = rubber;
+    slick.surface = "slick";
+    slick.density = 400;
+    addBox(scene, "SlickBox", slick.halfExtents, {-220, 36, 65}, {0.85, 0.82, 0.45}, slick);
+
+    MotorAspect drive;
+    drive.name = "rollerDrive";
+    drive.owner = "Roller";
+    drive.running = true;
+    drive.targetSpeed = 300;
+    drive.speed = 300;
+    drive.accel = 800;
+    drive.decel = 1200;
+    drive.pulseDistance = 25;
+    drive.highRatio = 0.4;
+    drive.grayCode = true;
+    drive.countSignal = "encoder_count";
+    drive.pulseSignal = "encoder_pulse";
+    drive.graySignal = "encoder_gray";
+    drive.runningSignal = "encoder_run";
+    drive.speedSignal = "encoder_speed";
+    drive.distanceSignal = "encoder_tick";
+    drive.startedSignal = "drive_on";
+    drive.stoppedSignal = "drive_off";
+    drive.changedSignal = "drive_changed";
+    drive.notifyEvery = 100;
+    scene.motors.push_back(drive);
+    scene.markClean();
+}
+
 }  // namespace sim

@@ -142,6 +142,59 @@ PYBIND11_EMBEDDED_MODULE(simstudio, module) {
         item["gradient"] = py::make_tuple(distance.gradient.x, distance.gradient.y, distance.gradient.z);
         return item;
     });
+    module.def("set_body_motion", [](const std::string& name, const std::string& motionName) {
+        BodyMotion motion = BodyMotion::Free;
+        if (!bodyMotionFromName(motionName, motion)) {
+            throw std::runtime_error("unknown body motion " + motionName);
+        }
+        auto node = nodeOrThrow(name);
+        node->mech.motion = motion;
+        syncMotionFlags(node->mech);
+    });
+    module.def("set_surface_grade", [](const std::string& name, const std::string& grade) {
+        nodeOrThrow(name)->mech.surface = grade;
+    });
+    module.def("set_friction_pair", [](const std::string& a, const std::string& b, double friction, double restitution) {
+        PhysicsDocument& document = sceneOrThrow()->physicsDoc;
+        for (GradePair& pair : document.pairs) {
+            if ((pair.a == a && pair.b == b) || (pair.a == b && pair.b == a)) {
+                pair.friction = friction;
+                pair.restitution = restitution;
+                return;
+            }
+        }
+        document.pairs.push_back(GradePair{a, b, friction, restitution});
+    });
+    module.def("set_motor", [](const std::string& name, double targetSpeed, bool running) {
+        Scene* scene = sceneOrThrow();
+        for (MotorAspect& motor : scene->motors) {
+            if (motor.name == name) {
+                motor.targetSpeed = targetSpeed;
+                motor.running = running;
+                return;
+            }
+        }
+        MotorAspect motor;
+        motor.name = name;
+        motor.targetSpeed = targetSpeed;
+        motor.running = running;
+        scene->motors.push_back(std::move(motor));
+    });
+    module.def("motor_profile", [](double speed, double decel) {
+        py::dict item;
+        item["distance"] = stoppingDistance(speed, decel);
+        item["time"] = stoppingTime(speed, decel);
+        item["time_to_speed"] = timeToSpeed(0, speed, decel);
+        return item;
+    });
+    module.def("encoder_count", [](const std::string& name) {
+        for (const MotorAspect& motor : sceneOrThrow()->motors) {
+            if (motor.name == name) {
+                return sampleEncoder(motor).count;
+            }
+        }
+        throw std::runtime_error("no motor named " + name);
+    });
     module.def("sweep_check", [](const std::string& name, double x0, double y0, double z0, double x1, double y1, double z1) {
         auto query = createCollisionQuery();
         Scene* scene = sceneOrThrow();

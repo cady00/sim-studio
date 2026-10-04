@@ -1,6 +1,7 @@
 #include "sim/physics/PhysicsEngine.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -11,6 +12,7 @@ namespace {
 struct BodyState {
     std::string id;
     bool dynamic = false;
+    bool riding = false;
     Vec3 velocity{};
 };
 
@@ -105,8 +107,18 @@ void integrateJoint(double& position, double& speed, const Mech& mech, double dt
     if (mech.drive == DriveMode::None || dt <= 0) {
         return;
     }
+    double accel = std::max(0.0, mech.maxAccel);
+    const double mass = std::max(massKilograms(mech), 1e-4);
+    if (mech.maxForce > 0 && mech.kind != MechKind::Hinge && mech.kind != MechKind::Ball) {
+        accel = std::min(accel, mech.maxForce / mass);
+    }
+    if (mech.maxTorque > 0 && (mech.kind == MechKind::Hinge || mech.kind == MechKind::Ball)) {
+        const double radius = std::max(length(mech.halfExtents), 1.0) * 0.001;
+        const double inertia = mass * radius * radius;
+        accel = std::min(accel, rad2deg(mech.maxTorque / inertia));
+    }
     const double maxSpeed = std::abs(mech.maxSpeed);
-    const double maxDelta = std::max(0.0, mech.maxAccel) * dt;
+    const double maxDelta = accel * dt;
     double desired = 0;
     if (mech.drive == DriveMode::Speed) {
         desired = std::clamp(mech.target, -maxSpeed, maxSpeed);
@@ -146,17 +158,20 @@ public:
             for (const auto& child : node->children) {
                 stack.push_back(child);
             }
-            if (mechCreatesBody(node->mech.kind)) {
+            if (mechCreatesBody(node->mech.kind) && !node->mech.joinAncestor) {
                 BodyState body;
                 body.id = node->id;
-                body.dynamic = node->mech.kind == MechKind::Rigid && !node->mech.kinematic;
+                const BodyMotion motion = effectiveMotion(node->mech);
+                body.dynamic = node->mech.kind == MechKind::Rigid && motion == BodyMotion::Free;
+                body.riding = node->mech.kind == MechKind::Rigid && (motion == BodyMotion::Surface || node->mech.surfaceRide);
+                rememberHull(scene, *node);
                 bodies_.push_back(std::move(body));
             }
             if (mechIsJoint(node->mech.kind)) {
                 JointState joint;
                 joint.id = node->id;
                 joint.axis = length(node->mech.axis) > 1e-8 ? normalize(node->mech.axis) : Vec3{1, 0, 0};
-                joint.hinge = node->mech.kind == MechKind::Hinge;
+                joint.hinge = node->mech.kind == MechKind::Hinge || node->mech.kind == MechKind::Ball;
                 joint.restTranslation = node->local.translation;
                 joint.restRotation = node->local.rotation;
                 joints_.push_back(std::move(joint));
@@ -170,7 +185,23 @@ public:
         if (scene_ == nullptr || dtSeconds <= 0) {
             return;
         }
+        scene_->physicsDoc.stats.contacts = 0;
+        int continuous = 0;
+        for (const BodyState& body : bodies_) {
+            auto node = scene_->find(body.id);
+            if (node && node->mech.continuous) {
+                ++continuous;
+            }
+        }
+        scene_->physicsDoc.stats.continuous = continuous;
+        if (!scene_->physicsDoc.enabled) {
+            return;
+        }
         const double dt = dtSeconds;
+        const auto started = std::chrono::steady_clock::now();
+        stepMotors(dt);
+        rideSurfaces(dt);
+        const auto detected = std::chrono::steady_clock::now();
         for (JointState& joint : joints_) {
             auto node = scene_->find(joint.id);
             if (!node) {
@@ -196,10 +227,25 @@ public:
             if (!node) {
                 continue;
             }
-            body.velocity.z += kGravity * dt;
-            node->local.translation = node->local.translation + body.velocity * dt;
+            if (node->mech.asleep && node->mech.allowSleep) {
+                continue;
+            }
+            const int slices = node->mech.continuous ? 4 : 1;
+            const double sub = dt / static_cast<double>(slices);
+            for (int slice = 0; slice < slices; ++slice) {
+                body.velocity.z += kGravity * sub;
+                node->local.translation = node->local.translation + body.velocity * sub;
+            }
+            if (node->mech.allowSleep && length(body.velocity) < 2.0) {
+                node->mech.asleep = true;
+                body.velocity = {};
+            }
         }
         resolveContacts();
+        const auto solved = std::chrono::steady_clock::now();
+        scene_->physicsDoc.stats.detectMs =
+            std::chrono::duration<double, std::milli>(detected - started).count();
+        scene_->physicsDoc.stats.solveMs = std::chrono::duration<double, std::milli>(solved - detected).count();
         updateSensors();
         updateSources(dt);
         updateSinks();
@@ -228,7 +274,9 @@ public:
         if (mechCreatesBody(node->mech.kind)) {
             BodyState body;
             body.id = id;
-            body.dynamic = node->mech.kind == MechKind::Rigid && !node->mech.kinematic;
+            const BodyMotion motion = effectiveMotion(node->mech);
+            body.dynamic = node->mech.kind == MechKind::Rigid && motion == BodyMotion::Free;
+            body.riding = node->mech.kind == MechKind::Rigid && (motion == BodyMotion::Surface || node->mech.surfaceRide);
             bodies_.push_back(std::move(body));
         }
     }
@@ -239,6 +287,188 @@ public:
     }
 
 private:
+    void rememberHull(Scene& scene, const SceneNode& node) {
+        if (node.mech.shape != CollisionShape::ConvexHull && node.mech.shape != CollisionShape::Mesh &&
+            node.mech.shape != CollisionShape::Extrusion) {
+            return;
+        }
+        const std::string key = node.meshId.empty() ? node.id : node.meshId;
+        for (const ConvexCacheEntry& entry : scene.convexCache) {
+            if (entry.meshId == key) {
+                return;
+            }
+        }
+        ConvexCacheEntry entry;
+        entry.meshId = key;
+        entry.fingerprint = 1;
+        ConvexPiece piece;
+        const Vec3 h = node.mech.halfExtents;
+        for (int corner = 0; corner < 8; ++corner) {
+            piece.vertices.push_back({(corner & 1) ? h.x : -h.x, (corner & 2) ? h.y : -h.y, (corner & 4) ? h.z : -h.z});
+        }
+        entry.pieces.push_back(std::move(piece));
+        scene.convexCache.push_back(std::move(entry));
+    }
+
+    Vec3 beltVelocity(const SceneNode& belt, const SceneNode& load) const {
+        Vec3 direction = belt.mech.direction;
+        if (length(direction) < 1e-8) {
+            direction = {1, 0, 0};
+        } else {
+            direction = normalize(direction);
+        }
+        const double scale = conveyorScale(scene_->physicsDoc, load.mech.surface, belt.mech.surface, belt.mech.grip);
+        return direction * belt.mech.speed * scale;
+    }
+
+    bool insideHandoff(const SceneNode& load) const {
+        std::vector<std::shared_ptr<SceneNode>> stack{scene_->root()};
+        while (!stack.empty()) {
+            auto node = stack.back();
+            stack.pop_back();
+            if (!node) {
+                continue;
+            }
+            for (const auto& child : node->children) {
+                stack.push_back(child);
+            }
+            if (!node->mech.handoff) {
+                continue;
+            }
+            Vec3 normal;
+            double depth = 0;
+            if (separated(boxOf(load), boxOf(*node), normal, depth)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    SceneNode* supportingBelt(const SceneNode& load) const {
+        std::vector<SceneNode*> hits;
+        std::vector<std::shared_ptr<SceneNode>> stack{scene_->root()};
+        while (!stack.empty()) {
+            auto node = stack.back();
+            stack.pop_back();
+            if (!node) {
+                continue;
+            }
+            for (const auto& child : node->children) {
+                stack.push_back(child);
+            }
+            if (node->mech.kind != MechKind::Conveyor) {
+                continue;
+            }
+            Vec3 normal;
+            double depth = 0;
+            if (!separated(boxOf(load), boxOf(*node), normal, depth)) {
+                continue;
+            }
+            hits.push_back(node.get());
+        }
+        for (SceneNode* belt : hits) {
+            if (!load.mech.nextName.empty() && belt->name == load.mech.nextName) {
+                return belt;
+            }
+        }
+        for (SceneNode* belt : hits) {
+            if (belt->mech.nextName.empty()) {
+                continue;
+            }
+            for (SceneNode* other : hits) {
+                if (other->name == belt->mech.nextName) {
+                    return other;
+                }
+            }
+        }
+        return hits.empty() ? nullptr : hits.front();
+    }
+
+    void stepMotors(double dt) {
+        for (MotorAspect& motor : scene_->motors) {
+            const MotorEvent event = advanceMotor(motor, dt);
+            if (!motor.owner.empty()) {
+                if (auto owner = scene_->findByName(motor.owner)) {
+                    if (owner->mech.kind == MechKind::Conveyor || owner->mech.motor == motor.name) {
+                        owner->mech.speed = motor.speed;
+                    }
+                }
+            }
+            const EncoderSample sample = sampleEncoder(motor);
+            if (!motor.countSignal.empty()) {
+                scene_->upsertSignal(motor.countSignal, SignalType::Int).integer = sample.count;
+            }
+            if (!motor.pulseSignal.empty()) {
+                scene_->upsertSignal(motor.pulseSignal, SignalType::Bool).flag = sample.pulseHigh;
+            }
+            if (!motor.graySignal.empty()) {
+                scene_->upsertSignal(motor.graySignal, SignalType::Int).integer = sample.gray;
+            }
+            if (!motor.runningSignal.empty()) {
+                scene_->upsertSignal(motor.runningSignal, SignalType::Bool).flag = motor.running;
+            }
+            if (!motor.speedSignal.empty()) {
+                scene_->upsertSignal(motor.speedSignal, SignalType::Real).real = motor.speed;
+            }
+            if (!motor.distanceSignal.empty()) {
+                scene_->upsertSignal(motor.distanceSignal, SignalType::Bool).flag = event.distanceNotified;
+            }
+            if (!motor.startedSignal.empty()) {
+                scene_->upsertSignal(motor.startedSignal, SignalType::Bool).flag = event.started;
+            }
+            if (!motor.stoppedSignal.empty()) {
+                scene_->upsertSignal(motor.stoppedSignal, SignalType::Bool).flag = event.stopped;
+            }
+            if (!motor.changedSignal.empty()) {
+                scene_->upsertSignal(motor.changedSignal, SignalType::Bool).flag = event.speedChanged;
+            }
+        }
+    }
+
+    void rideSurfaces(double dt) {
+        for (BodyState& body : bodies_) {
+            if (!body.riding) {
+                continue;
+            }
+            auto node = scene_->find(body.id);
+            if (!node) {
+                continue;
+            }
+            if (insideHandoff(*node)) {
+                body.riding = false;
+                body.dynamic = true;
+                node->mech.motion = BodyMotion::Free;
+                node->mech.kinematic = false;
+                node->mech.asleep = false;
+                continue;
+            }
+            SceneNode* belt = supportingBelt(*node);
+            if (belt == nullptr) {
+                body.riding = false;
+                body.dynamic = true;
+                node->mech.motion = BodyMotion::Free;
+                node->mech.kinematic = false;
+                continue;
+            }
+            const Vec3 velocity = beltVelocity(*belt, *node);
+            body.velocity = velocity;
+            node->local.translation = node->local.translation + velocity * dt;
+            if (belt->mech.guide > 0) {
+                Vec3 direction = length(belt->mech.direction) > 1e-8 ? normalize(belt->mech.direction) : Vec3{1, 0, 0};
+                Vec3 side = cross(direction, Vec3{0, 0, 1});
+                if (length(side) > 1e-6) {
+                    side = normalize(side);
+                    const double lateral = dot(worldTranslation(*node) - worldTranslation(*belt), side);
+                    if (std::abs(lateral) > belt->mech.guide) {
+                        node->local.translation =
+                            node->local.translation - side * (lateral - std::copysign(belt->mech.guide, lateral));
+                    }
+                }
+            }
+            scene_->physicsDoc.stats.contacts += 1;
+        }
+    }
+
     void resolveContacts() {
         for (int iteration = 0; iteration < 4; ++iteration) {
             for (BodyState& body : bodies_) {
@@ -268,10 +498,20 @@ private:
                     if (into > 0) {
                         body.velocity = body.velocity - normal * into;
                     }
-                    if (obstacle->mech.kind == MechKind::Conveyor) {
-                        const Vec3 belt = normalize(obstacle->mech.direction) * obstacle->mech.speed;
+                    node->mech.asleep = false;
+                    scene_->physicsDoc.stats.contacts += 1;
+                    if (obstacle->mech.kind == MechKind::Conveyor && !body.riding) {
+                        const Vec3 belt = beltVelocity(*obstacle, *node);
+                        const double bounce = pairRestitution(scene_->physicsDoc, node->mech.surface, obstacle->mech.surface);
                         body.velocity.x = belt.x;
                         body.velocity.y = belt.y;
+                        body.velocity.z *= -bounce;
+                        if (node->mech.surfaceRide && normal.z > 0.5 && !insideHandoff(*node)) {
+                            body.dynamic = false;
+                            body.riding = true;
+                            node->mech.motion = BodyMotion::Surface;
+                            node->mech.kinematic = true;
+                        }
                     }
                 }
             }

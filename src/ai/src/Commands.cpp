@@ -63,6 +63,13 @@ nlohmann::json CommandExecutor::catalog() {
         op("kin_fk", "Forward kinematics of a scara or spherical-wrist resource.", {"resource"}, true),
         op("kin_ik", "Inverse kinematics. Returns joint values and writes them when apply is true.",
            {"resource", "x", "y", "z", "qw", "qx", "qy", "qz"}, true),
+        op("kin_ik_numeric", "Bounded numeric inverse kinematics. solver is quasi-newton or sqp.",
+           {"resource", "x", "y", "z", "solver", "apply"}, true),
+        op("physics_set_motion", "Set anchored, driven, free, or surface on a named body.", {"name", "motion"}, true),
+        op("physics_pair", "Write one friction pair. Order does not matter.", {"a", "b", "friction", "restitution"}, true),
+        op("motor_profile", "Stopping distance, stopping time, and time to reach speed.", {"speed", "decel"}, true),
+        op("motor_set", "Create or update a named motor. Speeds match the owner, mm/s or deg/s.",
+           {"name", "owner", "target", "running"}, true),
         op("kin_move_pose", "Move to a named pose with a trapezoid or scurve profile.", {"resource", "pose", "profile"}, true),
         op("logic_start", "Start one logic block. Blocks still exchange only signals.", {"name"}, true),
         op("logic_step", "Advance logic blocks by fixed steps. dt defaults to the simulation step.", {"dt", "steps"}, true),
@@ -283,6 +290,112 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         return solved.ok ? okValue({{"joints", solved.joints}, {"warning", solved.warning}, {"approximated", solved.approximated}})
                          : fail(solved.warning.empty() ? "inverse kinematics failed" : solved.warning);
+    }
+    if (op == "kin_ik_numeric") {
+        KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
+        if (resource == nullptr) {
+            return fail("no resource named " + command.value("resource", ""));
+        }
+        const CartesianPose targetPose{{command.value("x", 0.0), command.value("y", 0.0), command.value("z", 0.0)},
+                                       Quat::identity()};
+        std::vector<double> seed = jointVector(*resource);
+        std::vector<double> lower;
+        std::vector<double> upper;
+        lower.reserve(resource->joints.size());
+        upper.reserve(resource->joints.size());
+        for (const KinJoint& joint : resource->joints) {
+            lower.push_back(joint.limited ? std::min(joint.lower, joint.upper) : -1e6);
+            upper.push_back(joint.limited ? std::max(joint.lower, joint.upper) : 1e6);
+        }
+        const std::string solverName = command.value("solver", std::string("quasi-newton"));
+        const IkSolverKind kind = solverName == "sqp" ? IkSolverKind::SequentialQuadratic : IkSolverKind::QuasiNewton;
+        IkSolverSettings settings;
+        settings.iterations = command.value("iterations", 40);
+        settings.epsilon = command.value("epsilon", 1e-2);
+        settings.penalty = command.value("penalty", 8.0);
+        const IkNumberResult solved = solveBoundedIk(
+            [&](const std::vector<double>& values, std::vector<double>& residual) {
+                KinematicResource trial = *resource;
+                setJointVector(trial, values);
+                const CartesianPose pose = forwardModel(trial);
+                residual = {pose.position.x - targetPose.position.x, pose.position.y - targetPose.position.y,
+                            pose.position.z - targetPose.position.z};
+            },
+            3, seed, lower, upper, kind, settings);
+        if (command.value("apply", true) && solved.ok) {
+            setJointVector(*resource, solved.values);
+            applyResource(scene_, *resource);
+        }
+        return solved.ok ? okValue({{"joints", solved.values}, {"residual", solved.residual}, {"solver", solved.solver},
+                                    {"iterations", solved.iterations}})
+                         : fail("numeric inverse kinematics residual " + std::to_string(solved.residual));
+    }
+    if (op == "physics_set_motion") {
+        CommandResult error;
+        auto node = named(scene_, command, error);
+        if (!node) {
+            return error;
+        }
+        BodyMotion motion = BodyMotion::Free;
+        if (!bodyMotionFromName(command.value("motion", std::string("free")), motion)) {
+            return fail("unknown body motion");
+        }
+        node->mech.motion = motion;
+        syncMotionFlags(node->mech);
+        return okValue(bodyMotionName(node->mech.motion));
+    }
+    if (op == "physics_pair") {
+        const std::string a = command.value("a", "");
+        const std::string b = command.value("b", "");
+        if (a.empty() || b.empty()) {
+            return fail("pair needs a and b");
+        }
+        const double friction = command.value("friction", scene_.physicsDoc.defaultFriction);
+        const double restitution = command.value("restitution", scene_.physicsDoc.defaultRestitution);
+        for (GradePair& pair : scene_.physicsDoc.pairs) {
+            if ((pair.a == a && pair.b == b) || (pair.a == b && pair.b == a)) {
+                pair.friction = friction;
+                pair.restitution = restitution;
+                return okValue(pair.friction);
+            }
+        }
+        scene_.physicsDoc.pairs.push_back(GradePair{a, b, friction, restitution});
+        return okValue(friction);
+    }
+    if (op == "motor_profile") {
+        const double speed = command.value("speed", 0.0);
+        const double decel = command.value("decel", 0.0);
+        return okValue({{"distance", stoppingDistance(speed, decel)},
+                        {"time", stoppingTime(speed, decel)},
+                        {"timeToSpeed", timeToSpeed(0, speed, command.value("accel", decel))}});
+    }
+    if (op == "motor_set") {
+        const std::string name = command.value("name", "");
+        if (name.empty()) {
+            return fail("motor needs a name");
+        }
+        MotorAspect* motor = nullptr;
+        for (MotorAspect& candidate : scene_.motors) {
+            if (candidate.name == name) {
+                motor = &candidate;
+                break;
+            }
+        }
+        if (motor == nullptr) {
+            scene_.motors.push_back(MotorAspect{});
+            motor = &scene_.motors.back();
+            motor->name = name;
+        }
+        if (command.contains("owner")) {
+            motor->owner = command.value("owner", "");
+        }
+        if (command.contains("target")) {
+            motor->targetSpeed = command.value("target", 0.0);
+        }
+        if (command.contains("running")) {
+            motor->running = command.value("running", false);
+        }
+        return okValue({{"name", motor->name}, {"target", motor->targetSpeed}, {"running", motor->running}});
     }
     if (op == "kin_move_pose") {
         KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));

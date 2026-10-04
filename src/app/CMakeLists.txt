@@ -7,6 +7,8 @@ qt_add_executable(simstudio
     src/CommandPalette.cpp
     src/IntentBar.cpp
     src/TaskPanels.cpp
+    src/PhysicsShelf.cpp
+    include/sim/app/PhysicsShelf.hpp
     include/sim/app/MainWindow.hpp
     include/sim/app/MotionPanel.hpp
     include/sim/app/CollisionPanel.hpp

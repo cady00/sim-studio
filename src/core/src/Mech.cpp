@@ -35,6 +35,7 @@ const char* mechKindName(MechKind kind) {
         case MechKind::FixedJoint: return "fixed";
         case MechKind::Hinge: return "hinge";
         case MechKind::Slider: return "slider";
+        case MechKind::Ball: return "ball";
         case MechKind::Conveyor: return "conveyor";
         case MechKind::CollisionSensor: return "collisionSensor";
         case MechKind::DistanceSensor: return "distanceSensor";
@@ -48,7 +49,8 @@ const char* mechKindName(MechKind kind) {
 bool mechKindFromName(const std::string& name, MechKind& out) {
     const MechKind kinds[] = {MechKind::None,        MechKind::Rigid,           MechKind::Collision,
                               MechKind::FixedJoint,  MechKind::Hinge,           MechKind::Slider,
-                              MechKind::Conveyor,    MechKind::CollisionSensor, MechKind::DistanceSensor,
+                              MechKind::Ball,        MechKind::Conveyor,        MechKind::CollisionSensor,
+                              MechKind::DistanceSensor,
                               MechKind::LightBarrier, MechKind::Source,         MechKind::Sink};
     for (MechKind kind : kinds) {
         if (name == mechKindName(kind)) {
@@ -65,13 +67,17 @@ const char* collisionShapeName(CollisionShape shape) {
         case CollisionShape::Sphere: return "sphere";
         case CollisionShape::Capsule: return "capsule";
         case CollisionShape::ConvexHull: return "convex";
+        case CollisionShape::Cylinder: return "cylinder";
+        case CollisionShape::Extrusion: return "extrusion";
+        case CollisionShape::Mesh: return "mesh";
     }
     return "box";
 }
 
 bool collisionShapeFromName(const std::string& name, CollisionShape& out) {
-    const CollisionShape shapes[] = {CollisionShape::Box, CollisionShape::Sphere, CollisionShape::Capsule,
-                                     CollisionShape::ConvexHull};
+    const CollisionShape shapes[] = {CollisionShape::Box,      CollisionShape::Sphere,    CollisionShape::Capsule,
+                                     CollisionShape::ConvexHull, CollisionShape::Cylinder, CollisionShape::Extrusion,
+                                     CollisionShape::Mesh};
     for (CollisionShape shape : shapes) {
         if (name == collisionShapeName(shape)) {
             out = shape;
@@ -122,7 +128,7 @@ bool signalTypeFromName(const std::string& name, SignalType& out) {
 }
 
 bool mechIsJoint(MechKind kind) {
-    return kind == MechKind::FixedJoint || kind == MechKind::Hinge || kind == MechKind::Slider;
+    return kind == MechKind::FixedJoint || kind == MechKind::Hinge || kind == MechKind::Slider || kind == MechKind::Ball;
 }
 
 bool mechCreatesBody(MechKind kind) {
@@ -132,9 +138,19 @@ bool mechCreatesBody(MechKind kind) {
 nlohmann::json mechToJson(const Mech& mech) {
     return nlohmann::json{
         {"kind", mechKindName(mech.kind)},
+        {"motion", bodyMotionName(mech.motion)},
+        {"surfaceRide", mech.surfaceRide},
         {"mass", mech.mass},
         {"autoMass", mech.autoMass},
+        {"density", mech.density},
         {"kinematic", mech.kinematic},
+        {"margin", mech.margin},
+        {"joinAncestor", mech.joinAncestor},
+        {"surface", mech.surface},
+        {"linearDamp", mech.linearDamp},
+        {"angularDamp", mech.angularDamp},
+        {"continuous", mech.continuous},
+        {"allowSleep", mech.allowSleep},
         {"shape", collisionShapeName(mech.shape)},
         {"halfExtents", {mech.halfExtents.x, mech.halfExtents.y, mech.halfExtents.z}},
         {"radius", mech.radius},
@@ -148,8 +164,15 @@ nlohmann::json mechToJson(const Mech& mech) {
         {"target", mech.target},
         {"maxSpeed", mech.maxSpeed},
         {"maxAccel", mech.maxAccel},
+        {"maxTorque", mech.maxTorque},
+        {"maxForce", mech.maxForce},
         {"direction", {mech.direction.x, mech.direction.y, mech.direction.z}},
         {"speed", mech.speed},
+        {"guide", mech.guide},
+        {"grip", mech.grip},
+        {"next", mech.nextName},
+        {"handoff", mech.handoff},
+        {"motor", mech.motor},
         {"range", mech.range},
         {"signal", mech.signal},
         {"valueSignal", mech.valueSignal},
@@ -165,7 +188,25 @@ void mechFromJson(const nlohmann::json& json, Mech& mech) {
     mech.kind = pick(mechKindFromName, json, "kind", mech.kind);
     mech.mass = json.value("mass", mech.mass);
     mech.autoMass = json.value("autoMass", mech.autoMass);
+    mech.density = json.value("density", mech.density);
     mech.kinematic = json.value("kinematic", mech.kinematic);
+    mech.margin = json.value("margin", mech.margin);
+    mech.joinAncestor = json.value("joinAncestor", mech.joinAncestor);
+    mech.surface = json.value("surface", mech.surface);
+    mech.surfaceRide = json.value("surfaceRide", mech.surfaceRide);
+    mech.linearDamp = json.value("linearDamp", mech.linearDamp);
+    mech.angularDamp = json.value("angularDamp", mech.angularDamp);
+    mech.continuous = json.value("continuous", mech.continuous);
+    mech.allowSleep = json.value("allowSleep", mech.allowSleep);
+    if (json.contains("motion")) {
+        mech.motion = pick(bodyMotionFromName, json, "motion", mech.motion);
+    } else if (mech.kinematic) {
+        mech.motion = BodyMotion::Driven;
+    } else if (mech.kind == MechKind::Rigid) {
+        mech.motion = BodyMotion::Free;
+    } else {
+        mech.motion = BodyMotion::Anchored;
+    }
     mech.shape = pick(collisionShapeFromName, json, "shape", mech.shape);
     mech.halfExtents = vec3Or(json, "halfExtents", mech.halfExtents);
     mech.radius = json.value("radius", mech.radius);
@@ -179,6 +220,13 @@ void mechFromJson(const nlohmann::json& json, Mech& mech) {
     mech.target = json.value("target", mech.target);
     mech.maxSpeed = json.value("maxSpeed", mech.maxSpeed);
     mech.maxAccel = json.value("maxAccel", mech.maxAccel);
+    mech.maxTorque = json.value("maxTorque", mech.maxTorque);
+    mech.maxForce = json.value("maxForce", mech.maxForce);
+    mech.guide = json.value("guide", mech.guide);
+    mech.grip = json.value("grip", mech.grip);
+    mech.nextName = json.value("next", mech.nextName);
+    mech.handoff = json.value("handoff", mech.handoff);
+    mech.motor = json.value("motor", mech.motor);
     mech.direction = vec3Or(json, "direction", mech.direction);
     mech.speed = json.value("speed", mech.speed);
     mech.range = json.value("range", mech.range);

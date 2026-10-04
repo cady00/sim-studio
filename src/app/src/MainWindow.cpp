@@ -1,4 +1,5 @@
 #include "sim/app/MainWindow.hpp"
+#include "sim/app/PhysicsShelf.hpp"
 
 #include "sim/ai/CommandRegistry.hpp"
 #include "sim/ai/Commands.hpp"
@@ -8,6 +9,7 @@
 #include "sim/app/IntentBar.hpp"
 #include "sim/app/MotionPanel.hpp"
 #include "sim/app/TaskPanels.hpp"
+#include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ObjImporter.hpp"
 #include "sim/io/ProjectStore.hpp"
@@ -300,6 +302,16 @@ void MainWindow::buildUi() {
     plcDock_->setWidget(plc_);
     addDockWidget(Qt::RightDockWidgetArea, plcDock_);
 
+    physicsShelf_ = new PhysicsShelf(scene_, [this](const char* key) { return trk(key); }, this);
+    physicsShelf_->setEngineRequested([this](const std::string& engine) {
+        usePhysicsBackend(engine == "builtin" ? PhysicsBackend::Builtin : PhysicsBackend::Jolt);
+    });
+    physicsDock_ = new QDockWidget(this);
+    physicsDock_->setObjectName("dock.physics");
+    physicsDock_->setWidget(physicsShelf_);
+    addDockWidget(Qt::RightDockWidgetArea, physicsDock_);
+    splitDockWidget(propertyDock_, physicsDock_, Qt::Vertical);
+
     tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
     tray_->setToolTip(QStringLiteral("Sim Studio"));
     if (tray_->icon().isNull()) {
@@ -583,7 +595,12 @@ void MainWindow::bindScene() {
         if (kind == ChangeKind::Simulation) {
             viewport_->update();
             refreshSignals();
+            shelfReload_ = false;
             refreshProperties();
+            shelfReload_ = true;
+            if (physicsShelf_ != nullptr) {
+                physicsShelf_->setStats(scene_.physicsDoc.stats);
+            }
             if (motion_ != nullptr) {
                 motion_->refreshLive();
             }
@@ -682,6 +699,12 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.plc")) {
         dock->setWindowTitle(trk("dock.plc"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.physics")) {
+        dock->setWindowTitle(trk("dock.physics"));
+    }
+    if (physicsShelf_ != nullptr) {
+        physicsShelf_->reload();
     }
     if (collision_ != nullptr) {
         collision_->retranslate();
@@ -834,6 +857,9 @@ void MainWindow::refreshProperties() {
         vertexLabel_->setText("-");
         triangleLabel_->setText("-");
         refreshing_ = false;
+        if (physicsShelf_ != nullptr && shelfReload_) {
+            physicsShelf_->reload();
+        }
         return;
     }
     nameEdit_->setText(node->id == "root" && node->name == "World" ? trk("tree.world")
@@ -892,6 +918,9 @@ void MainWindow::refreshProperties() {
     intervalSpin_->setValue(node->mech.interval);
     prototypeEdit_->setText(QString::fromUtf8(node->mech.prototype.c_str()));
     refreshing_ = false;
+    if (physicsShelf_ != nullptr && shelfReload_) {
+        physicsShelf_->reload();
+    }
 }
 
 void MainWindow::applyProperties() {
@@ -916,6 +945,11 @@ void MainWindow::applyProperties() {
     node->mech.mass = massSpin_->value();
     node->mech.autoMass = autoMassBox_->isChecked();
     node->mech.kinematic = kinematicBox_->isChecked();
+    if (node->mech.kinematic && node->mech.motion == BodyMotion::Free) {
+        node->mech.motion = BodyMotion::Driven;
+    } else if (!node->mech.kinematic && (node->mech.motion == BodyMotion::Driven || node->mech.motion == BodyMotion::Surface)) {
+        node->mech.motion = BodyMotion::Free;
+    }
     if (shapeCombo_->currentData().isValid()) {
         node->mech.shape = static_cast<CollisionShape>(shapeCombo_->currentData().toInt());
     }
@@ -1256,6 +1290,7 @@ QString MainWindow::mechLabel(MechKind kind) const {
         case MechKind::FixedJoint: return trk("mech.fixed");
         case MechKind::Hinge: return trk("mech.hinge");
         case MechKind::Slider: return trk("mech.slider");
+        case MechKind::Ball: return trk("mech.ball");
         case MechKind::Conveyor: return trk("mech.conveyor");
         case MechKind::CollisionSensor: return trk("mech.collisionSensor");
         case MechKind::DistanceSensor: return trk("mech.distanceSensor");
@@ -1283,6 +1318,7 @@ void MainWindow::fillMechCombos() {
                       {trk("mech.fixed"), static_cast<int>(MechKind::FixedJoint)},
                       {trk("mech.hinge"), static_cast<int>(MechKind::Hinge)},
                       {trk("mech.slider"), static_cast<int>(MechKind::Slider)},
+                      {trk("mech.ball"), static_cast<int>(MechKind::Ball)},
                       {trk("mech.conveyor"), static_cast<int>(MechKind::Conveyor)},
                       {trk("mech.collisionSensor"), static_cast<int>(MechKind::CollisionSensor)},
                       {trk("mech.distanceSensor"), static_cast<int>(MechKind::DistanceSensor)},
@@ -1292,7 +1328,10 @@ void MainWindow::fillMechCombos() {
     fill(shapeCombo_, {{trk("shape.box"), static_cast<int>(CollisionShape::Box)},
                        {trk("shape.sphere"), static_cast<int>(CollisionShape::Sphere)},
                        {trk("shape.capsule"), static_cast<int>(CollisionShape::Capsule)},
-                       {trk("shape.convex"), static_cast<int>(CollisionShape::ConvexHull)}});
+                       {trk("shape.convex"), static_cast<int>(CollisionShape::ConvexHull)},
+                       {trk("shape.cylinder"), static_cast<int>(CollisionShape::Cylinder)},
+                       {trk("shape.extrusion"), static_cast<int>(CollisionShape::Extrusion)},
+                       {trk("shape.mesh"), static_cast<int>(CollisionShape::Mesh)}});
     axisCombo_->clear();
     axisCombo_->addItems({trk("axis.x"), trk("axis.y"), trk("axis.z")});
     fill(driveCombo_, {{trk("drive.none"), static_cast<int>(DriveMode::None)},
@@ -1480,6 +1519,13 @@ void MainWindow::onSimTick() {
     simulation_->tick(0.016);
     if (viewport_ != nullptr && simulation_ != nullptr) {
         viewport_->setSimTime(simulation_->time());
+        const PhysicsStats& stats = scene_.physicsDoc.stats;
+        viewport_->setPhysicsLine(trk("phys.hud")
+                                      .arg(stats.contacts)
+                                      .arg(stats.detectMs, 0, 'f', 3)
+                                      .arg(stats.solveMs, 0, 'f', 3)
+                                      .arg(stats.continuous)
+                                      .arg(QString::fromLatin1(physics_->backendName())));
     }
     if (logicCanvas_ != nullptr) {
         logicCanvas_->update();
@@ -1501,10 +1547,24 @@ void MainWindow::onSpeedChanged(double speed) {
 
 void MainWindow::runScriptSnippet() {}
 
+void MainWindow::usePhysicsBackend(PhysicsBackend backend) {
+    if (simulation_ && simulation_->state() != SimState::Stopped) {
+        simulation_->stop();
+    }
+    physics_ = createPhysicsEngine(backend);
+    simulation_ = std::make_unique<Simulation>(scene_, *physics_);
+    if (scripting_ != nullptr) {
+        scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
+                                    [this](const std::string& id) { physics_->releaseBody(id); });
+    }
+    scene_.physicsDoc.engine = physicsBackendName(backend);
+}
+
 void MainWindow::loadDemo(const QString& name) {
     collisionDemo_ = name == QStringLiteral("collision");
     kr420Demo_ = name == QStringLiteral("kr420");
     kr420TrackDemo_ = name == QStringLiteral("kr420track");
+    transferDemo_ = name == QStringLiteral("transfer");
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
         demoPath_ = "pick_place";
@@ -1558,6 +1618,11 @@ void MainWindow::loadDemo(const QString& name) {
                 }
             }
         }
+    } else if (transferDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildTransferLine(scene_);
+        demoPath_.clear();
+        applyTaskMode(4);
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
@@ -1608,7 +1673,16 @@ void MainWindow::beginHeadlessPlayback() {
             collision_->reload();
             viewport_->fitAll();
         }
-        if (const auto pusher = scene_.findByName("Pusher")) {
+        if (transferDemo_) {
+            if (const auto box = scene_.findByName("RubberBox")) {
+                scene_.setSelected(box->id);
+            }
+            if (physicsDock_ != nullptr) {
+                physicsDock_->show();
+                physicsDock_->raise();
+                resizeDocks({physicsDock_}, {360}, Qt::Horizontal);
+            }
+        } else if (const auto pusher = scene_.findByName("Pusher")) {
             scene_.setSelected(pusher->id);
         }
         playSimulation();
@@ -1623,6 +1697,15 @@ void MainWindow::beginHeadlessPlayback() {
             const double remain = target - simulation_->time();
             simulation_->tick(std::min(remain, 2.0));
             ++guard;
+        }
+        if (viewport_ != nullptr) {
+            const PhysicsStats& stats = scene_.physicsDoc.stats;
+            viewport_->setPhysicsLine(trk("phys.hud")
+                                          .arg(stats.contacts)
+                                          .arg(stats.detectMs, 0, 'f', 3)
+                                          .arg(stats.solveMs, 0, 'f', 3)
+                                          .arg(stats.continuous)
+                                          .arg(QString::fromLatin1(physics_ ? physics_->backendName() : "")));
         }
         QTimer::singleShot(0, this, &MainWindow::captureScreenshot);
     });
@@ -1675,6 +1758,7 @@ void MainWindow::applyTaskMode(int mode) {
     show(signalDock_, taskMode_ == 2 || taskMode_ == 4 || taskMode_ == 5);
     show(scriptDock_, taskMode_ == 5);
     show(plcDock_, taskMode_ == 5);
+    show(physicsDock_, taskMode_ == 0 || taskMode_ == 4);
     if (chrome_ != nullptr) {
         chrome_->setMode(taskMode_);
     }

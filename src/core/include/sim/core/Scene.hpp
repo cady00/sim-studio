@@ -2,6 +2,7 @@
 
 #include "sim/core/Kinematics.hpp"
 #include "sim/core/Mech.hpp"
+#include "sim/core/PhysicsModel.hpp"
 #include "sim/core/Proximity.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Transform.hpp"
@@ -113,6 +114,8 @@ public:
     std::vector<RobotPath> robotPaths;
     ProximitySetup proximity;
     std::vector<ConvexCacheEntry> convexCache;
+    PhysicsDocument physicsDoc;
+    std::vector<MotorAspect> motors;
 
     bool dirty() const { return dirty_; }
     void markClean() { dirty_ = false; }

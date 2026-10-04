@@ -49,6 +49,7 @@ public:
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
     void loadDemo(const QString& name);
+    void usePhysicsBackend(PhysicsBackend backend);
     void setTaskModeName(const QString& mode);
     void setThemeName(const QString& theme);
     void showCommandPalette();
@@ -121,6 +122,8 @@ private:
     bool collisionDemo_ = false;
     bool kr420Demo_ = false;
     bool kr420TrackDemo_ = false;
+    bool transferDemo_ = false;
+    bool shelfReload_ = true;
     std::string demoPath_;
     std::string pendingPath_;
     std::vector<double> jointRest_;
@@ -209,12 +212,14 @@ private:
     QDockWidget* logicDock_ = nullptr;
     QDockWidget* pathDock_ = nullptr;
     QDockWidget* plcDock_ = nullptr;
+    QDockWidget* physicsDock_ = nullptr;
     class ChromeBar* chrome_ = nullptr;
     class CommandPalette* palette_ = nullptr;
     class IntentBar* intent_ = nullptr;
     class LogicCanvas* logicCanvas_ = nullptr;
     class PathTimeline* pathTimeline_ = nullptr;
     class PlcCards* plc_ = nullptr;
+    class PhysicsShelf* physicsShelf_ = nullptr;
     QSystemTrayIcon* tray_ = nullptr;
     int taskMode_ = 0;
     bool focusMode_ = false;
