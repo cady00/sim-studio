@@ -25,6 +25,8 @@ struct InterlockZone {
     std::string name;
     Vec3 center{0, 0, 0};
     double radius = 400;
+    // Seconds added to the shared station when two robots occupy the zone together.
+    double releaseSeconds = 1.5;
     std::vector<std::string> resources;
 };
 

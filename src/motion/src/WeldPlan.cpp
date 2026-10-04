@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <sstream>
 
 namespace sim {
@@ -701,6 +702,72 @@ int planExampleWeldTour(Scene& scene) {
     const int count = static_cast<int>(tour.points.size());
     scene.robotPaths.push_back(std::move(tour));
     return count;
+}
+
+namespace {
+
+bool spotSolves(KinematicResource& resource, WeldSpot spot) {
+    const SpinSearch solved = searchWeldSpin(nullptr, resource, spot, 8, false);
+    return solved.ok && !solved.singular && solved.margin > 0.02;
+}
+
+std::string millimeters(double value) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%.0f", value);
+    return buffer;
+}
+
+}  // namespace
+
+WeldAdvice suggestWeldFix(KinematicResource& resource, const WeldSpot& spot) {
+    WeldAdvice advice;
+    if (spotSolves(resource, spot)) {
+        advice.kind = "reachable";
+        advice.text = "已可达";
+        return advice;
+    }
+    const std::vector<double> saved = jointVector(resource);
+    const CartesianPose home = forwardModel(resource);
+    const Vec3 toolZ = home.rotation.rotate({0, 0, 1});
+    WeldSpot turned = spot;
+    turned.normal = -toolZ;
+    if (length(turned.normal) > 0.5 && spotSolves(resource, turned)) {
+        advice.kind = "gun";
+        advice.text = "换焊钳姿态，使接近方向对齐当前工具轴";
+        setJointVector(resource, saved);
+        return advice;
+    }
+    for (double along : {60.0, 120.0, -60.0, 180.0}) {
+        WeldSpot shifted = spot;
+        shifted.position = spot.position + spot.normal * along;
+        if (spotSolves(resource, shifted)) {
+            advice.kind = "gun";
+            advice.text = "换焊钳 TCP，沿法向 " + millimeters(along) + " mm";
+            setJointVector(resource, saved);
+            return advice;
+        }
+    }
+    const Vec3 delta = spot.position - home.position;
+    WeldSpot parked = spot;
+    parked.position = home.position;
+    parked.normal = -toolZ;
+    if (spotSolves(resource, parked)) {
+        advice.shift = {delta.x, delta.y, 0};
+        if (std::abs(delta.z) < 80.0) {
+            advice.kind = "base";
+            advice.text = "移底座 X " + millimeters(delta.x) + " mm，Y " + millimeters(delta.y) + " mm";
+        } else {
+            advice.kind = "track";
+            advice.shift.z = delta.z;
+            advice.text = "加外部轴，行程 X " + millimeters(delta.x) + " Y " + millimeters(delta.y) + " Z " + millimeters(delta.z) + " mm";
+        }
+        setJointVector(resource, saved);
+        return advice;
+    }
+    advice.kind = "open";
+    advice.text = "移底座、加外部轴或换焊钳后仍未找到可达姿态";
+    setJointVector(resource, saved);
+    return advice;
 }
 
 }  // namespace sim

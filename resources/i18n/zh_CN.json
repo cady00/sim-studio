@@ -227,6 +227,8 @@
   "weld.krl": "导出 KUKA KRL 并回读",
   "weld.krlSummary": "KRL 往返 %1 点，.src/.dat 含 E1–E6",
   "weld.krlFail": "没有可导出的焊点路径",
+  "weld.advice": "不可达焊点的修正建议",
+  "weld.adviceSummary": "不可达焊点给出 %1 条建议",
   "collision.clearance": "近距阈值",
   "collision.setA": "碰撞集 A",
   "collision.setB": "碰撞集 B",

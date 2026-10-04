@@ -142,3 +142,42 @@ TEST_CASE("an inline kuka aggregate imports without a dat file") {
     REQUIRE(path.points[0].joints[6] == Catch::Approx(7));
     REQUIRE(path.points[0].joints[8] == Catch::Approx(8));
 }
+
+TEST_CASE("kuka src keeps tool base spline interrupt and outputs") {
+    const sim::KinematicResource robot = armWithExternals();
+    sim::RobotPath path = samplePath();
+    path.frames.push_back({"tool", {0, 0, 150}, 0, 90, 0});
+    path.frames.push_back({"base", {10, 0, 0}, 0, 0, 0});
+    path.directives.push_back({"interrupt", "INTERRUPT DECL 1 WHEN $IN[1]==TRUE DO BRAKE"});
+    path.directives.push_back({"interrupt", "INTERRUPT ON 1"});
+    path.directives.push_back({"io", "$OUT[2]=TRUE"});
+    path.points[0].shape = "spl";
+    path.points[1].shape = "slin";
+    const std::unique_ptr<sim::IOlpProgram> post = sim::createOlpProgram("kuka");
+    std::string src;
+    std::string dat;
+    std::string error;
+    REQUIRE(post->exportProgram(robot, path, src, dat, error));
+    REQUIRE(src.find("SPLINE") != std::string::npos);
+    REQUIRE(src.find("SLIN") != std::string::npos);
+    REQUIRE(src.find("ENDSPLINE") != std::string::npos);
+    REQUIRE(src.find("$TOOL=") != std::string::npos);
+    REQUIRE(src.find("$OUT[2]=TRUE") != std::string::npos);
+    REQUIRE(src.find("INTERRUPT ON 1") != std::string::npos);
+    sim::RobotPath back;
+    REQUIRE(post->importProgram(&robot, src, dat, back, error));
+    REQUIRE(back.points.size() == 2);
+    REQUIRE(back.points[0].shape == "spl");
+    REQUIRE(back.points[1].shape == "slin");
+    REQUIRE(back.frames.size() == 2);
+    REQUIRE(back.frames[0].kind == "tool");
+    REQUIRE(back.frames[0].origin.z == Catch::Approx(150));
+    REQUIRE(back.frames[0].b == Catch::Approx(90));
+    REQUIRE(back.frames[1].kind == "base");
+    REQUIRE(back.frames[1].origin.x == Catch::Approx(10));
+    REQUIRE(back.directives.size() == 3);
+    REQUIRE(back.directives[0].kind == "interrupt");
+    REQUIRE(back.directives[2].text == "$OUT[2]=TRUE");
+    expectPoint(back.points[0], false);
+    expectPoint(back.points[1], true);
+}

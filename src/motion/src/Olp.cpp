@@ -312,6 +312,25 @@ public:
             ++i_;
         }
     }
+    bool peekChar(char ch) {
+        skip();
+        return i_ < text_.size() && text_[i_] == ch;
+    }
+    std::string takeLine() {
+        skip();
+        const std::size_t begin = i_;
+        while (i_ < text_.size() && text_[i_] != '\n') {
+            ++i_;
+        }
+        std::string line = text_.substr(begin, i_ - begin);
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (i_ < text_.size() && text_[i_] == '\n') {
+            ++i_;
+        }
+        return line;
+    }
     const std::string& text() const { return text_; }
 
 private:
@@ -359,6 +378,28 @@ void readAggregate(const std::string& body, AxisSample& sample) {
     }
 }
 
+bool parseDollarFrame(const std::string& line, OlpFrame& frame) {
+    const std::string lower = lowerCopy(line);
+    if (lower.find("$tool") != std::string::npos) {
+        frame.kind = "tool";
+    } else if (lower.find("$base") != std::string::npos) {
+        frame.kind = "base";
+    } else {
+        return false;
+    }
+    const auto brace = line.find('{');
+    if (brace == std::string::npos) {
+        return false;
+    }
+    AxisSample sample;
+    readAggregate(line.substr(brace), sample);
+    frame.origin = sample.position;
+    frame.a = sample.a;
+    frame.b = sample.b;
+    frame.c = sample.c;
+    return true;
+}
+
 std::string kukaAggregate(const AxisSample& sample, bool cartesian) {
     std::ostringstream out;
     out << '{';
@@ -396,17 +437,46 @@ public:
         std::ostringstream datOut;
         srcOut << "DEF " << name << "()\n";
         datOut << "DEFDAT " << name << "\n";
+        for (const OlpFrame& frame : path.frames) {
+            AxisSample sample;
+            sample.position = frame.origin;
+            sample.a = frame.a;
+            sample.b = frame.b;
+            sample.c = frame.c;
+            sample.cartesian = true;
+            srcOut << (frame.kind == "base" ? "$BASE=" : "$TOOL=") << kukaAggregate(sample, true) << "\n";
+        }
+        for (const OlpDirective& directive : path.directives) {
+            if (!directive.text.empty()) {
+                srcOut << directive.text << "\n";
+            }
+        }
+        bool spline = false;
+        for (const PathPoint& point : path.points) {
+            if (point.shape == "spl" || point.shape == "slin") {
+                spline = true;
+            }
+        }
+        if (spline) {
+            srcOut << "SPLINE\n";
+        }
         int index = 1;
         for (const PathPoint& point : path.points) {
             const AxisSample sample = samplePoint(resource, point);
-            const bool linear = point.move != PathMove::Ptp;
+            const bool slin = point.shape == "slin";
+            const bool spl = point.shape == "spl";
+            const bool linear = slin || (!spl && point.move != PathMove::Ptp);
             const std::string pointName = (linear ? "XL" : "XP") + std::to_string(index);
+            const char* motion = slin ? "SLIN " : spl ? "SPL " : linear ? "LIN " : "PTP ";
             srcOut << "$VEL_AXIS[1]=" << formatNum(point.speed) << "\n";
-            srcOut << (linear ? "LIN " : "PTP ") << pointName << "\n";
+            srcOut << motion << pointName << "\n";
             datOut << "DECL " << (linear ? "E6POS " : "E6AXIS ") << pointName << "=" << kukaAggregate(sample, linear)
                    << "\n";
             datOut << "DECL REAL SP" << index << "=" << formatNum(point.speed) << "\n";
             ++index;
+        }
+        if (spline) {
+            srcOut << "ENDSPLINE\n";
         }
         srcOut << "END\n";
         datOut << "ENDDAT\n";
@@ -434,18 +504,49 @@ public:
         path.name = program.empty() ? "imported" : program;
         int index = 1;
         while (!scan.done()) {
+            if (scan.peekChar('$')) {
+                const std::string line = scan.takeLine();
+                const std::string lower = lowerCopy(line);
+                if (lower.find("$vel") != std::string::npos) {
+                    continue;
+                }
+                OlpFrame frame;
+                if (parseDollarFrame(line, frame)) {
+                    path.frames.push_back(frame);
+                } else if (!line.empty()) {
+                    path.directives.push_back({"io", line});
+                }
+                continue;
+            }
+            if (scan.peekWord("INTERRUPT")) {
+                const std::string line = scan.takeLine();
+                if (!line.empty()) {
+                    path.directives.push_back({"interrupt", line});
+                }
+                continue;
+            }
+            if (scan.peekWord("SPLINE")) {
+                scan.take("SPLINE");
+                continue;
+            }
+            if (scan.peekWord("ENDSPLINE")) {
+                scan.take("ENDSPLINE");
+                continue;
+            }
+            const bool spl = scan.peekWord("SPL");
+            const bool slin = scan.peekWord("SLIN");
             const bool ptp = scan.peekWord("PTP");
             const bool lin = scan.peekWord("LIN");
-            if (!ptp && !lin) {
+            if (!ptp && !lin && !spl && !slin) {
                 if (scan.takeIdent().empty()) {
                     scan.bump();
                 }
                 continue;
             }
-            scan.take(ptp ? "PTP" : "LIN");
+            scan.take(ptp ? "PTP" : lin ? "LIN" : slin ? "SLIN" : "SPL");
             AxisSample sample;
-            sample.move = ptp ? PathMove::Ptp : PathMove::Lin;
-            sample.cartesian = lin;
+            sample.move = (lin || slin) ? PathMove::Lin : PathMove::Ptp;
+            sample.cartesian = lin || slin;
             std::string inlineBody = scan.takeBrace();
             if (!inlineBody.empty()) {
                 readAggregate(inlineBody, sample);
@@ -457,14 +558,23 @@ public:
                     return false;
                 }
                 sample = found->second;
-                sample.move = ptp ? PathMove::Ptp : PathMove::Lin;
-                sample.cartesian = lin || found->second.cartesian;
+                sample.move = (lin || slin) ? PathMove::Lin : PathMove::Ptp;
+                sample.cartesian = lin || slin || found->second.cartesian;
             }
             const auto speed = speeds.find("sp" + std::to_string(index));
             if (speed != speeds.end()) {
                 sample.speed = speed->second;
             }
-            path.points.push_back(pointFromSample(resource, sample));
+            PathPoint made = pointFromSample(resource, sample);
+            if (spl) {
+                made.shape = "spl";
+                made.move = PathMove::Ptp;
+            }
+            if (slin) {
+                made.shape = "slin";
+                made.move = PathMove::Lin;
+            }
+            path.points.push_back(std::move(made));
             ++index;
         }
         if (path.points.empty()) {

@@ -30,6 +30,16 @@ SpinSearch searchWeldSpin(Scene* scene, KinematicResource& resource, const WeldS
 // Example spots on a plate in front of kr420. The private STEP is not required.
 void prepareExampleWelds(Scene& scene);
 
+struct WeldAdvice {
+    // reachable | gun | base | track | open
+    std::string kind;
+    std::string text;
+    Vec3 shift{0, 0, 0};
+};
+
+// For an unreachable spot, try a gun-normal change, a base shift, then an external-axis shift.
+WeldAdvice suggestWeldFix(KinematicResource& resource, const WeldSpot& spot);
+
 struct SpotReach {
     std::string id;
     bool reachable = false;

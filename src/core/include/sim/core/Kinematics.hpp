@@ -129,10 +129,27 @@ struct PathPoint {
     Vec3 via{0, 0, 0};
     double speed = 100;
     double zone = 0;
+    // Empty, "spl", or "slin". A spline block is written when any point sets this.
+    std::string shape;
     // Empty inherits the path. Otherwise "locked", "sync", or "positioner".
     std::string external;
     // Parallel to the resource's external joints, in joint-list order.
     std::vector<double> externalValues;
+};
+
+// $TOOL or $BASE. Angles are KUKA A, B, C in degrees (Z, Y, X).
+struct OlpFrame {
+    std::string kind;
+    Vec3 origin{0, 0, 0};
+    double a = 0;
+    double b = 0;
+    double c = 0;
+};
+
+// An INTERRUPT or an $OUT/$IN assignment, kept as the controller text.
+struct OlpDirective {
+    std::string kind;
+    std::string text;
 };
 
 struct RobotPath {
@@ -143,6 +160,8 @@ struct RobotPath {
     // "positioner" interprets the point in the workpiece frame.
     std::string external = "locked";
     std::string workpiece;
+    std::vector<OlpFrame> frames;
+    std::vector<OlpDirective> directives;
 };
 
 struct LogicCondition {

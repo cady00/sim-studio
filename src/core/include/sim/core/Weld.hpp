@@ -32,6 +32,8 @@ struct WeldSpot {
     double manipulability = 0;
     bool singular = false;
     bool collision = false;
+    // Filled by the reach advisor: move the base, add an external axis, or change the gun.
+    std::string advice;
 };
 
 // CSV columns: id,x,y,z,nx,ny,nz,layers,electrode,example.

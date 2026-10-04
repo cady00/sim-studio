@@ -1876,21 +1876,46 @@ void MainWindow::loadDemo(const QString& name) {
                     }
                 }
                 if (tourJoints.size() >= 2) {
-                    const MotionEnvelope envelope = buildTcpEnvelope(scene_, *robot, tourJoints, "weld_envelope", 45);
+                    const MotionEnvelope envelope = buildLinkSweep(scene_, *robot, tourJoints, "weld_envelope");
                     envelopeSegments = static_cast<int>(envelope.nodes.size());
                 }
+                KinematicResource mate = *robot;
+                mate.name = "kr280";
+                KinJoint rail;
+                rail.name = "rail";
+                rail.motion = JointMotion::Prismatic;
+                rail.axis = {0, 1, 0};
+                rail.externalName = "E1";
+                rail.externalKind = "track";
+                rail.position = 350;
+                rail.lower = -3000;
+                rail.upper = 3000;
+                mate.joints.push_back(rail);
+                scene_.resources.push_back(std::move(mate));
+                robot = findResource(scene_.resources, "kr420");
+                KinematicResource* mateRobot = findResource(scene_.resources, "kr280");
+                const Vec3 tcpA = robot == nullptr ? Vec3{} : forwardModel(*robot).position;
+                const Vec3 tcpB = mateRobot == nullptr ? tcpA : forwardModel(*mateRobot).position;
+                auto proxy = scene_.makeNode(NodeKind::Part, "KR280");
+                proxy->meshId = scene_.addMesh(makeBoxMesh({160, 160, 420}));
+                proxy->local.translation = tcpB;
+                proxy->color = {0.86, 0.45, 0.18};
+                scene_.addChild(scene_.root(), proxy);
                 InterlockZone zone;
                 zone.name = "weld_cell";
-                zone.radius = 900;
-                zone.resources = {"kr420"};
-                for (const WeldSpot& spot : scene_.welds) {
-                    zone.center = zone.center + spot.position;
-                }
-                if (!scene_.welds.empty()) {
-                    zone.center = zone.center / static_cast<double>(scene_.welds.size());
-                }
+                zone.center = (tcpA + tcpB) * 0.5;
+                zone.radius = 400;
+                zone.releaseSeconds = 1.5;
+                zone.resources = {"kr420", "kr280"};
                 scene_.interlocks = {zone};
                 evaluateInterlocks(scene_);
+                if (robot != nullptr) {
+                    for (WeldSpot& spot : scene_.welds) {
+                        if (!spot.reachable) {
+                            spot.advice = suggestWeldFix(*robot, spot).text;
+                        }
+                    }
+                }
             }
             const QString base = region.found ? QStringLiteral("底座 X %1…%2")
                                                     .arg(region.minX, 0, 'f', 0)
@@ -1913,15 +1938,19 @@ void MainWindow::loadDemo(const QString& name) {
                     }
                 }
             }
+            const double hold = applyInterlockHold(scene_);
+            const ScheduleReport schedule = scheduleOperations(scene_.operations, scene_.layout);
             if (weld_ != nullptr) {
                 weld_->reload();
             }
-            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 包络 %5 段 · KRL %6 点")
+            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 连杆包络 %5 · 互锁保持 %6 s · 节拍 %7 s · KRL %8 点")
                                       .arg(static_cast<int>(scene_.welds.size()))
                                       .arg(reachable)
                                       .arg(base)
                                       .arg(tourPoints)
                                       .arg(envelopeSegments)
+                                      .arg(hold, 0, 'f', 1)
+                                      .arg(schedule.makespan, 0, 'f', 1)
                                       .arg(krlPoints));
             applyTaskMode(3);
         } else {

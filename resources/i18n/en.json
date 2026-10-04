@@ -227,6 +227,8 @@
   "weld.krl": "Export KUKA KRL and read it back",
   "weld.krlSummary": "KRL round trip %1 points, .src/.dat include E1–E6",
   "weld.krlFail": "No weld path to export",
+  "weld.advice": "Suggest fixes for blocked spots",
+  "weld.adviceSummary": "%1 suggestions for blocked spots",
   "collision.clearance": "Clearance",
   "collision.setA": "Collision set A",
   "collision.setB": "Collision set B",

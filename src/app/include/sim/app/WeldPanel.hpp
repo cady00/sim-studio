@@ -30,6 +30,7 @@ private:
     void envelope();
     void interlock();
     void exportKrl();
+    void advise();
     void fillProgram();
     KinematicResource* robot();
 

@@ -386,7 +386,8 @@ nlohmann::json weldsToJson(const std::vector<WeldSpot>& spots) {
                        {"spinDeg", spot.spinDeg},
                        {"manipulability", spot.manipulability},
                        {"singular", spot.singular},
-                       {"collision", spot.collision}});
+                       {"collision", spot.collision},
+                       {"advice", spot.advice}});
     }
     return out;
 }
@@ -432,6 +433,7 @@ void weldsFromJson(const nlohmann::json& json, std::vector<WeldSpot>& spots) {
         spot.manipulability = item.value("manipulability", 0.0);
         spot.singular = item.value("singular", false);
         spot.collision = item.value("collision", false);
+        spot.advice = item.value("advice", std::string{});
         if (!spot.id.empty()) {
             spots.push_back(std::move(spot));
         }

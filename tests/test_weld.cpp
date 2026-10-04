@@ -237,3 +237,101 @@ TEST_CASE("the tcp sweep becomes a collision set and two robots interlock") {
     REQUIRE(apart.empty());
     REQUIRE_FALSE(scene.findSignal("interlock_cell")->flag);
 }
+
+TEST_CASE("each link sweeps between the two joint poses") {
+    sim::Scene scene;
+    sim::KinematicResource robot;
+    robot.name = "arm";
+    sim::KinLink baseLink;
+    baseLink.name = "base";
+    auto base = scene.makeNode(sim::NodeKind::Part, "base");
+    base->meshId = scene.addMesh(sim::makeBoxMesh({40, 40, 40}));
+    baseLink.nodeId = base->id;
+    scene.addChild(scene.root(), base);
+    sim::KinLink armLink;
+    armLink.name = "arm";
+    auto arm = scene.makeNode(sim::NodeKind::Part, "arm");
+    arm->meshId = scene.addMesh(sim::makeBoxMesh({200, 30, 30}));
+    armLink.nodeId = arm->id;
+    scene.addChild(base, arm);
+    sim::KinJoint joint;
+    joint.name = "A1";
+    joint.parentLink = "base";
+    joint.childLink = "arm";
+    joint.axis = {0, 0, 1};
+    joint.lower = -180;
+    joint.upper = 180;
+    robot.links = {baseLink, armLink};
+    robot.joints = {joint};
+    scene.resources.push_back(robot);
+    const sim::MotionEnvelope sweep = sim::buildLinkSweep(scene, scene.resources.front(), {{0}, {90}}, "links");
+    REQUIRE(sweep.nodes.size() >= 2);
+    REQUIRE(sweep.bounds.max.x > 100);
+    REQUIRE(sweep.bounds.max.y > 100);
+    bool listed = false;
+    for (const sim::CollisionSet& set : scene.proximity.sets) {
+        if (set.name == "links" && set.objects.size() >= 2) {
+            listed = true;
+        }
+    }
+    REQUIRE(listed);
+}
+
+TEST_CASE("a shared zone holds the station and unreachable spots name a fix") {
+    sim::Scene scene;
+    sim::KinematicResource arm = wristResource();
+    arm.name = "kr420";
+    sim::setJointVector(arm, {15, -40, 55, 10, 40, -20});
+    sim::KinematicResource mate = arm;
+    mate.name = "kr280";
+    scene.resources.push_back(arm);
+    scene.resources.push_back(mate);
+    const sim::Vec3 tcp = sim::forwardModel(scene.resources[0]).position;
+    sim::InterlockZone zone;
+    zone.name = "weld_cell";
+    zone.center = tcp;
+    zone.radius = 300;
+    zone.releaseSeconds = 1.5;
+    zone.resources = {"kr420", "kr280"};
+    scene.interlocks.push_back(zone);
+    sim::Station station;
+    station.id = "st_weld";
+    station.resource = "kr420";
+    scene.layout.stations.push_back(station);
+    sim::Operation weld;
+    weld.id = "weld";
+    weld.kind = sim::OpKind::Task;
+    weld.station = "st_weld";
+    weld.seconds = 3;
+    scene.operations.push_back(weld);
+    REQUIRE(sim::applyInterlockHold(scene) == Catch::Approx(1.5));
+    REQUIRE(scene.operations[0].wait == Catch::Approx(1.5));
+    const sim::ScheduleReport held = sim::scheduleOperations(scene.operations, scene.layout);
+    REQUIRE(held.makespan == Catch::Approx(4.5));
+    REQUIRE(sim::applyInterlockHold(scene) == Catch::Approx(0));
+
+    sim::KinematicResource& robot = scene.resources[0];
+    const sim::CartesianPose pose = sim::forwardModel(robot);
+    sim::WeldSpot near;
+    near.position = pose.position;
+    near.normal = pose.rotation.rotate({0, 0, 1}) * -1;
+    const sim::WeldAdvice reachable = sim::suggestWeldFix(robot, near);
+    REQUIRE(reachable.kind == "reachable");
+
+    sim::WeldSpot aside = near;
+    aside.position = pose.position + sim::Vec3{1600, 0, 0};
+    const sim::WeldAdvice base = sim::suggestWeldFix(robot, aside);
+    REQUIRE(base.kind == "base");
+    REQUIRE(base.text.find("底座") != std::string::npos);
+
+    sim::WeldSpot lifted = near;
+    lifted.position = pose.position + sim::Vec3{0, 0, 1400};
+    const sim::WeldAdvice track = sim::suggestWeldFix(robot, lifted);
+    REQUIRE(track.kind == "track");
+    REQUIRE(track.text.find("外部轴") != std::string::npos);
+
+    sim::WeldSpot turned = near;
+    turned.normal = {1, 0, 0};
+    const sim::WeldAdvice gun = sim::suggestWeldFix(robot, turned);
+    REQUIRE(gun.kind == "gun");
+}

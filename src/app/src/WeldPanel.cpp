@@ -42,6 +42,8 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     interlockButton->setObjectName("weldInterlock");
     auto* krlButton = new QPushButton;
     krlButton->setObjectName("weldKrl");
+    auto* adviceButton = new QPushButton;
+    adviceButton->setObjectName("weldAdvice");
     layout->addWidget(importButton);
     layout->addWidget(projectButton);
     layout->addWidget(alignButton);
@@ -51,6 +53,7 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     layout->addWidget(envelopeButton);
     layout->addWidget(interlockButton);
     layout->addWidget(krlButton);
+    layout->addWidget(adviceButton);
     program_ = new QPlainTextEdit;
     program_->setObjectName("weldProgram");
     program_->setReadOnly(true);
@@ -71,6 +74,7 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     connect(envelopeButton, &QPushButton::clicked, this, [this] { envelope(); });
     connect(interlockButton, &QPushButton::clicked, this, [this] { interlock(); });
     connect(krlButton, &QPushButton::clicked, this, [this] { exportKrl(); });
+    connect(adviceButton, &QPushButton::clicked, this, [this] { advise(); });
     retranslate();
 }
 
@@ -104,6 +108,9 @@ void WeldPanel::retranslate() {
     if (auto* button = findChild<QPushButton*>("weldKrl")) {
         button->setText(trk("weld.krl"));
     }
+    if (auto* button = findChild<QPushButton*>("weldAdvice")) {
+        button->setText(trk("weld.advice"));
+    }
     reload();
 }
 
@@ -133,9 +140,10 @@ void WeldPanel::reload() {
                 flags += QStringLiteral("  ") + trk("weld.collision");
             }
         }
+        const QString advice = spot.advice.empty() ? QString() : QStringLiteral("  ") + QString::fromStdString(spot.advice);
         list_->addItem(QString::fromStdString(spot.id) + QStringLiteral("  ") + state + QStringLiteral("  ") +
                        trk("weld.spin").arg(spot.spinDeg, 0, 'f', 0) + flags + QStringLiteral("  ") +
-                       QString::fromStdString(spot.electrode) + QStringLiteral("  ") + mark);
+                       QString::fromStdString(spot.electrode) + QStringLiteral("  ") + mark + advice);
     }
     summary_->setText(trk("weld.summary").arg(static_cast<int>(scene_.welds.size())).arg(onSurface).arg(reachable));
     fillProgram();
@@ -327,6 +335,24 @@ void WeldPanel::exportKrl() {
     }
     fillProgram();
     summary_->setText(trk("weld.krlSummary").arg(static_cast<int>(back.points.size())));
+}
+
+void WeldPanel::advise() {
+    KinematicResource* resource = robot();
+    if (resource == nullptr) {
+        summary_->setText(trk("weld.noRobot"));
+        return;
+    }
+    int fixes = 0;
+    for (WeldSpot& spot : scene_.welds) {
+        const WeldAdvice advice = suggestWeldFix(*resource, spot);
+        spot.advice = advice.text;
+        if (advice.kind != "reachable" && !advice.text.empty()) {
+            ++fixes;
+        }
+    }
+    reload();
+    summary_->setText(trk("weld.adviceSummary").arg(fixes));
 }
 
 }  // namespace sim

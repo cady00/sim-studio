@@ -69,6 +69,7 @@ nlohmann::json interlocksToJson(const std::vector<InterlockZone>& zones) {
         out.push_back({{"name", zone.name},
                        {"center", vec3ToJson(zone.center)},
                        {"radius", zone.radius},
+                       {"releaseSeconds", zone.releaseSeconds},
                        {"resources", zone.resources}});
     }
     return out;
@@ -87,6 +88,7 @@ void interlocksFromJson(const nlohmann::json& json, std::vector<InterlockZone>& 
         zone.name = item.value("name", std::string{});
         zone.center = vec3FromJson(item.value("center", nlohmann::json::array()));
         zone.radius = item.value("radius", 400.0);
+        zone.releaseSeconds = item.value("releaseSeconds", 1.5);
         if (item.contains("resources") && item.at("resources").is_array()) {
             for (const auto& name : item.at("resources")) {
                 if (name.is_string()) {

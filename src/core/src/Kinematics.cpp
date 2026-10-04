@@ -479,7 +479,20 @@ nlohmann::json robotPathToJson(const RobotPath& path) {
                                   {"speed", point.speed},
                                   {"zone", point.zone},
                                   {"external", point.external},
-                                  {"externalValues", point.externalValues}});
+                                  {"externalValues", point.externalValues},
+                                  {"shape", point.shape}});
+    }
+    json["frames"] = nlohmann::json::array();
+    for (const OlpFrame& frame : path.frames) {
+        json["frames"].push_back({{"kind", frame.kind},
+                                  {"origin", vec3ToJson(frame.origin)},
+                                  {"a", frame.a},
+                                  {"b", frame.b},
+                                  {"c", frame.c}});
+    }
+    json["directives"] = nlohmann::json::array();
+    for (const OlpDirective& directive : path.directives) {
+        json["directives"].push_back({{"kind", directive.kind}, {"text", directive.text}});
     }
     return json;
 }
@@ -522,12 +535,38 @@ bool robotPathFromJson(const nlohmann::json& json, RobotPath& path, std::string&
             point.speed = item.value("speed", 100.0);
             point.zone = item.value("zone", 0.0);
             point.external = item.value("external", std::string{});
+            point.shape = item.value("shape", std::string{});
             if (item.contains("externalValues")) {
                 for (const auto& value : item.at("externalValues")) {
                     point.externalValues.push_back(value.get<double>());
                 }
             }
             path.points.push_back(std::move(point));
+        }
+    }
+    if (json.contains("frames") && json.at("frames").is_array()) {
+        for (const auto& item : json.at("frames")) {
+            OlpFrame frame;
+            frame.kind = item.value("kind", std::string{});
+            if (item.contains("origin")) {
+                frame.origin = vec3FromJson(item.at("origin"));
+            }
+            frame.a = item.value("a", 0.0);
+            frame.b = item.value("b", 0.0);
+            frame.c = item.value("c", 0.0);
+            if (!frame.kind.empty()) {
+                path.frames.push_back(std::move(frame));
+            }
+        }
+    }
+    if (json.contains("directives") && json.at("directives").is_array()) {
+        for (const auto& item : json.at("directives")) {
+            OlpDirective directive;
+            directive.kind = item.value("kind", std::string{});
+            directive.text = item.value("text", std::string{});
+            if (!directive.text.empty()) {
+                path.directives.push_back(std::move(directive));
+            }
         }
     }
     error.clear();
