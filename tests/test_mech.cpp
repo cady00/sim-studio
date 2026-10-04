@@ -6,6 +6,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "sim/core/Mesh.hpp"
+
 #include <cmath>
 #include <filesystem>
 
@@ -218,4 +220,85 @@ TEST_CASE("simulation speed and pause do not advance time while paused") {
     simulation.reset();
     REQUIRE(simulation.time() == 0);
     REQUIRE(simulation.state() == sim::SimState::Stopped);
+}
+
+TEST_CASE("physics backend is jolt and a positive axis is not flipped") {
+    auto engine = sim::createPhysicsEngine();
+    REQUIRE(std::string(engine->backendName()) == "jolt");
+
+    sim::Scene scene;
+    auto base = addPart(scene, "Base");
+    base->mech.kind = sim::MechKind::Collision;
+    base->mech.halfExtents = {30, 30, 30};
+
+    auto slider = addPart(scene, "Slider");
+    slider->mech.kind = sim::MechKind::Slider;
+    slider->mech.other = "Base";
+    slider->mech.axis = {0, 1, 0};
+    slider->mech.limited = true;
+    slider->mech.lower = 0;
+    slider->mech.upper = 40;
+    slider->mech.drive = sim::DriveMode::Position;
+    slider->mech.target = 200;
+    slider->mech.maxSpeed = 500;
+    slider->mech.maxAccel = 8000;
+    slider->mech.autoMass = false;
+    slider->mech.mass = 0.4;
+    slider->mech.halfExtents = {15, 15, 15};
+    slider->local.translation = {0, 0, 80};
+
+    sim::Simulation simulation(scene, *engine);
+    simulation.play();
+    REQUIRE(simulation.lastError().empty());
+    simulation.tick(1.5);
+    REQUIRE(slider->local.translation.y == Approx(40).margin(3));
+    REQUIRE(slider->local.translation.y > 10);
+    REQUIRE(slider->local.translation.x == Approx(0).margin(3));
+}
+
+TEST_CASE("jolt slider velocity drive moves along the authored axis") {
+    sim::Scene scene;
+    auto base = addPart(scene, "Base");
+    base->mech.kind = sim::MechKind::Collision;
+    base->mech.halfExtents = {20, 20, 20};
+    auto slider = addPart(scene, "Slider");
+    slider->mech.kind = sim::MechKind::Slider;
+    slider->mech.other = "Base";
+    slider->mech.axis = {1, 0, 0};
+    slider->mech.limited = true;
+    slider->mech.lower = 0;
+    slider->mech.upper = 200;
+    slider->mech.drive = sim::DriveMode::Speed;
+    slider->mech.target = 100;
+    slider->mech.maxSpeed = 200;
+    slider->mech.maxAccel = 8000;
+    slider->mech.autoMass = false;
+    slider->mech.mass = 0.4;
+    slider->mech.halfExtents = {15, 15, 15};
+    slider->local.translation = {0, 0, 40};
+
+    auto engine = sim::createPhysicsEngine();
+    sim::Simulation simulation(scene, *engine);
+    simulation.play();
+    REQUIRE(simulation.lastError().empty());
+    simulation.tick(0.5);
+    REQUIRE(slider->local.translation.x == Approx(50).margin(15));
+    REQUIRE(slider->local.translation.x > 20);
+}
+
+TEST_CASE("jolt accepts a convex hull body") {
+    sim::Scene scene;
+    auto node = addPart(scene, "Hull");
+    node->mech.kind = sim::MechKind::Rigid;
+    node->mech.shape = sim::CollisionShape::ConvexHull;
+    node->mech.autoMass = false;
+    node->mech.mass = 0.2;
+    node->local.translation = {0, 0, 80};
+    node->meshId = scene.addMesh(sim::makeBoxMesh({20, 20, 20}));
+
+    auto engine = sim::createPhysicsEngine();
+    std::string error;
+    REQUIRE(engine->build(scene, error));
+    stepFor(*engine, 0.2);
+    REQUIRE(std::isfinite(node->local.translation.z));
 }

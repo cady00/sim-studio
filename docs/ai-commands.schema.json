@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "simstudio://ai/command",
+  "title": "Sim Studio command",
+  "description": "One operation for CommandExecutor. Scripts and logic blocks still share only signals. Hooks marked executable=false in the catalog are not implemented.",
+  "type": "object",
+  "required": ["op"],
+  "properties": {
+    "op": {
+      "type": "string",
+      "enum": [
+        "get_bool", "set_bool", "get_int", "set_int", "get_real", "set_real",
+        "set_joint_target", "set_joint_speed", "get_transform", "set_transform",
+        "spawn", "delete", "list_nodes", "sim_play", "sim_pause", "sim_stop", "sim_state",
+        "nl_to_logic", "layout_suggest", "cycle_optimize", "explain_anomaly"
+      ]
+    },
+    "name": { "type": "string" },
+    "value": {},
+    "x": { "type": "number" },
+    "y": { "type": "number" },
+    "z": { "type": "number" },
+    "text": { "type": "string", "description": "Reserved for future model-backed hooks." }
+  },
+  "additionalProperties": false
+}

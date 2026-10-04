@@ -9,6 +9,10 @@
 namespace sim {
 
 // Embedded CPython. Scripts define on_start(), on_step(dt) and on_stop().
+// Scripts and future logic blocks exchange data only through scene signals.
+// They do not call each other or read another block's internals. A later
+// remote executor can run non-real-time logic against the signal table alone.
+// Physics, actuators, and PLC sync stay on the machine that owns the world.
 class IScriptHost {
 public:
     virtual ~IScriptHost() = default;

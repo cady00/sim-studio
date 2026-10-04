@@ -70,7 +70,7 @@
   "dialog.about.title": "About Sim Studio",
   "dialog.about.body": "Sim Studio %1\nPrivate production-line simulation, Phase 2.\nOffline. No telemetry. No network calls at runtime.\nAvailable: 3D viewport, STEP assemblies, rigid bodies and joints, sensors, signals, and Python scripts.\nSix-axis kinematics, cycle time, and PLC commissioning come in later phases.",
   "dialog.physics.title": "Physics engine",
-  "dialog.physics.body": "Backend: %1\nBullet 3 runs a fixed-timestep world of rigid bodies, joints, conveyors, and ray sensors. The vcpkg PhysX 5 port builds the whole Omniverse SDK and Ubuntu has no matching package, so PhysX is not linked. The interface can still be replaced.",
+  "dialog.physics.body": "Backend: %1\nJolt Physics runs a fixed-timestep world of rigid bodies, joints, conveyors, and ray sensors. A robot articulation solver can be added later beside this world.",
   "dialog.script.title": "Scripting",
   "dialog.script.body": "Backend: %1\nCPython and pybind11 are embedded. Scripts may define on_start, on_step(dt), and on_stop, and use the simstudio module to read and write signals, joint targets, and objects.",
   "action.play": "Play",

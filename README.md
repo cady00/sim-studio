@@ -2,7 +2,7 @@
 
 Sim Studio 是一套私有、可离线使用的 Windows 桌面产线仿真软件。长期目标对齐 Siemens Tecnomatix Process Simulate / Process Designer 与 NX Mechatronics Concept Designer：机器人运动、碰撞、节拍、机电物理、PLC 虚拟调试，以及类似 MELSOFT Gemini / Visual Components 的 Python 脚本。
 
-当前仓库是 **Phase 2**：场景图、三维视口、STEP 装配导入、Bullet 刚体与关节、信号表、嵌入的 Python 脚本。没有遥测，运行时不访问网络。请保持仓库私有。
+当前仓库是 **0.3**：场景图、三维视口、STEP 装配导入、Jolt 刚体与关节、信号表、嵌入的 Python 脚本，以及默认关闭的命令 / AI 接口。没有遥测，运行时不访问网络。请保持仓库私有。
 
 ## 现在能做什么
 
@@ -28,7 +28,7 @@ Sim Studio 是一套私有、可离线使用的 Windows 桌面产线仿真软件
 ## 五阶段路线
 
 1. **Phase 1** 场景、视口、STEP 装配显示、项目文件、中文界面。
-2. **Phase 2（本仓库）** Bullet 刚体、关节、传感器、输送线、信号表，以及嵌入的 Python。没有链接 PhysX：vcpkg 里的 PhysX 5 要编译整套 Omniverse SDK，Ubuntu 也没有对应的包。接口仍是 `IPhysicsEngine`。
+2. **当前仓库** Jolt 刚体、关节、传感器、输送线、信号表，以及嵌入的 Python。渲染走 `IRenderer`（现在是 OpenGL）。AI 提供者默认关闭，这个二进制不联网。六轴求解器和用户定义的运动学编辑器还没做，接口留在 `docs/ARCHITECTURE.md`。
 3. **Phase 3** 六轴机器人运动学与碰撞。KUKA KR 6 R600 Z200 X 的 STEP 子零件 `394.088-10.105.10`、`.104.20`、`.105.30`、`.105.40`、`.104.50`（根产品 `394.088-10.104.00`）会映射到关节连杆。当前只把它们显示成装配树，不猜测关节轴。
 4. **Phase 4** 产线布局与节拍。
 5. **Phase 5** 虚拟调试：OPC UA、S7、PLCSIM Advanced。它们读写现在这张信号表。
@@ -51,11 +51,11 @@ cmake --build --preset windows-msvc-release
 ctest --preset windows-msvc-release --output-on-failure
 ```
 
-程序在 `out\build\windows-msvc\src\app\Release\simstudio.exe`。vcpkg 使用清单模式和 `triplets\x64-windows-release.cmake`（动态 CRT / 动态库、仅 Release），以便按 LGPL 动态链接 Qt。清单里有 Qt、Open CASCADE、Bullet、CPython 和 pybind11。GitHub Actions 的 Windows 任务用 `x-gha` 缓存 vcpkg 二进制。
+程序在 `out\build\windows-msvc\src\app\Release\simstudio.exe`。vcpkg 使用清单模式和 `triplets\x64-windows-release.cmake`（动态 CRT / 动态库、仅 Release）。清单里有 Open CASCADE、Jolt、CPython 和 pybind11。Qt 用本机已安装的 Qt 6（CI 里是预编译的 6.8），不在 vcpkg 里从源码编译。配置前设置 `QT_ROOT_DIR`。GitHub Actions 的 Windows 任务用 `x-gha` 缓存 vcpkg 二进制。
 
 ## 在 Windows 上直接运行（不用自己编译）
 
-GitHub Actions 的 `Windows vcpkg` 任务会上传制品 `SimStudio-win64`，里面是 `SimStudio-0.2.0-win64.zip`。解压后运行 `SimStudio\simstudio.exe`。压缩包带有 Qt / OCCT / Bullet / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。
+GitHub Actions 的 `Windows vcpkg` 任务会上传制品 `SimStudio-win64`，里面是 `SimStudio-0.3.0-win64.zip`。解压后运行 `SimStudio\simstudio.exe`。压缩包带有 Qt / OCCT / Jolt / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。上一版 Windows 任务在链 OCCT 8 时找不到 `TKSTEPBase.lib`（7.8 起改为 `TKDESTEP`），配置阶段还从源码编了 Qt。现在只链接存在的 toolkit，Qt 改为预编译包。
 
 1. 在该次 Actions 运行的 Artifacts 里下载 `SimStudio-win64` 并解压。
 2. 双击 `simstudio.exe`。
@@ -108,7 +108,7 @@ sudo apt-get install -y build-essential ninja-build pkg-config cmake \
   libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
   libocct-data-exchange-dev libocct-ocaf-dev libocct-visualization-dev \
   nlohmann-json3-dev catch2 libtbb-dev libfontconfig1-dev \
-  libbullet-dev pybind11-dev python3-dev
+  pybind11-dev python3-dev git
 cmake --preset linux-system
 cmake --build --preset linux-system
 ctest --preset linux-system --output-on-failure
@@ -118,7 +118,8 @@ ctest --preset linux-system --output-on-failure
 
 ## 当前限制
 
-- 物理后端是 Bullet，不是 PhysX。输送面用接触速度注入，不是皮带材质。关节电机力 / 冲量是固定上限，加速度只用来限制每步速度变化。转动副的正向与 Bullet 内部转角相反，求解器里做了取反。
+- 物理后端是 Jolt，不是 PhysX。输送面用接触速度注入，比接触回调晚一帧，不是皮带材质。关节电机是速度电机，位置环在我们这边按最大速度和加速度积分。正方向就是作者写的轴。
+- AI 命令层可以改信号和仿真，但不能调用模型。填写本地端点也不会发请求。逻辑块之间只通过信号交换数据，远程执行还没做。
 - 没有机器人正解/逆解、节拍或 PLC。信号表已经在，Phase 5 再接到 OPC UA / S7。
 - 碰撞形状支持盒子、球、胶囊和网格凸包。没有凹多面体，也没有从 B-rep 生成的精确碰撞。
 - 导入只保留显示网格。B-rep 不写入项目；`.simproj` 记录 STEP 源路径，不内嵌原始 STEP。

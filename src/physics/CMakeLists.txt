@@ -1,28 +1,39 @@
 add_library(sim_physics
-    src/BulletPhysicsEngine.cpp
+    src/JoltPhysicsEngine.cpp
     src/Simulation.cpp
 )
 target_include_directories(sim_physics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(sim_physics PUBLIC sim_core)
-
-# Ubuntu's BulletConfig.cmake sets BULLET_INCLUDE_DIRS to the relative path
-# "include/bullet" and also sets BULLET_FOUND, which makes a later
-# pkg_check_modules(BULLET) skip its own search. Use a distinct pkg-config prefix.
-find_package(Bullet CONFIG QUIET)
-set(_sim_bullet_targets FALSE)
-if(TARGET BulletDynamics AND TARGET BulletCollision AND TARGET LinearMath)
-    get_target_property(_sim_bullet_inc BulletDynamics INTERFACE_INCLUDE_DIRECTORIES)
-    if(_sim_bullet_inc AND IS_ABSOLUTE "${_sim_bullet_inc}")
-        set(_sim_bullet_targets TRUE)
-    endif()
+if(MSVC)
+    target_compile_options(sim_physics PRIVATE /bigobj)
 endif()
-if(_sim_bullet_targets)
-    target_link_libraries(sim_physics PUBLIC BulletDynamics BulletCollision LinearMath)
-elseif(Bullet_FOUND AND IS_ABSOLUTE "${BULLET_INCLUDE_DIRS}")
-    target_include_directories(sim_physics SYSTEM PUBLIC ${BULLET_INCLUDE_DIRS})
-    target_link_libraries(sim_physics PUBLIC ${BULLET_LIBRARIES})
+
+# Windows uses the vcpkg port joltphysics (Jolt::Jolt). Linux CI has no distro
+# package at the same version, so it fetches the matching tag and builds it.
+find_package(Jolt CONFIG QUIET)
+if(TARGET Jolt::Jolt)
+    target_link_libraries(sim_physics PUBLIC Jolt::Jolt)
 else()
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(PC_BULLET REQUIRED IMPORTED_TARGET bullet)
-    target_link_libraries(sim_physics PUBLIC PkgConfig::PC_BULLET)
+    include(FetchContent)
+    FetchContent_Declare(
+        JoltPhysics
+        GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+        GIT_TAG v5.5.0
+        SOURCE_SUBDIR Build
+    )
+    set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
+    set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+    set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
+    set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
+    set(ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+    set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
+    set(GENERATE_DEBUG_SYMBOLS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(JoltPhysics)
+    if(TARGET Jolt::Jolt)
+        target_link_libraries(sim_physics PUBLIC Jolt::Jolt)
+    else()
+        target_link_libraries(sim_physics PUBLIC Jolt)
+    endif()
 endif()

@@ -70,7 +70,7 @@
   "dialog.about.title": "关于 Sim Studio",
   "dialog.about.body": "Sim Studio %1\n私有产线仿真软件，当前为 Phase 2。\n离线运行，不采集遥测，运行时不访问网络。\n已可用：三维视口、STEP 装配、刚体与关节、传感器、信号、Python 脚本。\n六轴运动学、节拍和 PLC 虚拟调试在后续阶段接入。",
   "dialog.physics.title": "物理引擎",
-  "dialog.physics.body": "当前后端：%1\n使用 Bullet 3 做固定步长刚体、关节、输送面和射线传感器。PhysX 5 的 vcpkg 端口要编译整套 Omniverse SDK，Ubuntu 没有对应的包，所以这一阶段没有链接 PhysX。接口仍可替换。",
+  "dialog.physics.body": "当前后端：%1\n使用 Jolt Physics 做固定步长刚体、关节、输送面和射线传感器。机器人多体求解器以后单独接入，不堆在这些通用关节上。",
   "dialog.script.title": "脚本接口",
   "dialog.script.body": "当前后端：%1\n已嵌入 CPython 和 pybind11。脚本可定义 on_start、on_step(dt)、on_stop，并通过 simstudio 模块读写信号、关节目标和物体。",
   "action.play": "运行",

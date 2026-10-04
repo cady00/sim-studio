@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(SimStudio
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "Sim Studio — private automotive production-line simulation"
     LANGUAGES CXX)
 
@@ -22,24 +22,31 @@ endif()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenCASCADE REQUIRED)
 
-set(SIM_OCCT_LIBS
+# OCCT 7.6 (Ubuntu) still ships TKSTEP*. OCCT 7.8+ (vcpkg 8.x) replaced those
+# with TKDESTEP. Link a toolkit only when this machine actually has it.
+set(SIM_OCCT_CANDIDATES
     TKernel TKMath
     TKG2d TKG3d TKGeomBase TKBRep
     TKGeomAlgo TKTopAlgo TKPrim TKBO TKShHealing TKBool TKMesh
     TKCDF TKLCAF TKCAF TKBinL TKXmlL TKBin TKXml TKStdL TKStd TKVCAF
     TKXSBase TKSTEPBase TKSTEPAttr TKSTEP209 TKSTEP
     TKXCAF TKXDESTEP TKXmlXCAF TKBinXCAF
+    TKDE TKDESTEP
 )
 set(SIM_OCCT_LINK "")
-foreach(lib IN LISTS SIM_OCCT_LIBS)
+foreach(lib IN LISTS SIM_OCCT_CANDIDATES)
     if(TARGET "${lib}")
         list(APPEND SIM_OCCT_LINK "${lib}")
     elseif(TARGET "OpenCASCADE::${lib}")
         list(APPEND SIM_OCCT_LINK "OpenCASCADE::${lib}")
     else()
-        list(APPEND SIM_OCCT_LINK "${lib}")
+        find_library(SIM_OCCT_LIB_${lib} NAMES ${lib} lib${lib} HINTS "${OpenCASCADE_LIBRARY_DIR}")
+        if(SIM_OCCT_LIB_${lib})
+            list(APPEND SIM_OCCT_LINK "${SIM_OCCT_LIB_${lib}}")
+        endif()
     endif()
 endforeach()
+message(STATUS "Sim Studio OCCT libraries: ${SIM_OCCT_LINK}")
 
 file(TO_CMAKE_PATH "${OpenCASCADE_RESOURCE_DIR}" SIM_OCCT_RESOURCE_PATH)
 
@@ -47,6 +54,7 @@ add_subdirectory(src/core)
 add_subdirectory(src/io)
 add_subdirectory(src/physics)
 add_subdirectory(src/scripting)
+add_subdirectory(src/ai)
 
 if(SIMSTUDIO_BUILD_APP)
     find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)

@@ -3,13 +3,13 @@
 #include "sim/core/Scene.hpp"
 #include "sim/render/Camera.hpp"
 
-#include <QOpenGLFunctions_3_3_Core>
 #include <QOpenGLWidget>
+#include <QImage>
 #include <QPoint>
 #include <QString>
 
 #include <cstdint>
-#include <unordered_map>
+#include <memory>
 #include <vector>
 
 class QMouseEvent;
@@ -19,7 +19,9 @@ namespace sim {
 
 enum class GizmoMode { Translate, Rotate };
 
-class ViewportWidget : public QOpenGLWidget, protected QOpenGLFunctions_3_3_Core {
+class IRenderer;
+
+class ViewportWidget : public QOpenGLWidget {
     Q_OBJECT
 
 public:
@@ -32,6 +34,8 @@ public:
     void setStandardView(StandardView view);
     void setGizmoMode(GizmoMode mode);
     GizmoMode gizmoMode() const { return gizmoMode_; }
+    // Reads the widget framebuffer through IRenderer::captureRgba.
+    QImage captureView();
 
 signals:
     void selectionChanged(const QString& id);
@@ -48,19 +52,8 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
 
 private:
-    struct GpuMesh {
-        GLuint vao = 0;
-        GLuint vbo = 0;
-        GLuint ebo = 0;
-        GLsizei indexCount = 0;
-    };
-
-    bool compileProgram(GLuint& program, const char* vertex, const char* fragment, QString& error);
-    void clearGpuMeshes();
-    void destroyGpu();
     void syncMeshes();
     void drawGrid();
-    void drawLines(const std::vector<float>& vertices, float width);
     bool gizmoAxes(Vec3& origin, Vec3& axisX, Vec3& axisY, Vec3& axisZ, double& length) const;
     int pickGizmo(double x, double y) const;
     void applyGizmoDrag(double x, double y);
@@ -68,11 +61,7 @@ private:
     Scene* scene_ = nullptr;
     OrbitCamera camera_;
     GizmoMode gizmoMode_ = GizmoMode::Translate;
-    GLuint meshProgram_ = 0;
-    GLuint lineProgram_ = 0;
-    GLuint lineVao_ = 0;
-    GLuint lineVbo_ = 0;
-    std::unordered_map<std::string, GpuMesh> gpu_;
+    std::unique_ptr<IRenderer> renderer_;
     std::uint64_t syncedRevision_ = 0;
     QString glError_;
     bool draggingCamera_ = false;

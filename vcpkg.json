@@ -1,26 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "simstudio",
-  "version-string": "0.2.0",
+  "version-string": "0.3.0",
   "description": "Sim Studio private automotive production-line simulation",
   "builtin-baseline": "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3",
   "dependencies": [
-    {
-      "name": "qtbase",
-      "default-features": false,
-      "features": [
-        "concurrent",
-        "doubleconversion",
-        "freetype",
-        "gui",
-        "harfbuzz",
-        "opengl",
-        "pcre2",
-        "png",
-        "thread",
-        "widgets"
-      ]
-    },
     {
       "name": "opencascade",
       "default-features": false,
@@ -28,7 +12,7 @@
     },
     "nlohmann-json",
     "catch2",
-    "bullet3",
+    "joltphysics",
     "python3",
     "pybind11"
   ]

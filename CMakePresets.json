@@ -20,7 +20,8 @@
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-release",
         "SIMSTUDIO_BUILD_TESTS": "ON",
-        "SIMSTUDIO_BUILD_APP": "ON"
+        "SIMSTUDIO_BUILD_APP": "ON",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}"
       }
     },
     {

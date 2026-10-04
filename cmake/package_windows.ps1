@@ -29,10 +29,39 @@ $pluginRoot = Join-Path $installed "Qt6/plugins"
 if (-not (Test-Path $pluginRoot)) {
     $pluginRoot = Join-Path $installed "plugins"
 }
+$qtBin = $null
+if ($env:QT_ROOT_DIR) {
+    $qtBin = Join-Path $env:QT_ROOT_DIR "bin"
+    if (-not (Test-Path $pluginRoot)) {
+        $qtPlugins = Join-Path $env:QT_ROOT_DIR "plugins"
+        if (Test-Path $qtPlugins) { $pluginRoot = $qtPlugins }
+    }
+}
+function Find-RuntimeDll([string]$name) {
+    $fromVcpkg = Join-Path $binDir $name
+    if (Test-Path $fromVcpkg) { return $fromVcpkg }
+    if ($qtBin) {
+        $fromQt = Join-Path $qtBin $name
+        if (Test-Path $fromQt) { return $fromQt }
+    }
+    return $null
+}
 
 if (Test-Path $OutDir) { Remove-Item -Recurse -Force $OutDir }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 Copy-Item $exe (Join-Path $OutDir "simstudio.exe")
+$windeploy = $null
+if ($qtBin) {
+    $candidate = Join-Path $qtBin "windeployqt.exe"
+    if (Test-Path $candidate) { $windeploy = $candidate }
+}
+if (-not $windeploy) {
+    $cmd = Get-Command windeployqt -ErrorAction SilentlyContinue
+    if ($cmd) { $windeploy = $cmd.Source }
+}
+if ($windeploy) {
+    & $windeploy --release --no-translations --compiler-runtime (Join-Path $OutDir "simstudio.exe")
+}
 Copy-Item "LICENSE.txt" $OutDir
 Copy-Item "THIRD_PARTY_LICENSES.md" $OutDir
 Copy-Item "README.md" $OutDir
@@ -58,8 +87,8 @@ while ($queue.Count -gt 0) {
             $name = $Matches[1]
             if ($seen.ContainsKey($name)) { continue }
             $seen[$name] = $true
-            $source = Join-Path $binDir $name
-            if (Test-Path $source) {
+            $source = Find-RuntimeDll $name
+            if ($source) {
                 Copy-Item $source (Join-Path $OutDir $name)
                 $queue.Enqueue((Join-Path $OutDir $name))
             }
@@ -114,8 +143,8 @@ if (Test-Path $pythonDlls) {
                 $name = $Matches[1]
                 if ($seen.ContainsKey($name)) { continue }
                 $seen[$name] = $true
-                $source = Join-Path $binDir $name
-                if (Test-Path $source) {
+                $source = Find-RuntimeDll $name
+                if ($source) {
                     Copy-Item $source (Join-Path $OutDir $name)
                     $queue.Enqueue((Join-Path $OutDir $name))
                 }

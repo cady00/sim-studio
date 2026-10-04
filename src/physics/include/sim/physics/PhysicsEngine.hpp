@@ -8,8 +8,13 @@
 
 namespace sim {
 
-// Bullet 3 sits behind this seam. A later PhysX backend can replace it without
-// changing the scene, signals, or Python API.
+// Rigid-body world. Jolt is the current backend. Scene, signals, and the Python
+// API do not include the physics SDK.
+//
+// A six-axis robot does not belong in this class. Phase 3 adds an articulation
+// solver (IRobotSolver) that writes joint angles onto scene nodes and may publish
+// collision bodies through adoptSpawned. Generic hinge motors stay for slides,
+// turntables, and other user-authored mechanisms.
 class IPhysicsEngine {
 public:
     virtual ~IPhysicsEngine() = default;
@@ -25,6 +30,9 @@ public:
 enum class SimState { Stopped, Playing, Paused };
 
 // Fixed-step playback. Rest poses are captured on play and restored by stop/reset.
+// kFixedDt is the deterministic core an agent can replay. A seed and an ordered
+// event log belong here later; they are not recorded yet. Headless batch runs
+// should call this class directly and skip the Qt window.
 class Simulation {
 public:
     static constexpr double kFixedDt = 1.0 / 60.0;
@@ -60,6 +68,17 @@ private:
     std::function<void()> onStart_;
     std::function<void(double)> onStep_;
     std::function<void()> onStop_;
+};
+
+// Not constructed yet. Phase 3 owns the motion planner and cycle-time model.
+// RRS/RCS, if added, is an adapter in front of that planner, not the planner.
+class IRobotSolver {
+public:
+    virtual ~IRobotSolver() = default;
+    virtual const char* backendName() const = 0;
+    virtual bool build(Scene& scene, std::string& error) = 0;
+    virtual void step(double dtSeconds) = 0;
+    virtual void shutdown() = 0;
 };
 
 std::unique_ptr<IPhysicsEngine> createPhysicsEngine();

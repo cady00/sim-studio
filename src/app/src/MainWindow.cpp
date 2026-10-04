@@ -1043,7 +1043,10 @@ void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path
 void MainWindow::captureScreenshot() {
     viewport_->update();
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    QImage view = viewport_->grabFramebuffer();
+    QImage view = viewport_->captureView();
+    if (view.isNull()) {
+        view = viewport_->grabFramebuffer();
+    }
     QImage window = grab().toImage();
     if (!view.isNull() && !window.isNull()) {
         const qreal dpr = devicePixelRatioF();

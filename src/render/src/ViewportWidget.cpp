@@ -1,87 +1,19 @@
 #include "sim/render/ViewportWidget.hpp"
 
-#include "sim/core/Pick.hpp"
+#include "sim/render/Renderer.hpp"
 
 #include <QMouseEvent>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace sim {
 namespace {
-
-void toGl(const Mat4& matrix, float out[16]) {
-    for (int i = 0; i < 16; ++i) {
-        out[i] = static_cast<float>(matrix.m[i]);
-    }
-}
-
-
-const char* kMeshVertex = R"(#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aNormal;
-uniform mat4 uMvp;
-uniform mat4 uModel;
-uniform mat3 uNormalMat;
-out vec3 vNormal;
-out vec3 vWorld;
-void main() {
-    vec4 world = uModel * vec4(aPos, 1.0);
-    vWorld = world.xyz;
-    vNormal = normalize(uNormalMat * aNormal);
-    gl_Position = uMvp * vec4(aPos, 1.0);
-}
-)";
-
-const char* kMeshFragment = R"(#version 330 core
-in vec3 vNormal;
-in vec3 vWorld;
-uniform vec3 uColor;
-uniform vec3 uEye;
-uniform float uHighlight;
-out vec4 fragColor;
-void main() {
-    vec3 n = normalize(vNormal);
-    vec3 lightA = normalize(vec3(0.35, -0.45, 0.82));
-    vec3 lightB = normalize(vec3(-0.55, -0.15, 0.35));
-    float diffuse = max(dot(n, lightA), 0.0) * 0.72 + max(dot(n, lightB), 0.0) * 0.22;
-    vec3 viewDir = normalize(uEye - vWorld);
-    float spec = pow(max(dot(n, normalize(lightA + viewDir)), 0.0), 32.0) * 0.22;
-    vec3 color = uColor * (0.28 + diffuse) + vec3(spec);
-    if (uHighlight > 0.5) {
-        color = mix(color, vec3(0.58, 0.60, 0.98), 0.42);
-    }
-    fragColor = vec4(color, 1.0);
-}
-)";
-
-const char* kLineVertex = R"(#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aColor;
-uniform mat4 uViewProj;
-out vec3 vColor;
-void main() {
-    vColor = aColor;
-    gl_Position = uViewProj * vec4(aPos, 1.0);
-}
-)";
-
-const char* kLineFragment = R"(#version 330 core
-in vec3 vColor;
-out vec4 fragColor;
-void main() { fragColor = vec4(vColor, 1.0); }
-)";
-
-void appendVertex(std::vector<float>& data, Vec3 position, Vec3 color) {
-    data.push_back(static_cast<float>(position.x));
-    data.push_back(static_cast<float>(position.y));
-    data.push_back(static_cast<float>(position.z));
-    data.push_back(static_cast<float>(color.x));
-    data.push_back(static_cast<float>(color.y));
-    data.push_back(static_cast<float>(color.z));
-}
 
 bool selectedBranch(const SceneNode& node, const std::string& selected) {
     if (selected.empty()) {
@@ -112,6 +44,12 @@ double closestParameter(Vec3 origin, Vec3 direction, const Ray& ray) {
     return (b * e - d) / denom;
 }
 
+void pushLine(LineBatch& batch, Vec3 position, Vec3 color) {
+    batch.vertices.push_back(LineVertex{static_cast<float>(position.x), static_cast<float>(position.y),
+                                         static_cast<float>(position.z), static_cast<float>(color.x),
+                                         static_cast<float>(color.y), static_cast<float>(color.z)});
+}
+
 }  // namespace
 
 ViewportWidget::ViewportWidget(QWidget* parent) : QOpenGLWidget(parent) {
@@ -122,7 +60,9 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QOpenGLWidget(parent) {
 
 ViewportWidget::~ViewportWidget() {
     makeCurrent();
-    destroyGpu();
+    if (renderer_) {
+        renderer_->shutdown();
+    }
     doneCurrent();
 }
 
@@ -150,149 +90,32 @@ void ViewportWidget::setGizmoMode(GizmoMode mode) {
     update();
 }
 
-bool ViewportWidget::compileProgram(GLuint& program, const char* vertexSource, const char* fragmentSource, QString& error) {
-    const auto compile = [&](GLenum type, const char* source) -> GLuint {
-        const GLuint shader = glCreateShader(type);
-        glShaderSource(shader, 1, &source, nullptr);
-        glCompileShader(shader);
-        GLint ok = 0;
-        glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-        if (!ok) {
-            char log[1024];
-            glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-            error = QString::fromUtf8(log);
-            glDeleteShader(shader);
-            return 0;
-        }
-        return shader;
-    };
-    const GLuint vertex = compile(GL_VERTEX_SHADER, vertexSource);
-    const GLuint fragment = compile(GL_FRAGMENT_SHADER, fragmentSource);
-    if (vertex == 0 || fragment == 0) {
-        return false;
-    }
-    program = glCreateProgram();
-    glAttachShader(program, vertex);
-    glAttachShader(program, fragment);
-    glLinkProgram(program);
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
-    GLint ok = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetProgramInfoLog(program, sizeof(log), nullptr, log);
-        error = QString::fromUtf8(log);
-        glDeleteProgram(program);
-        program = 0;
-        return false;
-    }
-    return true;
-}
-
 void ViewportWidget::initializeGL() {
-    initializeOpenGLFunctions();
-    glEnable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glClearColor(0.10f, 0.11f, 0.14f, 1.0f);
-    QString error;
-    if (!compileProgram(meshProgram_, kMeshVertex, kMeshFragment, error) ||
-        !compileProgram(lineProgram_, kLineVertex, kLineFragment, error)) {
-        glError_ = error;
-        emit glError(error);
-        return;
+    renderer_ = createRenderer();
+    std::string error;
+    if (!renderer_->initialize(error)) {
+        glError_ = QString::fromStdString(error);
+        emit glError(glError_);
     }
-    glGenVertexArrays(1, &lineVao_);
-    glGenBuffers(1, &lineVbo_);
 }
 
-void ViewportWidget::resizeGL(int width, int height) { glViewport(0, 0, width, height); }
-
-void ViewportWidget::clearGpuMeshes() {
-    for (auto& [id, mesh] : gpu_) {
-        (void)id;
-        glDeleteBuffers(1, &mesh.vbo);
-        glDeleteBuffers(1, &mesh.ebo);
-        glDeleteVertexArrays(1, &mesh.vao);
-    }
-    gpu_.clear();
-}
-
-void ViewportWidget::destroyGpu() {
-    clearGpuMeshes();
-    if (lineVbo_ != 0) {
-        glDeleteBuffers(1, &lineVbo_);
-        lineVbo_ = 0;
-    }
-    if (lineVao_ != 0) {
-        glDeleteVertexArrays(1, &lineVao_);
-        lineVao_ = 0;
-    }
-    if (meshProgram_ != 0) {
-        glDeleteProgram(meshProgram_);
-        meshProgram_ = 0;
-    }
-    if (lineProgram_ != 0) {
-        glDeleteProgram(lineProgram_);
-        lineProgram_ = 0;
+void ViewportWidget::resizeGL(int width, int height) {
+    if (renderer_) {
+        renderer_->resize(width, height);
     }
 }
 
 void ViewportWidget::syncMeshes() {
-    if (scene_ == nullptr || scene_->structureRevision() == syncedRevision_ || meshProgram_ == 0) {
+    if (scene_ == nullptr || renderer_ == nullptr || scene_->structureRevision() == syncedRevision_) {
         return;
     }
-    clearGpuMeshes();
+    renderer_->clearMeshes();
     for (const auto& [id, mesh] : scene_->meshes()) {
-        if (!mesh || mesh->empty()) {
-            continue;
+        if (mesh) {
+            renderer_->uploadMesh(id, *mesh);
         }
-        std::vector<float> interleaved(mesh->vertexCount() * 6);
-        for (std::size_t i = 0; i < mesh->vertexCount(); ++i) {
-            interleaved[i * 6 + 0] = mesh->positions[i * 3 + 0];
-            interleaved[i * 6 + 1] = mesh->positions[i * 3 + 1];
-            interleaved[i * 6 + 2] = mesh->positions[i * 3 + 2];
-            interleaved[i * 6 + 3] = mesh->normals[i * 3 + 0];
-            interleaved[i * 6 + 4] = mesh->normals[i * 3 + 1];
-            interleaved[i * 6 + 5] = mesh->normals[i * 3 + 2];
-        }
-        GpuMesh gpu;
-        glGenVertexArrays(1, &gpu.vao);
-        glGenBuffers(1, &gpu.vbo);
-        glGenBuffers(1, &gpu.ebo);
-        glBindVertexArray(gpu.vao);
-        glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)), interleaved.data(),
-                     GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(mesh->indices.size() * sizeof(std::uint32_t)),
-                     mesh->indices.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), reinterpret_cast<void*>(3 * sizeof(float)));
-        gpu.indexCount = static_cast<GLsizei>(mesh->indices.size());
-        glBindVertexArray(0);
-        gpu_.emplace(id, gpu);
     }
     syncedRevision_ = scene_->structureRevision();
-}
-
-void ViewportWidget::drawLines(const std::vector<float>& vertices, float width) {
-    if (vertices.empty() || lineProgram_ == 0) {
-        return;
-    }
-    glBindVertexArray(lineVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(float)), vertices.data(),
-                 GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), reinterpret_cast<void*>(3 * sizeof(float)));
-    glLineWidth(width);
-    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(vertices.size() / 6));
-    glBindVertexArray(0);
 }
 
 void ViewportWidget::drawGrid() {
@@ -309,26 +132,27 @@ void ViewportWidget::drawGrid() {
         step = std::clamp(raw, 1.0, 1000.0);
         half = step * 16.0;
     }
-    std::vector<float> lines;
+    LineBatch lines;
     const Vec3 minor{0.22f, 0.24f, 0.28f};
     const Vec3 major{0.34f, 0.37f, 0.44f};
     const int count = static_cast<int>(std::round(half / step));
     for (int i = -count; i <= count; ++i) {
         const double coordinate = i * step;
         const Vec3 color = (i % 5 == 0) ? major : minor;
-        appendVertex(lines, {coordinate, -half, 0}, color);
-        appendVertex(lines, {coordinate, half, 0}, color);
-        appendVertex(lines, {-half, coordinate, 0}, color);
-        appendVertex(lines, {half, coordinate, 0}, color);
+        pushLine(lines, {coordinate, -half, 0}, color);
+        pushLine(lines, {coordinate, half, 0}, color);
+        pushLine(lines, {-half, coordinate, 0}, color);
+        pushLine(lines, {half, coordinate, 0}, color);
     }
     const double axis = half * 0.35;
-    appendVertex(lines, {0, 0, 0}, {0.85, 0.28, 0.30});
-    appendVertex(lines, {axis, 0, 0}, {0.85, 0.28, 0.30});
-    appendVertex(lines, {0, 0, 0}, {0.30, 0.75, 0.42});
-    appendVertex(lines, {0, axis, 0}, {0.30, 0.75, 0.42});
-    appendVertex(lines, {0, 0, 0}, {0.35, 0.55, 0.90});
-    appendVertex(lines, {0, 0, axis}, {0.35, 0.55, 0.90});
-    drawLines(lines, 1.0f);
+    pushLine(lines, {0, 0, 0}, {0.85, 0.28, 0.30});
+    pushLine(lines, {axis, 0, 0}, {0.85, 0.28, 0.30});
+    pushLine(lines, {0, 0, 0}, {0.30, 0.75, 0.42});
+    pushLine(lines, {0, axis, 0}, {0.30, 0.75, 0.42});
+    pushLine(lines, {0, 0, 0}, {0.35, 0.55, 0.90});
+    pushLine(lines, {0, 0, axis}, {0.35, 0.55, 0.90});
+    lines.width = 1.0f;
+    renderer_->submitLines(lines);
 }
 
 bool ViewportWidget::gizmoAxes(Vec3& origin, Vec3& axisX, Vec3& axisY, Vec3& axisZ, double& axisLength) const {
@@ -408,27 +232,22 @@ void ViewportWidget::applyGizmoDrag(double x, double y) {
 }
 
 void ViewportWidget::paintGL() {
-    if (!glError_.isEmpty() || meshProgram_ == 0) {
-        glClearColor(0.10f, 0.11f, 0.14f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (!glError_.isEmpty() || renderer_ == nullptr) {
         return;
     }
     syncMeshes();
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const double aspect = height() > 0 ? static_cast<double>(width()) / height() : 1.0;
-    const Mat4 viewProj = mul(camera_.projectionMatrix(aspect), camera_.viewMatrix());
-
-    float viewProjGl[16];
-    toGl(viewProj, viewProjGl);
-    glUseProgram(lineProgram_);
-    glUniformMatrix4fv(glGetUniformLocation(lineProgram_, "uViewProj"), 1, GL_FALSE, viewProjGl);
+    FrameParams frame;
+    frame.viewProjection = mul(camera_.projectionMatrix(aspect), camera_.viewMatrix());
+    frame.eye = camera_.eye();
+    frame.width = std::max(width(), 1);
+    frame.height = std::max(height(), 1);
+    frame.frustumCull = true;
+    renderer_->beginFrame(frame);
     drawGrid();
 
-    glUseProgram(meshProgram_);
-    const Vec3 eye = camera_.eye();
-    glUniform3f(glGetUniformLocation(meshProgram_, "uEye"), static_cast<float>(eye.x), static_cast<float>(eye.y),
-                static_cast<float>(eye.z));
     if (scene_ != nullptr && scene_->root()) {
+        std::vector<RenderInstance> instances;
         std::vector<std::shared_ptr<SceneNode>> stack{scene_->root()};
         while (!stack.empty()) {
             auto node = stack.back();
@@ -442,43 +261,31 @@ void ViewportWidget::paintGL() {
             if (!node->effectivelyVisible() || node->meshId.empty()) {
                 continue;
             }
-            const auto gpu = gpu_.find(node->meshId);
-            if (gpu == gpu_.end()) {
-                continue;
-            }
-            const Mat4 model = node->worldMatrix();
-            const Mat4 mvp = mul(viewProj, model);
-            float normalMat[9] = {static_cast<float>(model(0, 0)), static_cast<float>(model(0, 1)),
-                                  static_cast<float>(model(0, 2)), static_cast<float>(model(1, 0)),
-                                  static_cast<float>(model(1, 1)), static_cast<float>(model(1, 2)),
-                                  static_cast<float>(model(2, 0)), static_cast<float>(model(2, 1)),
-                                  static_cast<float>(model(2, 2))};
-            float modelGl[16];
-            float mvpGl[16];
-            toGl(model, modelGl);
-            toGl(mvp, mvpGl);
-            glUniformMatrix4fv(glGetUniformLocation(meshProgram_, "uModel"), 1, GL_FALSE, modelGl);
-            glUniformMatrix4fv(glGetUniformLocation(meshProgram_, "uMvp"), 1, GL_FALSE, mvpGl);
-            glUniformMatrix3fv(glGetUniformLocation(meshProgram_, "uNormalMat"), 1, GL_FALSE, normalMat);
-            glUniform3f(glGetUniformLocation(meshProgram_, "uColor"), static_cast<float>(node->color.x),
-                        static_cast<float>(node->color.y), static_cast<float>(node->color.z));
-            glUniform1f(glGetUniformLocation(meshProgram_, "uHighlight"),
-                        selectedBranch(*node, scene_->selectedId()) ? 1.0f : 0.0f);
-            glBindVertexArray(gpu->second.vao);
-            glDrawElements(GL_TRIANGLES, gpu->second.indexCount, GL_UNSIGNED_INT, nullptr);
+            const auto mesh = scene_->mesh(node->meshId);
+            RenderInstance instance;
+            instance.meshKey = node->meshId;
+            instance.world = node->worldMatrix();
+            instance.material.color = node->color;
+            instance.material.highlight = selectedBranch(*node, scene_->selectedId()) ? 1.0f : 0.0f;
+            instance.worldBounds = mesh ? transformedBounds(mesh->bounds, instance.world) : Aabb{};
+            instance.distanceMm = static_cast<float>(length(instance.worldBounds.center() - frame.eye));
+            instance.lodLevels = 1;
+            instances.push_back(std::move(instance));
         }
-        glBindVertexArray(0);
+        renderer_->submitInstances(instances);
     }
 
     Vec3 origin, axisX, axisY, axisZ;
     double axisLength = 0;
     if (gizmoAxes(origin, axisX, axisY, axisZ, axisLength)) {
-        std::vector<float> gizmo;
+        LineBatch gizmo;
+        gizmo.width = 2.5f;
+        gizmo.depthTest = false;
         const Vec3 colors[3] = {{0.93, 0.32, 0.32}, {0.30, 0.82, 0.42}, {0.36, 0.58, 0.95}};
         const Vec3 axes[3] = {axisX, axisY, axisZ};
         for (int i = 0; i < 3; ++i) {
-            appendVertex(gizmo, origin, colors[i]);
-            appendVertex(gizmo, origin + axes[i] * axisLength, colors[i]);
+            pushLine(gizmo, origin, colors[i]);
+            pushLine(gizmo, origin + axes[i] * axisLength, colors[i]);
         }
         if (gizmoMode_ == GizmoMode::Rotate) {
             constexpr int kSegments = 48;
@@ -491,17 +298,48 @@ void ViewportWidget::paintGL() {
                 for (int i = 0; i < kSegments; ++i) {
                     const double a0 = kPi * 2.0 * i / kSegments;
                     const double a1 = kPi * 2.0 * (i + 1) / kSegments;
-                    appendVertex(gizmo, origin + (tangent * std::cos(a0) + bitangent * std::sin(a0)) * radius, colors[axis]);
-                    appendVertex(gizmo, origin + (tangent * std::cos(a1) + bitangent * std::sin(a1)) * radius, colors[axis]);
+                    pushLine(gizmo, origin + (tangent * std::cos(a0) + bitangent * std::sin(a0)) * radius, colors[axis]);
+                    pushLine(gizmo, origin + (tangent * std::cos(a1) + bitangent * std::sin(a1)) * radius, colors[axis]);
                 }
             }
         }
-        glDisable(GL_DEPTH_TEST);
-        glUseProgram(lineProgram_);
-        glUniformMatrix4fv(glGetUniformLocation(lineProgram_, "uViewProj"), 1, GL_FALSE, viewProjGl);
-        drawLines(gizmo, 2.5f);
-        glEnable(GL_DEPTH_TEST);
+        renderer_->submitLines(gizmo);
     }
+    renderer_->endFrame();
+}
+
+QImage ViewportWidget::captureView() {
+    if (renderer_ == nullptr) {
+        return grabFramebuffer();
+    }
+    makeCurrent();
+    const unsigned framebuffer = defaultFramebufferObject();
+    if (framebuffer != 0) {
+        // QOpenGLFunctions is not on this widget. Bind through the context's functions.
+    }
+    std::vector<std::uint8_t> rgba;
+    int imageWidth = 0;
+    int imageHeight = 0;
+    // paintGL already ran for grab; read the widget FBO the renderer last drew into.
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (context != nullptr && framebuffer != 0) {
+        auto* functions = context->functions();
+        if (functions != nullptr) {
+            functions->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        }
+    }
+    const bool ok = renderer_->captureRgba(rgba, imageWidth, imageHeight);
+    doneCurrent();
+    if (!ok || imageWidth <= 0 || imageHeight <= 0) {
+        return grabFramebuffer();
+    }
+    QImage image(imageWidth, imageHeight, QImage::Format_RGBA8888);
+    const int stride = imageWidth * 4;
+    for (int y = 0; y < imageHeight; ++y) {
+        std::memcpy(image.scanLine(imageHeight - 1 - y), rgba.data() + static_cast<std::size_t>(y) * stride,
+                    static_cast<std::size_t>(stride));
+    }
+    return image;
 }
 
 void ViewportWidget::mousePressEvent(QMouseEvent* event) {
@@ -520,7 +358,6 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
         double axisLength = 0;
         gizmoAxes(origin, axisX, axisY, axisZ, axisLength);
         const Vec3 axes[3] = {axisX, axisY, axisZ};
-        const Vec3 local[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
         gizmoAxis_ = axis;
         draggingGizmo_ = true;
         gizmoDragOrigin_ = origin;
@@ -538,11 +375,10 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
                 gizmoRotateStart_ = ray.origin + ray.direction * t - origin;
             }
         }
-        (void)local;
         return;
     }
     const Ray ray = camera_.rayFromPixel(event->position().x(), event->position().y(), width(), height());
-    const auto hit = pickScene(*scene_, ray);
+    const auto hit = renderer_ ? renderer_->pick(*scene_, ray) : pickScene(*scene_, ray);
     const QString id = hit ? QString::fromStdString(hit->nodeId) : QString();
     scene_->setSelected(hit ? hit->nodeId : std::string{});
     emit selectionChanged(id);
