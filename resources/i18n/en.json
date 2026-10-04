@@ -80,6 +80,7 @@
   "status.simTime": "%1 s",
   "dock.signals": "Signals",
   "dock.script": "Script",
+  "script.run": "Run snippet",
   "signal.name": "Name",
   "signal.type": "Type",
   "signal.value": "Value",

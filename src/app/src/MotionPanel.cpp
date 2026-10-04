@@ -222,6 +222,7 @@ void MotionPanel::buildUi() {
     auto addButton = [this, kinButtons](const char* key, auto slot) {
         auto* button = new QPushButton;
         tag(button, key);
+        button->setObjectName(QString::fromLatin1(key));
         button->setText(trk(key));
         connect(button, &QPushButton::clicked, this, slot);
         kinButtons->addWidget(button);
@@ -237,7 +238,16 @@ void MotionPanel::buildUi() {
         suggestNote_ = suggestion.note;
         const QString name = resourceName_->text().trimmed().isEmpty() ? QStringLiteral("robot") : resourceName_->text().trimmed();
         std::string error;
-        const std::vector<RevoluteLimit> limits(std::max<std::size_t>(suggestion.links.size(), 1), RevoluteLimit{});
+        std::size_t jointCount = 0;
+        for (std::size_t i = 1; i < suggestion.links.size(); ++i) {
+            if (suggestion.links[i].hasJoint) {
+                ++jointCount;
+            }
+        }
+        const QString lowered = name.toLower();
+        const bool kr420 = jointCount == 6 && lowered.contains(QStringLiteral("kr420"));
+        const std::vector<RevoluteLimit> limits =
+            kr420 ? kr420DatasheetLimits() : std::vector<RevoluteLimit>(std::max<std::size_t>(jointCount, 1), RevoluteLimit{});
         if (!applyLinkSuggestions(scene_, name.toStdString(), suggestion, limits, error)) {
             liveLabel_->setText(QString::fromStdString(error.empty() ? suggestion.note : error));
             return;

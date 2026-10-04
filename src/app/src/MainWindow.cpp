@@ -271,8 +271,13 @@ void MainWindow::buildUi() {
     auto* scriptHost = new QWidget;
     auto* scriptLayout = new QVBoxLayout(scriptHost);
     scriptLayout->setContentsMargins(6, 6, 6, 6);
+    auto* scriptRun = new QPushButton;
+    scriptRun->setObjectName("script.run");
+    scriptRun->setText(trk("script.run"));
+    connect(scriptRun, &QPushButton::clicked, this, &MainWindow::runScriptSnippet);
     scriptLayout->addWidget(scriptCombo_);
     scriptLayout->addWidget(scriptEdit_, 1);
+    scriptLayout->addWidget(scriptRun);
     scriptLayout->addWidget(scriptLog_);
     scriptDock_ = new QDockWidget(this);
     scriptDock_->setObjectName("dock.script");
@@ -743,6 +748,9 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.script")) {
         dock->setWindowTitle(trk("dock.script"));
+    }
+    if (auto* run = findChild<QPushButton*>("script.run")) {
+        run->setText(trk("script.run"));
     }
     if (auto* dock = findChild<QDockWidget*>("dock.motion")) {
         dock->setWindowTitle(trk("dock.motion"));
@@ -1652,7 +1660,38 @@ void MainWindow::onSpeedChanged(double speed) {
     }
 }
 
-void MainWindow::runScriptSnippet() {}
+void MainWindow::runScriptSnippet() {
+    if (scripting_ == nullptr || scriptEdit_ == nullptr) {
+        return;
+    }
+    const std::string code = scriptEdit_->toPlainText().toUtf8().toStdString();
+    if (scene_.scripts.empty()) {
+        scene_.scripts.push_back(ProjectScript{"snippet", code});
+        scene_.activeScript = "snippet";
+        scriptIndex_ = 0;
+        if (scriptCombo_ != nullptr) {
+            refreshing_ = true;
+            scriptCombo_->addItem(QStringLiteral("snippet"));
+            scriptCombo_->setCurrentIndex(0);
+            refreshing_ = false;
+        }
+        scene_.notify(ChangeKind::Structure);
+    } else {
+        commitScriptEditor();
+    }
+    std::string output;
+    std::string error;
+    const bool ok = scripting_->execute(code, output, error);
+    if (scriptLog_ == nullptr) {
+        return;
+    }
+    if (!output.empty()) {
+        scriptLog_->appendPlainText(QString::fromStdString(output));
+    }
+    if (!ok) {
+        scriptLog_->appendPlainText(QString::fromStdString(error.empty() ? std::string("script failed") : error));
+    }
+}
 
 void MainWindow::usePhysicsBackend(PhysicsBackend backend) {
     if (simulation_ && simulation_->state() != SimState::Stopped) {

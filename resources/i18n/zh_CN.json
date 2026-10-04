@@ -80,6 +80,7 @@
   "status.simTime": "%1 s",
   "dock.signals": "信号",
   "dock.script": "脚本",
+  "script.run": "运行片段",
   "signal.name": "名称",
   "signal.type": "类型",
   "signal.value": "值",
