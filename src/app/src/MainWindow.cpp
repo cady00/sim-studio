@@ -317,7 +317,7 @@ void MainWindow::buildUi() {
     pathDock_->setWidget(pathTimeline_);
     addDockWidget(Qt::BottomDockWidgetArea, pathDock_);
 
-    plc_ = new PlcCards(this);
+    plc_ = new PlcCards(scene_, this);
     plcDock_ = new QDockWidget(this);
     plcDock_->setObjectName("dock.plc");
     plcDock_->setWidget(plc_);
@@ -2269,6 +2269,25 @@ void MainWindow::showCommandPalette() {
     }
     positionFloaters();
     palette_->openFor(&scene_);
+}
+
+void MainWindow::showPlcConnection() {
+    // The task mode is applied before the event loop starts.
+    applyTaskMode(5);
+    for (QDockWidget* dock : {treeDock_, propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_,
+                              pathDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
+        if (dock != nullptr) {
+            dock->hide();
+        }
+    }
+    if (plcDock_ != nullptr) {
+        plcDock_->show();
+        plcDock_->raise();
+        resizeDocks({plcDock_}, {520}, Qt::Horizontal);
+    }
+    if (plc_ != nullptr) {
+        plc_->connectOpcUa();
+    }
 }
 
 void MainWindow::showIntentBar() {

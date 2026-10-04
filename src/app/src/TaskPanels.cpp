@@ -1,6 +1,7 @@
 #include "sim/app/TaskPanels.hpp"
 
 #include "sim/core/Scene.hpp"
+#include "sim/io/OpcUa.hpp"
 #include "sim/motion/Motion.hpp"
 
 #include <QGraphicsItem>
@@ -464,36 +465,65 @@ void PathTimeline::paintEvent(QPaintEvent*) {
     painter.drawText(QRect(12, height() - 22, width() - 24, 18), Qt::AlignLeft | Qt::AlignVCenter, footer);
 }
 
-PlcCards::PlcCards(QWidget* parent) : QWidget(parent) {
+PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
     auto* layout = new QVBoxLayout(this);
-    auto* note = new QLabel("虚拟调试连接只是界面。Phase 5 之前不会打开套接字，地址固定在本机回环。");
+    auto* note = new QLabel("OPC UA 按 SecurityPolicy None 连接本机回环，并把变量写进逻辑信号。PLCSIM Advanced 运行时未安装，只保留地址。");
     note->setWordWrap(true);
     layout->addWidget(note);
-    const struct {
-        const char* title;
-        const char* endpoint;
-    } cards[] = {
-        {"PLCSIM Advanced", "127.0.0.1"},
-        {"OPC UA", "opc.tcp://127.0.0.1:4840"},
-    };
-    for (const auto& card : cards) {
+
+    auto addCard = [&](const QString& title, const QString& endpoint, QLabel*& state) {
         auto* frame = new QWidget;
         frame->setObjectName("commandPalette");
         auto* column = new QVBoxLayout(frame);
-        auto* title = new QLabel(QString::fromUtf8(card.title));
-        auto* endpoint = new QLabel(QString::fromUtf8(card.endpoint));
-        auto* state = new QLabel("未连接");
+        column->addWidget(new QLabel(title));
+        column->addWidget(new QLabel(endpoint));
+        state = new QLabel("未连接");
+        state->setWordWrap(true);
         auto* button = new QPushButton("连接");
-        column->addWidget(title);
-        column->addWidget(endpoint);
         column->addWidget(state);
         column->addWidget(button);
         layout->addWidget(frame);
-        connect(button, &QPushButton::clicked, this, [state] {
-            state->setText("未连接 · Phase 5 之前不会打开套接字");
-        });
-    }
+        return button;
+    };
+    QLabel* plcsimState = nullptr;
+    QPushButton* plcsimButton = addCard("PLCSIM Advanced", "127.0.0.1", plcsimState);
+    plcsimState->setText("未连接 · 本机没有安装 PLCSIM Advanced 运行时");
+    connect(plcsimButton, &QPushButton::clicked, this, [plcsimState] {
+        plcsimState->setText("未连接 · 本机没有安装 PLCSIM Advanced 运行时");
+    });
+    QPushButton* opcButton = addCard("OPC UA", "opc.tcp://127.0.0.1:4840", opcState_);
+    connect(opcButton, &QPushButton::clicked, this, [this] { connectOpcUa(); });
     layout->addStretch(1);
+}
+
+PlcCards::~PlcCards() { delete client_; }
+
+bool PlcCards::connectOpcUa() {
+    delete client_;
+    client_ = new OpcUaClient;
+    std::string error;
+    const bool opened = client_->connect("127.0.0.1", 4840, error) && client_->hello("opc.tcp://127.0.0.1:4840", error) &&
+                        client_->openSecureChannel(error) && client_->createSession(error) && client_->activateSession(error);
+    if (!opened) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        delete client_;
+        client_ = nullptr;
+        return false;
+    }
+    std::vector<OpcUaReference> refs;
+    if (!client_->browse(85, refs, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    bool value = false;
+    if (!client_->readBool(10001, value, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    publishPlcBool(scene_, "part_seen", value);
+    const QString name = refs.empty() ? QStringLiteral("i=10001") : QString::fromStdString(refs.front().browseName);
+    opcState_->setText(QString("已连接 · %1 → part_seen · %2").arg(name).arg(value ? "true" : "false"));
+    return true;
 }
 
 }  // namespace sim

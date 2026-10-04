@@ -58,6 +58,7 @@ public:
     void setThemeName(const QString& theme);
     void showCommandPalette();
     void showIntentBar();
+    void showPlcConnection();
 
 protected:
     void closeEvent(QCloseEvent* event) override;

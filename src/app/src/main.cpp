@@ -1,8 +1,10 @@
 #include "sim/app/MainWindow.hpp"
+#include "sim/io/OpcUa.hpp"
 
 #include "sim/core/Version.hpp"
 
 #include <QApplication>
+#include <QDebug>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
@@ -13,6 +15,8 @@
 #include <QStyleFactory>
 #include <QSurfaceFormat>
 #include <QTimer>
+
+#include <thread>
 
 namespace {
 
@@ -103,6 +107,7 @@ int main(int argc, char* argv[]) {
     QCommandLineOption palette("palette", "Open the command palette before a screenshot.");
     QCommandLineOption intent("intent", "Open the AI intent bar before a screenshot.");
     QCommandLineOption bench("bench", "Draw a 100000-part field, print BENCH, and save a screenshot.", "png");
+    QCommandLineOption plc("plc", "Open the commission cards and connect OPC UA on 127.0.0.1:4840.");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
@@ -115,6 +120,7 @@ int main(int argc, char* argv[]) {
     parser.addOption(palette);
     parser.addOption(intent);
     parser.addOption(bench);
+    parser.addOption(plc);
     parser.process(application);
 
     sim::MainWindow window(parser.value(language));
@@ -144,6 +150,20 @@ int main(int argc, char* argv[]) {
     }
     if (parser.isSet(intent)) {
         window.showIntentBar();
+    }
+    if (parser.isSet(plc)) {
+        auto* server = new sim::OpcUaServer;
+        std::string error;
+        if (!server->listen(4840, error)) {
+            qWarning("OPC UA listen on 127.0.0.1:4840 failed: %s", error.c_str());
+            delete server;
+        } else {
+            std::thread([server] {
+                std::string serveError;
+                server->serve(serveError);
+            }).detach();
+        }
+        window.showPlcConnection();
     }
     if (parser.isSet(importStep)) {
         window.importStepAsync(parser.value(importStep));

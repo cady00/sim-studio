@@ -54,7 +54,7 @@ OCCT 的 Draw 模块没有链接。`ldd` 里没有 `TKDraw`、`TKTopTest`。
 | libstdc++ / libgcc | GCC 运行时 | 系统 | GPL-3.0 **带 GCC Runtime Library Exception** | 动态 | 例外允许专有程序链接这些运行时。保留例外文本即可。 |
 | glibc | 系统 | 系统 | LGPL-2.1 | 动态 | 使用系统 C 库，不静态链接。 |
 
-没有链接 NVIDIA PhysX、Bullet、bgfx、Diligent、CoACD、V-HACD、libccd、zlib 源码（zip 容器自己写，见下）、OpenUSD、OPC UA 协议栈。OCCT 的 CMake 配置把 `HAVE_RAPIDJSON` 传进了编译定义。本机 `ldd` 没有加载 RapidJSON，我们的源文件也不包含它。RapidJSON 若被 OCCT 以头文件用到，许可证是 MIT。
+没有链接 NVIDIA PhysX、Bullet、bgfx、Diligent、CoACD、V-HACD、libccd、zlib 源码（zip 容器自己写，见下）、OpenUSD。OPC UA 没有链接 open62541 或其他协议栈。`src/io/src/OpcUa.cpp` 按 OPC UA 二进制分块（Hello/Acknowledge、OpenSecureChannel、CreateSession、ActivateSession、Browse、Read、Write、CreateSubscription、CreateMonitoredItems、Publish）自己写了 SecurityPolicy None，并用本仓库的回环测试服务器对测。PLCSIM Advanced 没有安装，卡片不打开套接字。OCCT 的 CMake 配置把 `HAVE_RAPIDJSON` 传进了编译定义。本机 `ldd` 没有加载 RapidJSON，我们的源文件也不包含它。RapidJSON 若被 OCCT 以头文件用到，许可证是 MIT。
 
 界面字体栈按顺序尝试 HarmonyOS Sans SC、思源黑体、Noto Sans CJK SC，然后是系统里已有的微软雅黑或苹方。**没有把 HarmonyOS Sans 打进安装包。** 若以后嵌入该字体，须保留版权与许可、不得修改字形、不得把字体文件单独再分发，并在软件关于页声明使用。思源黑体与 Inter、JetBrains Mono 若以后嵌入，许可证是 SIL OFL 1.1。当前二进制不包含这些字体文件。
 
@@ -90,7 +90,7 @@ Qt Advanced Docking System 是 LGPL-2.1。闭源产品可以动态链接它，�
 
 GJK 和 ZIP 记录布局是公开规格，实现是这里写的。没有发现需要整段换掉的拷贝。
 
-STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、data URI 与 GLB）、ASCII/二进制 DXF 常用实体、URDF 连杆关节、通用 PPR XML 和 XLSX 的 ZIP 打包都是本仓库写的，没有再引入 DXF、glTF 或表格库。IGES 与 BREP 使用已经链接的 OCCT（LGPL-2.1 加例外），没有新增库。JT 不解码：商业 JT Open Toolkit 不链接，也不链接 GPL 的 JT 库；`IAssetImporter` 名字 `jt` 的槽会说明原因并失败。
+STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、data URI 与 GLB）、ASCII/二进制 DXF 常用实体、URDF 连杆关节、通用 PPR XML、XLSX 的 ZIP 打包，以及 OPC UA 二进制 SecurityPolicy None 客户端，都是本仓库写的，没有再引入 DXF、glTF、表格库或 OPC UA 协议栈。open62541 是 MPL-2.0，本构建没有链接它。IGES 与 BREP 使用已经链接的 OCCT（LGPL-2.1 加例外），没有新增库。JT 不解码：商业 JT Open Toolkit 不链接，也不链接 GPL 的 JT 库；`IAssetImporter` 名字 `jt` 的槽会说明原因并失败。
 
 ## 接口：哪些可以换
 

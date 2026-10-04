@@ -9,6 +9,12 @@
 
 class QGraphicsScene;
 class QGraphicsView;
+class QLabel;
+
+namespace sim {
+class Scene;
+class OpcUaClient;
+}
 
 namespace sim {
 
@@ -69,12 +75,20 @@ private:
     bool dark_ = true;
 };
 
-// Connection cards only. No socket is opened. Phase 5 owns the protocol.
+// OPC UA opens a SecurityPolicy None session on the loopback address.
+// PLCSIM Advanced stays an address card until that runtime is installed.
 class PlcCards : public QWidget {
     Q_OBJECT
 
 public:
-    explicit PlcCards(QWidget* parent = nullptr);
+    explicit PlcCards(Scene& scene, QWidget* parent = nullptr);
+    ~PlcCards() override;
+    bool connectOpcUa();
+
+private:
+    Scene& scene_;
+    QLabel* opcState_ = nullptr;
+    OpcUaClient* client_ = nullptr;
 };
 
 }  // namespace sim
