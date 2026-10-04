@@ -8,6 +8,7 @@
 #include "sim/app/CommandPalette.hpp"
 #include "sim/app/IntentBar.hpp"
 #include "sim/app/LinePanels.hpp"
+#include "sim/app/SceneTree.hpp"
 #include "sim/app/MotionPanel.hpp"
 #include "sim/app/TaskPanels.hpp"
 #include "sim/core/DemoScene.hpp"
@@ -56,7 +57,8 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolBar>
-#include <QTreeWidget>
+#include <QItemSelectionModel>
+#include <QTreeView>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -138,13 +140,25 @@ void MainWindow::buildUi() {
     setCentralWidget(viewport_);
     viewport_->setScene(&scene_);
 
-    tree_ = new QTreeWidget;
-    tree_->setColumnCount(2);
+    treeModel_ = new SceneTreeModel(scene_, this);
+    tree_ = new QTreeView;
+    tree_->setModel(treeModel_);
+    tree_->setUniformRowHeights(true);
+    tree_->setAnimated(false);
+    tree_->setHeaderHidden(false);
     tree_->header()->setStretchLastSection(false);
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     tree_->setMinimumWidth(260);
+    treeSearch_ = new QLineEdit;
+    treeSearch_->setClearButtonEnabled(true);
+    treeSearch_->setPlaceholderText(QStringLiteral("搜索名称"));
+    auto* treeHost = new QWidget;
+    auto* treeLayout = new QVBoxLayout(treeHost);
+    treeLayout->setContentsMargins(0, 0, 0, 0);
+    treeLayout->addWidget(treeSearch_);
+    treeLayout->addWidget(tree_, 1);
     treeDock_ = new QDockWidget(this);
-    treeDock_->setWidget(tree_);
+    treeDock_->setWidget(treeHost);
     treeDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::LeftDockWidgetArea, treeDock_);
 
@@ -549,7 +563,8 @@ void MainWindow::buildUi() {
     connect(scriptAction_, &QAction::triggered, this, &MainWindow::showScripting);
     connect(aboutAction_, &QAction::triggered, this, &MainWindow::showAbout);
     connect(cancelButton_, &QPushButton::clicked, this, &MainWindow::cancelImport);
-    connect(tree_, &QTreeWidget::currentItemChanged, this, &MainWindow::onTreeCurrentChanged);
+    connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeCurrentChanged);
+    connect(treeSearch_, &QLineEdit::textChanged, this, [this](const QString& text) { treeModel_->setFilter(text); });
     connect(viewport_, &ViewportWidget::selectionChanged, this, &MainWindow::onViewportSelection);
     connect(viewport_, &ViewportWidget::pointPicked, this,
             [this](double x, double y, double z, double nx, double ny, double nz, const QString& nodeId) {
@@ -658,8 +673,7 @@ void MainWindow::bindScene() {
             if (motion_ != nullptr) {
                 motion_->syncSelection();
             }
-            if (tree_->currentItem() == nullptr ||
-                tree_->currentItem()->data(0, Qt::UserRole).toString().toStdString() != scene_.selectedId()) {
+            if (treeModel_->nodeId(tree_->currentIndex()) != scene_.selectedId()) {
                 selectNode(QString::fromStdString(scene_.selectedId()), false);
             }
         } else {
@@ -769,7 +783,8 @@ void MainWindow::retranslate() {
     fillMechCombos();
     treeDock_->setWindowTitle(trk("dock.tree"));
     propertyDock_->setWindowTitle(trk("dock.properties"));
-    tree_->setHeaderLabels({trk("tree.name"), trk("tree.kind")});
+    treeModel_->setHeaders(trk("tree.name"), trk("tree.kind"));
+    treeModel_->setWorldTitle(trk("tree.world"));
     cancelButton_->setText(trk("action.cancelImport"));
     if (auto* form = propertyDock_->findChild<QFormLayout*>()) {
         const char* labels[] = {"prop.empty",     "prop.name",       "prop.kind",      "prop.visible",
@@ -813,29 +828,12 @@ void MainWindow::setLocale(const QString& locale) {
 
 void MainWindow::rebuildTree() {
     const QString selected = QString::fromStdString(scene_.selectedId());
-    tree_->blockSignals(true);
-    tree_->clear();
-    std::function<QTreeWidgetItem*(const std::shared_ptr<SceneNode>&, QTreeWidgetItem*)> add =
-        [&](const std::shared_ptr<SceneNode>& node, QTreeWidgetItem* parent) -> QTreeWidgetItem* {
-        if (!node) {
-            return nullptr;
-        }
-        auto* item = parent == nullptr ? new QTreeWidgetItem(tree_) : new QTreeWidgetItem(parent);
-        const QString name = (node->id == "root" && node->name == "World") ? trk("tree.world")
-                                                                           : QString::fromUtf8(node->name.c_str());
-        item->setText(0, name);
-        item->setText(1, node->mech.kind == MechKind::None
-                             ? (node->kind == NodeKind::Assembly ? trk("kind.assembly") : trk("kind.part"))
-                             : mechLabel(node->mech.kind));
-        item->setData(0, Qt::UserRole, QString::fromStdString(node->id));
-        item->setExpanded(true);
-        for (const auto& child : node->children) {
-            add(child, item);
-        }
-        return item;
-    };
-    add(scene_.root(), nullptr);
-    tree_->blockSignals(false);
+    treeModel_->setWorldTitle(trk("tree.world"));
+    treeModel_->reload();
+    const QModelIndex root = treeModel_->index(0, 0, {});
+    if (root.isValid() && treeSearch_->text().trimmed().isEmpty() && treeModel_->rowCount(root) < 4000) {
+        tree_->expand(root);
+    }
     if (!selected.isEmpty()) {
         selectNode(selected, false);
     }
@@ -843,29 +841,12 @@ void MainWindow::rebuildTree() {
 
 void MainWindow::selectNode(const QString& id, bool fromTree) {
     if (!fromTree) {
-        std::function<QTreeWidgetItem*(QTreeWidgetItem*)> find = [&](QTreeWidgetItem* item) -> QTreeWidgetItem* {
-            if (item == nullptr) {
-                return nullptr;
-            }
-            if (item->data(0, Qt::UserRole).toString() == id) {
-                return item;
-            }
-            for (int i = 0; i < item->childCount(); ++i) {
-                if (auto* found = find(item->child(i))) {
-                    return found;
-                }
-            }
-            return nullptr;
-        };
+        const QModelIndex match = treeModel_->indexFor(id.toStdString());
         tree_->blockSignals(true);
-        QTreeWidgetItem* match = nullptr;
-        for (int i = 0; i < tree_->topLevelItemCount(); ++i) {
-            match = find(tree_->topLevelItem(i));
-            if (match != nullptr) {
-                break;
-            }
+        tree_->setCurrentIndex(match);
+        if (match.isValid()) {
+            tree_->scrollTo(match);
         }
-        tree_->setCurrentItem(match);
         tree_->blockSignals(false);
     }
     if (fromTree && scene_.selectedId() != id.toStdString()) {
@@ -876,12 +857,12 @@ void MainWindow::selectNode(const QString& id, bool fromTree) {
     viewport_->update();
 }
 
-void MainWindow::onTreeCurrentChanged(QTreeWidgetItem* current, QTreeWidgetItem*) {
-    if (current == nullptr) {
+void MainWindow::onTreeCurrentChanged(const QModelIndex& current, const QModelIndex&) {
+    if (!current.isValid()) {
         scene_.setSelected({});
         return;
     }
-    selectNode(current->data(0, Qt::UserRole).toString(), true);
+    selectNode(QString::fromStdString(treeModel_->nodeId(current)), true);
 }
 
 void MainWindow::onViewportSelection(const QString& id) { selectNode(id, false); }
@@ -1034,9 +1015,8 @@ void MainWindow::applyProperties() {
     node->mech.interval = intervalSpin_->value();
     node->mech.prototype = prototypeEdit_->text().toUtf8().toStdString();
     scene_.notify(ChangeKind::Transform);
-    if (auto* item = tree_->currentItem()) {
-        item->setText(0, node->id == "root" && node->name == "World" ? trk("tree.world")
-                                                                    : QString::fromUtf8(node->name.c_str()));
+    if (tree_->currentIndex().isValid()) {
+        treeModel_->reload();
     }
     viewport_->update();
 }
@@ -1885,14 +1865,17 @@ void MainWindow::runLargeSceneBench(const QString& screenshot) {
     benchShot_ = screenshot;
     benchTries_ = 0;
     benchPhase_ = 0;
-    for (QDockWidget* dock : {treeDock_, propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_,
-                              pathDock_, plcDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
+    for (QDockWidget* dock : {propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_, pathDock_,
+                              plcDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
         if (dock != nullptr) {
             dock->hide();
         }
     }
-    // The 100000-part field is a renderer bench. Filling a QTreeWidget row per part
-    // would dominate memory before the first draw, so the structure callback stays quiet.
+    if (treeDock_ != nullptr) {
+        treeDock_->show();
+        resizeDocks({treeDock_}, {420}, Qt::Horizontal);
+    }
+    // The model reads the scene directly. A per-node callback would rebuild the view 100000 times.
     auto callback = std::move(scene_.onChanged);
     scene_.onChanged = nullptr;
     buildLargeField(scene_, 100000, 256);
@@ -1912,6 +1895,49 @@ void MainWindow::finishLargeSceneBench() {
             std::cout << "BENCH failed reason=viewport_not_realized tries=" << benchTries_ << std::endl;
             QApplication::exit(2);
             return;
+        }
+        if (treeModel_ != nullptr && tree_ != nullptr && treeSearch_ != nullptr) {
+            treeSearch_->clear();
+            treeModel_->reload();
+            const QModelIndex root = treeModel_->index(0, 0, {});
+            QElapsedTimer treeTimer;
+            treeTimer.start();
+            if (root.isValid()) {
+                tree_->expand(root);
+            }
+            const QModelIndex firstChild = treeModel_->index(0, 0, root);
+            const int childCount = treeModel_->rowCount(root);
+            const QModelIndex lastChild = childCount > 0 ? treeModel_->index(childCount - 1, 0, root) : QModelIndex{};
+            for (int pass = 0; pass < 8; ++pass) {
+                tree_->scrollTo(pass % 2 == 0 ? lastChild : firstChild, QAbstractItemView::PositionAtTop);
+            }
+            benchScrollMs_ = static_cast<double>(treeTimer.nsecsElapsed()) / 1.0e6;
+            std::vector<std::string> matches;
+            treeTimer.restart();
+            const int found = scene_.collectNames("p99999", matches, 10);
+            benchTreeMs_ = static_cast<double>(treeTimer.nsecsElapsed()) / 1.0e6;
+            benchTreeHits_ = found;
+            treeSearch_->setText(QStringLiteral("p99999"));
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            const QModelIndex filtered = treeModel_->index(0, 0, {});
+            if (filtered.isValid()) {
+                tree_->setCurrentIndex(filtered);
+                tree_->scrollTo(filtered);
+            }
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            if (!benchShot_.isEmpty()) {
+                QString treeShot = benchShot_;
+                treeShot.replace(QStringLiteral("large-field"), QStringLiteral("large-tree"));
+                if (treeShot == benchShot_) {
+                    treeShot += QStringLiteral(".tree.png");
+                }
+                grab().save(treeShot);
+            }
+        }
+        for (QDockWidget* dock : {treeDock_, propertyDock_}) {
+            if (dock != nullptr) {
+                dock->hide();
+            }
         }
         viewport_->setStandardView(StandardView::Iso);
         viewport_->setForceDetail(true);
@@ -1955,9 +1981,11 @@ void MainWindow::finishLargeSceneBench() {
             }
             status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
         }
-        viewport_->setCallout(QString("10万零件 · 全细节 %1 三角 · %2 ms · RSS %3 MB · MSAA %4")
+        benchFitOccluded_ = viewport_->lastOccluded();
+        viewport_->setCallout(QString("10万零件 · 全细节 %1 三角 · %2 ms · 遮挡 %3 · RSS %4 MB · MSAA %5")
                                   .arg(benchFitDrawn_)
                                   .arg(benchFitMs_, 0, 'f', 0)
+                                  .arg(benchFitOccluded_)
                                   .arg(rssKb / 1024.0, 0, 'f', 0)
                                   .arg(QSurfaceFormat::defaultFormat().samples()));
         viewport_->setForceDetail(false);
@@ -1968,16 +1996,56 @@ void MainWindow::finishLargeSceneBench() {
         return;
     }
 
+    if (benchPhase_ == 2) {
+        benchNearSubmitted_ = viewport_->lastSubmitted();
+        benchNearCulled_ = viewport_->lastCulled();
+        benchNearDrawn_ = viewport_->lastDrawnTriangles();
+        benchNearOccluded_ = viewport_->lastOccluded();
+        benchNearMs_ = frameMs;
+        viewport_->camera().eyeDirection = {0.18, -0.97, 0.14};
+        viewport_->camera().distance = 1600;
+        viewport_->camera().target = scene_.worldBounds().center();
+        // A slab in front of the field. Parts behind it are what the occlusion buffer can reject.
+        // The fit-all and near frames already finished, and the slab is hidden again before the shot.
+        if (scene_.findByName("OccluderWall") == nullptr) {
+            const Vec3 center = scene_.worldBounds().center();
+            const Vec3 towardEye = normalize(viewport_->camera().eyeDirection);
+            auto wall = scene_.makeNode(NodeKind::Part, "OccluderWall");
+            wall->meshId = scene_.addMesh(makeBoxMesh({6000, 80, 2500}));
+            wall->local.translation = center + towardEye * 700.0;
+            wall->color = {0.85, 0.45, 0.2};
+            scene_.addChild(scene_.root(), wall);
+        }
+        benchPhase_ = 3;
+        QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+        return;
+    }
+
+    benchGrazeSubmitted_ = viewport_->lastSubmitted();
+    benchGrazeOccluded_ = viewport_->lastOccluded();
+    if (auto wall = scene_.findByName("OccluderWall")) {
+        wall->visible = false;
+    }
+    viewport_->setStandardView(StandardView::Iso);
+    viewport_->camera().target = scene_.worldBounds().center();
+    viewport_->camera().distance = 4500;
+
     long long sceneTriangles = 0;
     int meshTriangles = 0;
-    for (const auto& [id, mesh] : scene_.meshes()) {
-        (void)id;
-        if (mesh) {
+    int parts = 0;
+    if (const auto part = scene_.findByName("p0")) {
+        if (const auto mesh = scene_.mesh(part->meshId)) {
             meshTriangles = static_cast<int>(mesh->triangleCount());
-            sceneTriangles += static_cast<long long>(mesh->triangleCount()) * std::max(0, scene_.nodeCount() - 1);
         }
     }
-    const int parts = std::max(0, scene_.nodeCount() - 1);
+    if (scene_.root()) {
+        for (const auto& child : scene_.root()->children) {
+            if (child && child->name.rfind("p", 0) == 0) {
+                ++parts;
+            }
+        }
+    }
+    sceneTriangles = static_cast<long long>(meshTriangles) * parts;
     double rssKb = 0;
     std::ifstream status("/proc/self/status");
     std::string label;
@@ -1990,15 +2058,35 @@ void MainWindow::finishLargeSceneBench() {
     }
     const int msaa = QSurfaceFormat::defaultFormat().samples();
     const double rssMb = rssKb / 1024.0;
-    const double nearMs = frameMs;
+    const double nearMs = benchNearMs_;
+    std::vector<Aabb> gpuBounds;
+    if (scene_.root()) {
+        gpuBounds.reserve(scene_.root()->children.size());
+        for (const auto& child : scene_.root()->children) {
+            if (!child) {
+                continue;
+            }
+            Aabb box;
+            box.expand(child->local.translation - Vec3{20, 20, 10});
+            box.expand(child->local.translation + Vec3{20, 20, 20});
+            gpuBounds.push_back(box);
+        }
+    }
+    QElapsedTimer gpuTimer;
+    gpuTimer.start();
+    const int gpuKept = viewport_->gpuFrustumCull(gpuBounds);
+    const double gpuMs = static_cast<double>(gpuTimer.nsecsElapsed()) / 1.0e6;
     std::cout << "BENCH parts=" << parts << " mesh_triangles=" << meshTriangles << " triangles=" << sceneTriangles
-              << " submitted=" << benchFitSubmitted_ << " culled=" << benchFitCulled_ << " draws=" << benchFitDraws_
-              << " drawn_triangles=" << benchFitDrawn_ << " frame_ms=" << benchFitMs_
+              << " submitted=" << benchFitSubmitted_ << " culled=" << benchFitCulled_ << " occluded=" << benchFitOccluded_
+              << " draws=" << benchFitDraws_ << " drawn_triangles=" << benchFitDrawn_ << " frame_ms=" << benchFitMs_
               << " fps=" << (benchFitMs_ > 0 ? 1000.0 / benchFitMs_ : 0) << " rss_mb=" << rssMb << " msaa=" << msaa
-              << " near_submitted=" << viewport_->lastSubmitted() << " near_culled=" << viewport_->lastCulled()
-              << " near_drawn=" << viewport_->lastDrawnTriangles() << " near_frame_ms=" << nearMs
-              << " near_fps=" << (nearMs > 0 ? 1000.0 / nearMs : 0) << " resident=" << viewport_->residentMeshes()
-              << std::endl;
+              << " near_submitted=" << benchNearSubmitted_ << " near_culled=" << benchNearCulled_
+              << " near_occluded=" << benchNearOccluded_ << " near_drawn=" << benchNearDrawn_
+              << " near_frame_ms=" << nearMs << " near_fps=" << (nearMs > 0 ? 1000.0 / nearMs : 0)
+              << " resident=" << viewport_->residentMeshes() << " tree_query_ms=" << benchTreeMs_
+              << " tree_hits=" << benchTreeHits_ << " tree_scroll_ms=" << benchScrollMs_ << " gpu_kept=" << gpuKept
+              << " gpu_ms=" << gpuMs << " gpu_count=" << gpuBounds.size()
+              << " graze_submitted=" << benchGrazeSubmitted_ << " graze_occluded=" << benchGrazeOccluded_ << std::endl;
     if (benchFitMs_ < 1.0 || nearMs < 1.0) {
         std::cout << "BENCH failed reason=timer_did_not_cover_paint" << std::endl;
         QApplication::exit(2);

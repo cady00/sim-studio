@@ -9,6 +9,8 @@ qt_add_executable(simstudio
     src/TaskPanels.cpp
     src/LinePanels.cpp
     src/PhysicsShelf.cpp
+    src/SceneTree.cpp
+    include/sim/app/SceneTree.hpp
     include/sim/app/PhysicsShelf.hpp
     include/sim/app/MainWindow.hpp
     include/sim/app/MotionPanel.hpp

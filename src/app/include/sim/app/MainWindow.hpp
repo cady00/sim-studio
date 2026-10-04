@@ -27,6 +27,8 @@ class QPushButton;
 class QTableWidget;
 class QSystemTrayIcon;
 class QTimer;
+class QModelIndex;
+class QTreeView;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -70,7 +72,7 @@ private slots:
     void importObjInteractive();
     void onImportProgress(int percent, const QString& stageKey, int current, int total);
     void onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs);
-    void onTreeCurrentChanged(QTreeWidgetItem* current, QTreeWidgetItem* previous);
+    void onTreeCurrentChanged(const QModelIndex& current, const QModelIndex& previous);
     void onViewportSelection(const QString& id);
     void onTransformEdited();
     void applyProperties();
@@ -134,7 +136,9 @@ private:
     std::vector<double> jointRest_;
     QTimer* simTimer_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
-    QTreeWidget* tree_ = nullptr;
+    class SceneTreeModel* treeModel_ = nullptr;
+    QTreeView* tree_ = nullptr;
+    QLineEdit* treeSearch_ = nullptr;
     QLineEdit* nameEdit_ = nullptr;
     QLabel* kindLabel_ = nullptr;
     QLabel* colorSwatch_ = nullptr;
@@ -188,8 +192,19 @@ private:
     double benchFitMs_ = 0;
     int benchFitSubmitted_ = 0;
     int benchFitCulled_ = 0;
+    int benchFitOccluded_ = 0;
     int benchFitDraws_ = 0;
     int benchFitDrawn_ = 0;
+    double benchTreeMs_ = 0;
+    double benchScrollMs_ = 0;
+    int benchTreeHits_ = 0;
+    int benchNearSubmitted_ = 0;
+    int benchNearCulled_ = 0;
+    int benchNearDrawn_ = 0;
+    int benchNearOccluded_ = 0;
+    double benchNearMs_ = 0;
+    int benchGrazeSubmitted_ = 0;
+    int benchGrazeOccluded_ = 0;
     bool refreshing_ = false;
     bool importing_ = false;
     std::thread importThread_;

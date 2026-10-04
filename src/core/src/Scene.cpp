@@ -246,6 +246,36 @@ std::shared_ptr<SceneNode> Scene::findByName(const std::string& nodeName) const 
     return {};
 }
 
+int Scene::collectNames(const std::string& query, std::vector<std::string>& out, int limit) const {
+    out.clear();
+    if (!root_ || query.empty() || limit <= 0) {
+        return 0;
+    }
+    std::string needle = query;
+    for (char& c : needle) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    std::vector<std::shared_ptr<SceneNode>> stack{root_};
+    while (!stack.empty() && static_cast<int>(out.size()) < limit) {
+        auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+        std::string name = node->name;
+        for (char& c : name) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (name.find(needle) != std::string::npos) {
+            out.push_back(node->id);
+        }
+    }
+    return static_cast<int>(out.size());
+}
+
 std::shared_ptr<SceneNode> Scene::spawnClone(const std::shared_ptr<SceneNode>& prototype, const Transform& worldPose) {
     if (!prototype || !root_) {
         return {};

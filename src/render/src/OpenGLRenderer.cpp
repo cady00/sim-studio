@@ -1,8 +1,20 @@
 #include "sim/render/OpenGLRenderer.hpp"
 
+#include <QOpenGLContext>
+
 #include <algorithm>
 #include <string>
 #include <unordered_map>
+
+#ifndef GL_COMPUTE_SHADER
+#define GL_COMPUTE_SHADER 0x91B9
+#endif
+#ifndef GL_SHADER_STORAGE_BUFFER
+#define GL_SHADER_STORAGE_BUFFER 0x90D2
+#endif
+#ifndef GL_SHADER_STORAGE_BARRIER_BIT
+#define GL_SHADER_STORAGE_BARRIER_BIT 0x00002000u
+#endif
 
 namespace sim {
 namespace {
@@ -186,6 +198,10 @@ void OpenGLRenderer::shutdown() {
         glDeleteProgram(lineProgram_);
         lineProgram_ = 0;
     }
+    if (cullProgram_ != 0) {
+        glDeleteProgram(cullProgram_);
+        cullProgram_ = 0;
+    }
     ready_ = false;
 }
 
@@ -362,6 +378,97 @@ void OpenGLRenderer::endFrame() {
     // llvmpipe finishes the draw on the calling thread. Without this, the paint
     // timer stops at the draw call and the real raster shows up on the next swap.
     glFinish();
+}
+
+int OpenGLRenderer::gpuFrustumCull(const Mat4& viewProjection, const std::vector<Aabb>& bounds) {
+    if (bounds.empty()) {
+        return 0;
+    }
+    if (!ready_ || cullFailed_) {
+        return -1;
+    }
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (context == nullptr) {
+        return -1;
+    }
+    GLint major = 0;
+    GLint minor = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    if (major < 4 || (major == 4 && minor < 3)) {
+        return -1;
+    }
+    using DispatchFn = void (*)(GLuint, GLuint, GLuint);
+    using BarrierFn = void (*)(GLbitfield);
+    auto* dispatch = reinterpret_cast<DispatchFn>(context->getProcAddress("glDispatchCompute"));
+    auto* barrier = reinterpret_cast<BarrierFn>(context->getProcAddress("glMemoryBarrier"));
+    if (dispatch == nullptr || barrier == nullptr) {
+        return -1;
+    }
+    if (cullProgram_ == 0) {
+        const char* source = gpuFrustumCullingShader();
+        const unsigned shader = glCreateShader(GL_COMPUTE_SHADER);
+        glShaderSource(shader, 1, &source, nullptr);
+        glCompileShader(shader);
+        int ok = 0;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            glDeleteShader(shader);
+            cullFailed_ = true;
+            return -1;
+        }
+        cullProgram_ = glCreateProgram();
+        glAttachShader(cullProgram_, shader);
+        glLinkProgram(cullProgram_);
+        glDeleteShader(shader);
+        glGetProgramiv(cullProgram_, GL_LINK_STATUS, &ok);
+        if (!ok || cullProgram_ == 0) {
+            if (cullProgram_ != 0) {
+                glDeleteProgram(cullProgram_);
+            }
+            cullProgram_ = 0;
+            cullFailed_ = true;
+            return -1;
+        }
+    }
+    std::vector<float> packed(bounds.size() * 6);
+    for (std::size_t i = 0; i < bounds.size(); ++i) {
+        const Aabb& box = bounds[i];
+        packed[i * 6 + 0] = static_cast<float>(box.min.x);
+        packed[i * 6 + 1] = static_cast<float>(box.min.y);
+        packed[i * 6 + 2] = static_cast<float>(box.min.z);
+        packed[i * 6 + 3] = static_cast<float>(box.max.x);
+        packed[i * 6 + 4] = static_cast<float>(box.max.y);
+        packed[i * 6 + 5] = static_cast<float>(box.max.z);
+    }
+    unsigned buffers[2] = {};
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[0]);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(packed.size() * sizeof(float)), packed.data(), GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[0]);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[1]);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bounds.size() * sizeof(unsigned)), nullptr, GL_DYNAMIC_READ);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[1]);
+    GLint previousProgram = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
+    glUseProgram(cullProgram_);
+    float viewProj[16];
+    toGl(viewProjection, viewProj);
+    glUniformMatrix4fv(glGetUniformLocation(cullProgram_, "uViewProj"), 1, GL_FALSE, viewProj);
+    glUniform1ui(glGetUniformLocation(cullProgram_, "uCount"), static_cast<unsigned>(bounds.size()));
+    dispatch(static_cast<unsigned>((bounds.size() + 63) / 64), 1, 1);
+    barrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    std::vector<unsigned> visible(bounds.size(), 0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[1]);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(visible.size() * sizeof(unsigned)), visible.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glDeleteBuffers(2, buffers);
+    glUseProgram(static_cast<unsigned>(previousProgram));
+    int kept = 0;
+    for (unsigned flag : visible) {
+        kept += flag != 0 ? 1 : 0;
+    }
+    return kept;
 }
 
 bool OpenGLRenderer::captureRgba(std::vector<std::uint8_t>& rgba, int& width, int& height) {

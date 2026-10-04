@@ -69,6 +69,8 @@ public:
 
     std::shared_ptr<SceneNode> find(const std::string& id) const;
     std::shared_ptr<SceneNode> findByName(const std::string& name) const;
+    // Substring match on node names. Stops after `limit` hits. Used by the virtual scene tree.
+    int collectNames(const std::string& query, std::vector<std::string>& out, int limit) const;
     std::shared_ptr<SceneNode> makeNode(NodeKind kind, const std::string& name);
     void addChild(const std::shared_ptr<SceneNode>& parent, const std::shared_ptr<SceneNode>& child);
     // Moves a node under a new parent. keepWorld recomputes the local pose.

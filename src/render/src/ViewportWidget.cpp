@@ -122,6 +122,18 @@ void ViewportWidget::syncMeshes() {
     syncedRevision_ = scene_->structureRevision();
 }
 
+int ViewportWidget::gpuFrustumCull(const std::vector<Aabb>& bounds) {
+    if (renderer_ == nullptr || !isValid()) {
+        return -1;
+    }
+    makeCurrent();
+    const double aspect = height() > 0 ? static_cast<double>(width()) / static_cast<double>(height()) : 1.0;
+    const Mat4 viewProjection = mul(camera_.projectionMatrix(aspect), camera_.viewMatrix());
+    const int kept = renderer_->gpuFrustumCull(viewProjection, bounds);
+    doneCurrent();
+    return kept;
+}
+
 int ViewportWidget::lastSubmitted() const { return renderer_ ? renderer_->lastSubmitted() : 0; }
 
 int ViewportWidget::lastDraws() const { return renderer_ ? renderer_->lastDraws() : 0; }
@@ -255,6 +267,7 @@ void ViewportWidget::paintGL() {
     QElapsedTimer drawTimer;
     drawTimer.start();
     culledFrame_ = 0;
+    occludedFrame_ = 0;
     drawnTriangles_ = 0;
     renderer_->beginFrame(frame);
     drawGrid();
@@ -330,7 +343,7 @@ void ViewportWidget::paintGL() {
             instance.distanceMm = distance;
             instance.lodLevels = 1;
             if (drawn != nullptr) {
-                drawnTriangles_ += static_cast<int>(drawn->triangleCount());
+                instance.triangles = static_cast<int>(drawn->triangleCount());
             }
             instances.push_back(std::move(instance));
         }
@@ -406,6 +419,37 @@ void ViewportWidget::paintGL() {
             }
         } else {
             ghostCaption_.clear();
+        }
+        if (!instances.empty()) {
+            OcclusionBuffer occlusion;
+            occlusion.reset(160, 90);
+            std::vector<int> order(instances.size());
+            for (int i = 0; i < static_cast<int>(instances.size()); ++i) {
+                order[static_cast<std::size_t>(i)] = i;
+            }
+            std::sort(order.begin(), order.end(), [&](int left, int right) {
+                return instances[static_cast<std::size_t>(left)].distanceMm < instances[static_cast<std::size_t>(right)].distanceMm;
+            });
+            std::vector<RenderInstance> visible;
+            visible.reserve(instances.size());
+            for (int index : order) {
+                RenderInstance& instance = instances[static_cast<std::size_t>(index)];
+                ScreenRect rect;
+                if (projectBounds(frame.viewProjection, instance.worldBounds, occlusion.width, occlusion.height, rect) &&
+                    hiddenByOcclusion(occlusion, rect)) {
+                    ++occludedFrame_;
+                    continue;
+                }
+                if (rect.valid) {
+                    rasterizeOccluder(occlusion, rect);
+                }
+                visible.push_back(std::move(instance));
+            }
+            instances.swap(visible);
+            drawnTriangles_ = 0;
+            for (const RenderInstance& instance : instances) {
+                drawnTriangles_ += instance.triangles;
+            }
         }
         renderer_->submitInstances(instances);
     }

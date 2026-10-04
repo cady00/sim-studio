@@ -24,6 +24,7 @@ public:
     int lastSubmitted() const override { return submitted_; }
     int lastCulled() const override { return culled_; }
     int lastDraws() const override { return draws_; }
+    int gpuFrustumCull(const Mat4& viewProjection, const std::vector<Aabb>& bounds) override;
 
 private:
     struct GpuMesh {
@@ -47,6 +48,8 @@ private:
     int culled_ = 0;
     int draws_ = 0;
     bool ready_ = false;
+    unsigned cullProgram_ = 0;
+    bool cullFailed_ = false;
 };
 
 }  // namespace sim

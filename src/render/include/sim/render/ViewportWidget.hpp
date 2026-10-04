@@ -55,6 +55,10 @@ public:
     int lastDraws() const;
     int residentMeshes() const { return static_cast<int>(resident_.size()); }
     int lastDrawnTriangles() const { return drawnTriangles_; }
+    int lastOccluded() const { return occludedFrame_; }
+    // Dispatches the compute frustum test when the context is 4.3 or newer.
+    // Returns how many bounds stay inside the frustum, or -1 when compute is unavailable.
+    int gpuFrustumCull(const std::vector<Aabb>& bounds);
 
 signals:
     void selectionChanged(const QString& id);
@@ -117,6 +121,7 @@ private:
     int triangles_ = 0;
     double drawMs_ = 0;
     int culledFrame_ = 0;
+    int occludedFrame_ = 0;
     int drawnTriangles_ = 0;
     bool forceDetail_ = false;
     std::unordered_set<std::string> resident_;
