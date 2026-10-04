@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 
 TEST_CASE("obj importer triangulates a quad") {
     const auto path = std::filesystem::temp_directory_path() / "simstudio_quad.obj";
@@ -66,7 +67,7 @@ TEST_CASE("geometry kernel names occt and keeps obj on the in-house parser") {
     sim::Scene imported;
     const sim::ImportResult read = iges->importFile(sample.string(), imported);
     REQUIRE(read.ok);
-    REQUIRE(read.triangleCount > 0);
+    REQUIRE(read.triangleCount == 12);
     REQUIRE(imported.root()->children.size() == 1);
     std::filesystem::remove(sample);
 }

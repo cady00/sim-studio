@@ -423,7 +423,7 @@ EOF
 )";
     const sim::DxfResult parsed = sim::parseDxf(text, 1);
     REQUIRE(parsed.ok);
-    REQUIRE(parsed.lines.size() > 4);
+    REQUIRE(parsed.lines.size() == 25);
     bool sawFloor = false;
     bool sawPlaced = false;
     for (const std::string& layer : parsed.layers) {

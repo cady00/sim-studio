@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <iostream>
 
 namespace {
 
@@ -140,7 +141,7 @@ TEST_CASE("reachability, base coverage, weld order, and rrt avoid a joint slab")
     const std::vector<sim::SpotReach> reach = sim::checkWeldReach(nullptr, robot, spots, false);
     REQUIRE(reach.size() == 2);
     REQUIRE(reach[0].reachable);
-    REQUIRE(reach[0].margin > 0.02);
+    REQUIRE(reach[0].margin == Catch::Approx(0.676471).margin(1e-4));
     REQUIRE_FALSE(reach[0].singular);
     REQUIRE_FALSE(reach[1].reachable);
 
@@ -207,13 +208,14 @@ TEST_CASE("the tcp sweep becomes a collision set and two robots interlock") {
     const std::vector<std::vector<double>> joints{{15, -40, 55, 10, 40, -20}, {50, -25, 35, 0, 25, 10}};
     const sim::MotionEnvelope envelope = sim::buildTcpEnvelope(scene, scene.resources.front(), joints, "sweep", 40);
     REQUIRE(envelope.samples.size() == 2);
-    REQUIRE_FALSE(envelope.nodes.empty());
+    REQUIRE(envelope.nodes.size() == 1);
+    REQUIRE(envelope.nodes.front() == "sweep_1");
     REQUIRE(scene.findByName(envelope.nodes.front()));
     REQUIRE(envelope.bounds.min.x <= envelope.samples[0].x);
     REQUIRE(envelope.bounds.max.x >= envelope.samples[0].x);
     bool listed = false;
     for (const sim::CollisionSet& set : scene.proximity.sets) {
-        if (set.name == "sweep" && !set.objects.empty()) {
+        if (set.name == "sweep" && set.objects.size() == 1 && set.objects.front() == "sweep_1") {
             listed = true;
         }
     }
@@ -265,7 +267,9 @@ TEST_CASE("each link sweeps between the two joint poses") {
     robot.joints = {joint};
     scene.resources.push_back(robot);
     const sim::MotionEnvelope sweep = sim::buildLinkSweep(scene, scene.resources.front(), {{0}, {90}}, "links");
-    REQUIRE(sweep.nodes.size() >= 2);
+    REQUIRE(sweep.nodes.size() == 10);
+    REQUIRE(sweep.nodes.front() == "links_base_1");
+    REQUIRE(sweep.nodes.back() == "links_arm_5");
     REQUIRE(sweep.bounds.max.x > 100);
     REQUIRE(sweep.bounds.max.y > 100);
     bool listed = false;

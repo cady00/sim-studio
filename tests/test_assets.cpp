@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <vector>
 
 using Catch::Approx;
@@ -186,7 +187,7 @@ TEST_CASE("stl export counts triangles and occt samples round trip", "[assets]")
         sim::Scene imported;
         const sim::AssetImportResult result = registry->importPath(path.string(), imported);
         REQUIRE(result.ok);
-        REQUIRE(result.triangleCount > 0);
+        REQUIRE(result.triangleCount == 12);
     }
 }
 
@@ -452,8 +453,7 @@ TEST_CASE("a collision sensor measures an inspect operation", "[assets]") {
     const sim::MeasureResult measured = sim::measureOperationTimes(scene, true);
     REQUIRE(measured.sensor == 1);
     REQUIRE(scene.operations.front().timeSource == "sensor");
-    REQUIRE(scene.operations.front().seconds > 0.2);
-    REQUIRE(scene.operations.front().seconds < 3.0);
+    REQUIRE(scene.operations.front().seconds == Approx(0.43).margin(1e-9));
     REQUIRE(scene.operations.front().seconds != Approx(6));
 }
 
@@ -519,7 +519,8 @@ TEST_CASE("xacro import builds a robot resource and a mesh", "[assets]") {
     REQUIRE(joint.accelSource == "dynamics");
     const sim::JointAccelLimit limit = sim::jointAccelLimit(resource, joint);
     REQUIRE(limit.source == "dynamics");
-    REQUIRE(limit.value > 1);
+    // τ / (Izz + m r²) = 10 / (0.01 + 2 * 0.2²) rad/s², reported in degrees.
+    REQUIRE(limit.value == Approx(10.0 / 0.09 * 180.0 / sim::kPi).margin(1e-4));
     bool sawMesh = false;
     for (const auto& [id, mesh] : scene.meshes()) {
         (void)id;

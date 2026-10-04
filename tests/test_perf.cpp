@@ -260,8 +260,10 @@ TEST_CASE("kr420 mesh line simulates one production hour") {
     }
     REQUIRE(cycle != nullptr);
     const sim::MotionPlan plan = sim::planRobotPath(scene, *robot, *cycle);
-    REQUIRE(plan.seconds > 1.0);
-    REQUIRE(!plan.samples.empty());
+    REQUIRE(plan.ok);
+    REQUIRE(plan.warnings.empty());
+    REQUIRE(plan.seconds == Approx(3.2).margin(1e-9));
+    REQUIRE(plan.samples.size() == 193);
 
     sim::LineProduction production;
     REQUIRE(production.start(scene, error));
@@ -341,10 +343,12 @@ TEST_CASE("kr420 mesh line simulates one production hour") {
               << " shipped=" << (shipped != nullptr ? shipped->integer : 0) << " nodes=" << scene.nodeCount()
               << std::endl;
     REQUIRE(simulation.time() == Approx(3600).margin(sim::Simulation::kFixedDt));
-    REQUIRE(stats.output > 100);
+    REQUIRE(stats.output == 299);
+    REQUIRE(stats.jobsPerHour == Approx(299).margin(1e-6));
     REQUIRE(shipped != nullptr);
-    REQUIRE(shipped->integer > 50);
-    REQUIRE(meshContacts > 0);
+    REQUIRE(shipped->integer == 300);
+    REQUIRE(meshContactSteps == 186751);
+    REQUIRE(meshContacts == 594022);
     REQUIRE(scene.nodeCount() < nodesAtStart + 20);
     REQUIRE(rssEnd - rssStart < 64 * 1024);
 }

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <string>
 
 using Catch::Approx;
@@ -48,11 +49,11 @@ TEST_CASE("mesh triangles leave a hole that the bounding box would have filled")
     REQUIRE(falling->local.translation.z < 0);
     REQUIRE(supported->local.translation.z == Approx(33).margin(4));
 
-    REQUIRE_FALSE(scene.convexCache.empty());
+    REQUIRE(scene.convexCache.size() == 1);
     bool nearPlate = false;
     bool aabbCorner = false;
     for (const sim::ConvexCacheEntry& entry : scene.convexCache) {
-        REQUIRE_FALSE(entry.pieces.empty());
+        REQUIRE(entry.pieces.size() == 1);
         for (const sim::ConvexPiece& piece : entry.pieces) {
             for (const sim::Vec3& vertex : piece.vertices) {
                 if (vertex.x > 70 && vertex.x < 170 && std::abs(vertex.z) <= 20) {
@@ -189,10 +190,13 @@ TEST_CASE("contact notices are visible to python") {
     for (int i = 0; i < 40; ++i) {
         engine->step(sim::Simulation::kFixedDt);
     }
-    REQUIRE_FALSE(scene.contactNotices.empty());
+    REQUIRE(scene.contactNotices.size() == 1);
+    REQUIRE(scene.contactNotices.front().self == "Crate");
+    REQUIRE(scene.contactNotices.front().other == "Floor");
+    REQUIRE(scene.contactNotices.front().impulse == Approx(9.4176).margin(1e-3));
     REQUIRE(scene.findSignal("contact") != nullptr);
     REQUIRE(scene.findSignal("contact")->flag);
-    REQUIRE(scene.findSignal("contact_impulse")->real > 0);
+    REQUIRE(scene.findSignal("contact_impulse")->real == Approx(9.4176).margin(1e-3));
 
     auto host = sim::createScriptHost();
     host->bind(&scene);
@@ -200,15 +204,15 @@ TEST_CASE("contact notices are visible to python") {
     std::string scriptError;
     REQUIRE(host->execute("print(len(sim.contacts()))", output, scriptError));
     REQUIRE(scriptError.empty());
-    REQUIRE(output.find("0") == std::string::npos);
+    REQUIRE(std::stoi(output) == 1);
 
     REQUIRE(host->load("seen = []\ndef on_contact(a, b, impulse):\n    seen.append((a, b, impulse))\n", scriptError));
     host->onContacts();
     output.clear();
-    REQUIRE(host->execute("print(seen[0][0], seen[0][1], seen[0][2] > 0)", output, scriptError));
+    REQUIRE(host->execute("print(seen[0][0], seen[0][1], seen[0][2])", output, scriptError));
     REQUIRE(output.find("Crate") != std::string::npos);
     REQUIRE(output.find("Floor") != std::string::npos);
-    REQUIRE(output.find("True") != std::string::npos);
+    REQUIRE(std::stod(output.substr(output.find_last_of(' ') + 1)) == Approx(9.4176).margin(1e-3));
 }
 
 TEST_CASE("two meshes report contacts on both sides") {
@@ -219,7 +223,7 @@ TEST_CASE("two meshes report contacts on both sides") {
     sim::Mat4 shifted = sim::Mat4::identity();
     shifted(3, 0) = 12;
     const std::vector<sim::NarrowContact> hits = sim::queryMeshMesh(leftBvh, sim::Mat4::identity(), rightBvh, shifted, 8);
-    REQUIRE(hits.size() >= 2);
+    REQUIRE(hits.size() == 4);
     bool opposite = false;
     for (std::size_t i = 0; i < hits.size() && !opposite; ++i) {
         for (std::size_t j = i + 1; j < hits.size(); ++j) {
@@ -271,15 +275,13 @@ TEST_CASE("a fast box stops on a thin plate instead of jumping through") {
     double toi = 0;
     sim::Vec3 normal;
     REQUIRE(sim::sweepAabbToi({0, 0, 80}, {10, 10, 10}, {0, 0, -5000}, 1.0 / 60.0, {0, 0, 0}, {40, 40, 1}, toi, normal));
-    REQUIRE(toi > 0.01);
-    REQUIRE(toi < 1.0 / 60.0);
-    REQUIRE(normal.z > 0.5);
+    REQUIRE(toi == Approx(69.0 / 5000.0).margin(1e-6));
+    REQUIRE(normal.z == Approx(1.0).margin(1e-6));
     const auto plate = sim::makeBoxMesh({40, 40, 1});
     REQUIRE(sim::sweepAabbMesh({0, 0, 80}, {10, 10, 10}, {0, 0, -5000}, 1.0 / 60.0, sim::buildTriangleBvh(*plate),
                                sim::Mat4::identity(), toi, normal));
-    REQUIRE(toi > 0.008);
-    REQUIRE(toi < 1.0 / 60.0);
-    REQUIRE(normal.z > 0.5);
+    REQUIRE(toi == Approx(69.0 / 5000.0).margin(1e-4));
+    REQUIRE(normal.z == Approx(1.0).margin(1e-3));
 
     sim::Scene scene;
     auto floor = addPart(scene, "Plate");

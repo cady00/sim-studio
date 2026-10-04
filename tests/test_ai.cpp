@@ -28,7 +28,7 @@ TEST_CASE("command catalog is executable without a model") {
     const auto future = commands.execute({{"op", "nl_to_logic"}, {"text", "when barrier then push"}});
     REQUIRE(future.ok);
     REQUIRE(future.value.at("commands").is_array());
-    REQUIRE_FALSE(scene.logicBlocks.empty());
+    REQUIRE(scene.logicBlocks.size() == 1);
     REQUIRE(scene.logicBlocks.front().name == "nl");
     REQUIRE(scene.logicBlocks.front().steps.front().actions.front().signal == "barrier");
     REQUIRE(history.undo());
@@ -76,7 +76,7 @@ TEST_CASE("offline hooks edit through commands and a remote model is refused") {
                                           {"endpoint", "http://example.com/v1/chat/completions"}});
     REQUIRE(remote.ok);
     REQUIRE(remote.value.at("note").get<std::string>().find("localhost") != std::string::npos);
-    REQUIRE_FALSE(scene.logicBlocks.empty());
+    REQUIRE(scene.logicBlocks.size() == 1);
 }
 
 TEST_CASE("ai provider stays offline unless a future transport is compiled") {
@@ -134,20 +134,27 @@ TEST_CASE("command palette matches chinese, pinyin initials, english, objects, a
     scene.upsertSignal("go", sim::SignalType::Bool);
 
     const auto byInitial = sim::CommandRegistry::search("sjd", &scene);
-    REQUIRE(!byInitial.empty());
+    REQUIRE(byInitial.size() == 2);
     REQUIRE(byInitial.front().entry.id == "ui.teach");
+    REQUIRE(byInitial.back().entry.group == "object");
 
     const auto byEnglish = sim::CommandRegistry::search("Teach", &scene);
-    REQUIRE(!byEnglish.empty());
+    REQUIRE(byEnglish.size() == 1);
     REQUIRE(byEnglish.front().entry.id == "ui.teach");
 
     const auto objects = sim::CommandRegistry::search("@示教", &scene);
-    REQUIRE(!objects.empty());
-    REQUIRE(objects.front().entry.group == "object");
+    REQUIRE(objects.size() == 2);
+    bool teachObject = false;
+    for (const auto& hit : objects) {
+        REQUIRE(hit.entry.group == "object");
+        teachObject = teachObject || hit.entry.titleZh == "示教点";
+    }
+    REQUIRE(teachObject);
 
     const auto signals = sim::CommandRegistry::search("#go", &scene);
-    REQUIRE(!signals.empty());
+    REQUIRE(signals.size() == 1);
     REQUIRE(signals.front().entry.group == "signal");
+    REQUIRE(signals.front().entry.id == "signal:go");
 
     const sim::CommandPlan vague = sim::CommandRegistry::planIntent("把节拍变得更好");
     REQUIRE(vague.needsClarify);

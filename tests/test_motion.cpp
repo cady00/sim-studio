@@ -69,7 +69,8 @@ double poseGap(const sim::CartesianPose& a, const sim::CartesianPose& b) {
 
 TEST_CASE("trapezoid and s-curve profiles finish at the target") {
     const double trap = sim::profileDuration(sim::ProfileKind::Trapezoid, 0, 90, 120, 480);
-    REQUIRE(trap > 0.2);
+    // 120°/s and 480°/s²: 0.25 s accel, 0.5 s cruise, 0.25 s decel.
+    REQUIRE(trap == Catch::Approx(1.0).margin(1e-12));
     bool done = false;
     REQUIRE(sim::profileSample(sim::ProfileKind::Trapezoid, 0, 90, 120, 480, 0, &done) == 0);
     REQUIRE_FALSE(done);
@@ -77,8 +78,7 @@ TEST_CASE("trapezoid and s-curve profiles finish at the target") {
     REQUIRE(done);
     REQUIRE(std::abs(end - 90) < 1e-6);
     const double mid = sim::profileSample(sim::ProfileKind::Trapezoid, 0, 90, 120, 480, trap * 0.5, &done);
-    REQUIRE(mid > 10);
-    REQUIRE(mid < 90);
+    REQUIRE(mid == Catch::Approx(45.0).margin(1e-9));
 
     const double curve = sim::profileDuration(sim::ProfileKind::SCurve, 10, -40, 80, 200);
     const double start = sim::profileSample(sim::ProfileKind::SCurve, 10, -40, 80, 200, 0, &done);
@@ -195,7 +195,7 @@ TEST_CASE("logic block, save, and repeat are deterministic") {
     sim::Scene empty;
     REQUIRE(sim::loadLibrary(empty, library.string(), error));
     REQUIRE(empty.resources.size() == 1);
-    REQUIRE_FALSE(empty.logicBlocks.empty());
+    REQUIRE(empty.logicBlocks.size() == 1);
 }
 
 TEST_CASE("robot path reports cycle time and a collision pair") {
@@ -205,7 +205,13 @@ TEST_CASE("robot path reports cycle time and a collision pair") {
     REQUIRE(resource != nullptr);
     const sim::RobotPath& path = scene.robotPaths.at(0);
     const sim::MotionPlan fine = sim::planRobotPath(scene, *resource, path);
-    REQUIRE(fine.seconds > 0.5);
+    REQUIRE(fine.samples.size() == 319);
+    REQUIRE(fine.segmentSeconds.size() == 4);
+    REQUIRE(fine.segmentSeconds[0] == Catch::Approx(58.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.segmentSeconds[1] == Catch::Approx(63.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.segmentSeconds[2] == Catch::Approx(51.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.segmentSeconds[3] == Catch::Approx(154.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.seconds == Catch::Approx(318.0 / 60.0).margin(1e-9));
     sim::RobotPath zoned = path;
     zoned.points[0].zone = 40;
     const sim::MotionPlan blended = sim::planRobotPath(scene, *resource, zoned);
@@ -225,10 +231,9 @@ TEST_CASE("robot path reports cycle time and a collision pair") {
     UNSCOPED_INFO("forearm " << forearm->worldMatrix()(3, 0) << " " << forearm->worldMatrix()(3, 1) << " " << forearm->worldMatrix()(3, 2));
     UNSCOPED_INFO("obstacle " << obstacle->worldMatrix()(3, 0) << " " << obstacle->worldMatrix()(3, 1) << " " << obstacle->worldMatrix()(3, 2));
     const auto hits = sim::collidingPairs(blocked, *arm);
-    for (const auto& hit : hits) {
-        UNSCOPED_INFO(hit.first << " vs " << hit.second);
-    }
-    REQUIRE_FALSE(hits.empty());
+    REQUIRE(hits.size() == 1);
+    REQUIRE(hits.front().first == "Forearm");
+    REQUIRE(hits.front().second == "Obstacle");
 }
 
 TEST_CASE("command layer covers kinematics logic and planning") {
@@ -244,7 +249,7 @@ TEST_CASE("command layer covers kinematics logic and planning") {
     REQUIRE(commands.execute({{"op", "kin_fk"}, {"resource", "scara"}}).ok);
     const auto plan = commands.execute({{"op", "robot_plan"}, {"path", "pick_place"}});
     REQUIRE(plan.ok);
-    REQUIRE(plan.value.at("seconds").get<double>() > 0);
+    REQUIRE(plan.value.at("seconds").get<double>() == Catch::Approx(318.0 / 60.0).margin(1e-9));
     auto tool = scene.makeNode(sim::NodeKind::Part, "Gun");
     scene.addChild(scene.root(), tool);
     REQUIRE(commands.execute({{"op", "attach_tool"}, {"resource", "scara"}, {"name", "Gun"}}).ok);
@@ -408,20 +413,27 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
     const sim::MotionPlan plan = sim::planRobotPath(scene, *resource, *path);
     std::cerr << "cycle seconds " << plan.seconds << " samples " << plan.samples.size() << " collisions "
               << plan.collisions.size() << " sweep " << plan.sweepHit << "\n";
-    double longestSegment = 0;
-    for (double span : plan.segmentSeconds) {
-        longestSegment = std::max(longestSegment, span);
-    }
-    std::cerr << "cycle longest segment " << longestSegment << "\n";
+    REQUIRE(plan.segmentSeconds.size() == 3);
+    REQUIRE(plan.segmentSeconds[0] == Catch::Approx(1.0 / 60.0).margin(1e-9));
+    REQUIRE(plan.segmentSeconds[1] == Catch::Approx(17.0 / 60.0).margin(1e-9));
+    REQUIRE(plan.segmentSeconds[2] == Catch::Approx(178.0 / 60.0).margin(1e-9));
+    const double raw = plan.segmentSeconds[0] + plan.segmentSeconds[1] + plan.segmentSeconds[2];
+    // Unblended chunks are 196 frames. Zone blend drops 4 frames, leaving the
+    // 193 samples whose span is the 3.200 s cycle.
+    REQUIRE(raw == Catch::Approx(196.0 / 60.0).margin(1e-9));
+    REQUIRE(raw - plan.seconds == Catch::Approx(4.0 / 60.0).margin(1e-9));
     for (const std::string& warning : plan.warnings) {
         std::cerr << "plan warning " << warning << "\n";
+        REQUIRE(warning.find("unreachable") == std::string::npos);
     }
-    REQUIRE(plan.seconds > 0);
-    double raw = 0;
-    for (double span : plan.segmentSeconds) {
-        raw += span;
-    }
-    REQUIRE(plan.seconds + 1e-3 < raw);
+    REQUIRE(plan.ok);
+    REQUIRE(plan.warnings.empty());
+    REQUIRE(plan.collisions.size() == 1);
+    REQUIRE(plan.sweepHit);
+    REQUIRE(plan.samples.size() == 193);
+    REQUIRE(plan.dt == Catch::Approx(1.0 / 60.0).margin(1e-15));
+    REQUIRE(plan.seconds == Catch::Approx((static_cast<double>(plan.samples.size()) - 1.0) * plan.dt).margin(1e-12));
+    REQUIRE(plan.seconds == Catch::Approx(192.0 / 60.0).margin(1e-12));
     auto query = sim::createCollisionQuery();
     query->rebuild(scene);
     bool near = false;
@@ -458,7 +470,7 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
     sim::setJointVector(*resource, std::vector<double>(6, 0));
     const int tourPoints = sim::planExampleWeldTour(scene);
     std::cerr << "weld tour points " << tourPoints << "\n";
-    REQUIRE(tourPoints >= 3);
+    REQUIRE(tourPoints == 4);
     const sim::RobotPath* tour = nullptr;
     for (const sim::RobotPath& candidate : scene.robotPaths) {
         if (candidate.name == "weld_tour") {
@@ -467,8 +479,19 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
     }
     REQUIRE(tour != nullptr);
     const sim::MotionPlan tourPlan = sim::planRobotPath(scene, *resource, *tour);
-    std::cerr << "weld tour seconds " << tourPlan.seconds << " longest cycle segment " << longestSegment << "\n";
-    REQUIRE(tourPlan.seconds >= 2.5);
+    REQUIRE(tourPlan.warnings.empty());
+    REQUIRE(tourPlan.ok);
+    REQUIRE(tourPlan.segmentSeconds.size() == 4);
+    REQUIRE(tourPlan.segmentSeconds[0] == Catch::Approx(1.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.segmentSeconds[1] == Catch::Approx(1.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.segmentSeconds[2] == Catch::Approx(178.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.segmentSeconds[3] == Catch::Approx(178.0 / 60.0).margin(1e-9));
+    const double tourRaw = tourPlan.segmentSeconds[0] + tourPlan.segmentSeconds[1] + tourPlan.segmentSeconds[2] +
+                           tourPlan.segmentSeconds[3];
+    REQUIRE(tourPlan.samples.size() == 359);
+    REQUIRE(tourPlan.seconds == Catch::Approx(358.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.seconds == Catch::Approx(tourRaw).margin(1e-9));
+    std::cerr << "weld tour seconds " << tourPlan.seconds << "\n";
 }
 
 sim::KinematicResource redundantArm() {
@@ -676,9 +699,8 @@ TEST_CASE("synchronised linear motion keeps the tcp on the segment and waits for
         std::cerr << "sync warning " << warning << "\n";
     }
     REQUIRE(plan.ok);
-    REQUIRE(plan.seconds > 6.2);
-    REQUIRE(plan.seconds < 6.6);
-    REQUIRE(plan.samples.size() > 2);
+    REQUIRE(plan.seconds == Catch::Approx(380.0 / 60.0).margin(1e-9));
+    REQUIRE(plan.samples.size() == 381);
     const double moved = plan.samples.back()[6] - plan.samples.front()[6];
     REQUIRE(moved > 2000);
     for (const std::vector<double>& sample : plan.samples) {
@@ -772,8 +794,7 @@ TEST_CASE("positioner sync keeps the tcp on the workpiece and a track reports pa
     const sim::CartesianPose far{{1500, 0, 300}, sim::Quat::identity()};
     const sim::ReachReport report = sim::analyzeReach(reach, far, 9);
     REQUIRE(report.samples == 9);
-    REQUIRE(report.reachable > 0);
-    REQUIRE(report.reachable < report.samples);
+    REQUIRE(report.reachable == 4);
 
     const std::vector<sim::OlpAxisName> names = sim::externalExportMap(reach);
     REQUIRE(names.size() == 1);
@@ -953,8 +974,10 @@ TEST_CASE("zone blend keeps joint velocity continuous and inside the limits") {
     for (double span : blended.segmentSeconds) {
         raw += span;
     }
-    REQUIRE(blended.seconds + 1e-4 < raw);
-    REQUIRE_FALSE(blended.samples.empty());
+    REQUIRE(fine.seconds == Catch::Approx(86.0 / 60.0).margin(1e-9));
+    REQUIRE(raw == Catch::Approx(86.0 / 60.0).margin(1e-9));
+    REQUIRE(blended.seconds == Catch::Approx(75.0 / 60.0).margin(1e-9));
+    REQUIRE(blended.samples.size() == 76);
     for (const std::vector<double>& sample : blended.samples) {
         REQUIRE(sample[0] <= 40.0 + 1e-3);
         REQUIRE(sample[0] >= -40.0 - 1e-3);
