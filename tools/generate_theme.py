@@ -114,16 +114,38 @@ QScrollBar::handle:vertical {{
   color: {text_1};
   border: 1px solid {accent};
 }}
-#commandHint, #intentBar, #commandPalette, #overlayGlass {{
+#commandHint, #commandPalette, #overlayGlass {{
   background: {bg_panel};
   border: 1px solid {line};
   border-radius: 12px;
+}}
+#intentBar {{
+  background: {bg_panel};
+  border: 1px solid {ai_start};
+  border-radius: 12px;
+}}
+#aiRibbon {{
+  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ai_start}, stop:1 {ai_end});
+  border: none;
+  min-height: 4px;
+  max-height: 4px;
+  border-radius: 2px;
 }}
 #accentButton {{
   background: {accent};
   color: {on_accent};
   border: none;
   font-weight: 600;
+}}
+#accentButton:hover {{
+  background: {accent};
+  color: {on_accent};
+  border: 1px solid {accent_hover};
+}}
+#accentButton:pressed {{
+  background: {accent_pressed};
+  color: {on_accent};
+  border: none;
 }}
 """
 

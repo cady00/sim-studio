@@ -33,6 +33,7 @@ in vec3 vWorld;
 in vec3 vColor;
 in float vHighlight;
 uniform vec3 uEye;
+uniform float uOpacity;
 out vec4 fragColor;
 void main() {
     vec3 n = normalize(vNormal);
@@ -43,9 +44,9 @@ void main() {
     float spec = pow(max(dot(n, normalize(lightA + viewDir)), 0.0), 32.0) * 0.22;
     vec3 color = vColor * (0.28 + diffuse) + vec3(spec);
     if (vHighlight > 0.5) {
-        color = mix(color, vec3(0.58, 0.60, 0.98), 0.42);
+        color = mix(color, vec3(0.239, 0.525, 0.910), 0.42);
     }
-    fragColor = vec4(color, 1.0);
+    fragColor = vec4(color, uOpacity);
 }
 )";
 
@@ -209,7 +210,7 @@ void OpenGLRenderer::beginFrame(const FrameParams& frame) {
 }
 
 void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>& instances) {
-    const int count = static_cast<int>(instances.size() / 20);
+    const int count = static_cast<int>(instances.size() / 21);
     if (count <= 0 || meshProgram_ == 0) {
         return;
     }
@@ -217,12 +218,25 @@ void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>
     // translation on the software GL context, so a moving base stayed put.
     const int modelLoc = glGetUniformLocation(meshProgram_, "uModel");
     const int colorLoc = glGetUniformLocation(meshProgram_, "uColor");
+    const int opacityLoc = glGetUniformLocation(meshProgram_, "uOpacity");
     glBindVertexArray(mesh.vao);
     for (int i = 0; i < count; ++i) {
-        const float* record = instances.data() + static_cast<std::size_t>(i) * 20;
+        const float* record = instances.data() + static_cast<std::size_t>(i) * 21;
+        const float opacity = record[20];
+        const bool translucent = opacity < 0.999f;
+        if (translucent) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(GL_FALSE);
+        }
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, record);
         glUniform4fv(colorLoc, 1, record + 16);
+        glUniform1f(opacityLoc, opacity);
         glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr);
+        if (translucent) {
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+        }
     }
     glBindVertexArray(0);
     submitted_ += count;
@@ -248,6 +262,7 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
         batch.push_back(static_cast<float>(instance.material.color.y));
         batch.push_back(static_cast<float>(instance.material.color.z));
         batch.push_back(instance.material.highlight);
+        batch.push_back(instance.material.opacity);
     }
     float viewProj[16];
     toGl(frame_.viewProjection, viewProj);

@@ -23,6 +23,7 @@ signals:
     void themeToggled();
     void localeToggled();
     void focusRequested();
+    void aboutRequested();
 
 private:
     QButtonGroup* modes_ = nullptr;

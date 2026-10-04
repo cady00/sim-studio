@@ -650,6 +650,12 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
         resource.redundancy = savedRedundancy;
     }
 
+    plan.segmentSeconds.reserve(chunks.size());
+    for (const Chunk& chunk : chunks) {
+        const double span = chunk.frames.size() <= 1 ? 0.0 : (static_cast<double>(chunk.frames.size()) - 1) * plan.dt;
+        plan.segmentSeconds.push_back(span);
+    }
+
     for (std::size_t i = 0; i < chunks.size(); ++i) {
         int begin = plan.samples.empty() ? 0 : 1;
         int end = static_cast<int>(chunks[i].frames.size());

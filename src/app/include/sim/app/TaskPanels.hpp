@@ -1,37 +1,80 @@
 #pragma once
 
+#include <QPointF>
 #include <QWidget>
+
+#include <map>
+#include <string>
+#include <vector>
+
+class QGraphicsScene;
+class QGraphicsView;
 
 namespace sim {
 
 class Scene;
+struct MotionPlan;
 
-// Reads the logic blocks already stored on the scene. Nodes are not a second model.
+// Node graph over the logic blocks already stored on the scene.
+// Layout pins live in the widget. The project file stays format 6.
 class LogicCanvas : public QWidget {
     Q_OBJECT
 
 public:
     explicit LogicCanvas(Scene& scene, QWidget* parent = nullptr);
-
-protected:
-    void paintEvent(QPaintEvent* event) override;
+    void reload();
+    void setDark(bool dark);
+    void remember(const std::string& key, const QPointF& position);
+    void refreshEdges();
+    bool arranging() const { return arranging_; }
 
 private:
+    void addBlock();
+    void addInput();
+    void addStep();
+    void addOutput();
+    void renameSelected();
+
     Scene& scene_;
+    QGraphicsView* view_ = nullptr;
+    QGraphicsScene* graph_ = nullptr;
+    int selected_ = 0;
+    bool arranging_ = false;
+    bool dark_ = true;
+    std::map<std::string, QPointF> pins_;
 };
 
-// Path timeline for the first robot path: points, move types, and a time ruler.
+// Planner cycle time and joint samples for the first robot path.
 class PathTimeline : public QWidget {
     Q_OBJECT
 
 public:
     explicit PathTimeline(Scene& scene, QWidget* parent = nullptr);
+    void reload();
+    void setDark(bool dark);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
     Scene& scene_;
+    std::string signature_;
+    bool planned_ = false;
+    bool ok_ = false;
+    double seconds_ = 0;
+    std::vector<double> segmentSeconds_;
+    std::vector<std::vector<double>> samples_;
+    double dt_ = 1.0 / 60.0;
+    std::string note_;
+    bool dark_ = true;
+};
+
+// Connection cards only. No socket is opened. Phase 5 owns the protocol.
+class PlcCards : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit PlcCards(QWidget* parent = nullptr);
 };
 
 }  // namespace sim

@@ -22,6 +22,10 @@ public:
     void note(const std::string& line);
     bool allowsStructuralEdits() const { return allowR2_; }
 
+signals:
+    void undoRequested();
+    void closed();
+
 private:
     void preview();
     void apply();

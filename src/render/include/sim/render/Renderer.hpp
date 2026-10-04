@@ -21,6 +21,8 @@ namespace sim {
 struct RenderMaterial {
     Vec3 color{0.7, 0.7, 0.7};
     float highlight = 0;
+    // 1 is opaque. Below 1 the backend blends and skips the depth write.
+    float opacity = 1;
 };
 
 struct RenderInstance {

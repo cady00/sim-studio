@@ -17,6 +17,9 @@ IntentBar::IntentBar(QWidget* parent) : QFrame(parent) {
     setFixedSize(760, 360);
     hide();
     auto* layout = new QVBoxLayout(this);
+    auto* ribbon = new QFrame;
+    ribbon->setObjectName("aiRibbon");
+    layout->addWidget(ribbon);
     auto* title = new QLabel("AI 意图  ·  提供者关闭  ·  本地离线");
     edit_ = new QLineEdit;
     edit_->setPlaceholderText("例如：播放，或 写信号 #go。不会联网，也不会编造未注册的命令。");
@@ -28,9 +31,11 @@ IntentBar::IntentBar(QWidget* parent) : QFrame(parent) {
     auto* previewButton = new QPushButton("预览计划");
     auto* apply = new QPushButton("应用");
     apply->setObjectName("accentButton");
+    auto* undo = new QPushButton("撤销 Ctrl+Z");
     auto* cancel = new QPushButton("取消");
     row->addWidget(previewButton);
     row->addWidget(apply);
+    row->addWidget(undo);
     row->addWidget(cancel);
     row->addStretch(1);
     log_ = new QListWidget;
@@ -44,7 +49,11 @@ IntentBar::IntentBar(QWidget* parent) : QFrame(parent) {
     layout->addWidget(log_);
     connect(previewButton, &QPushButton::clicked, this, [this] { preview(); });
     connect(apply, &QPushButton::clicked, this, [this] { this->apply(); });
-    connect(cancel, &QPushButton::clicked, this, [this] { hide(); });
+    connect(undo, &QPushButton::clicked, this, &IntentBar::undoRequested);
+    connect(cancel, &QPushButton::clicked, this, [this] {
+        hide();
+        emit closed();
+    });
     connect(edit_, &QLineEdit::returnPressed, this, [this] { preview(); });
 }
 

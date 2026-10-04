@@ -23,7 +23,7 @@ void applyDarkPalette(QApplication& app) {
     const QColor base(18, 24, 42);
     const QColor button(42, 51, 80);
     const QColor text(230, 232, 242);
-    const QColor highlight(108, 112, 216);
+    const QColor highlight(44, 110, 206);
     palette.setColor(QPalette::Window, window);
     palette.setColor(QPalette::WindowText, text);
     palette.setColor(QPalette::Base, base);
@@ -71,6 +71,7 @@ int main(int argc, char* argv[]) {
     QApplication::setOrganizationName(QString::fromLatin1("SimStudio"));
     QApplication::setApplicationVersion(QString::fromLatin1(sim::kVersion));
     QIcon icon;
+    icon.addFile(":/branding/logo_256.png");
     icon.addFile(":/branding/logo.png");
     icon.addFile(":/branding/app.ico");
     QApplication::setWindowIcon(icon);
@@ -115,6 +116,7 @@ int main(int argc, char* argv[]) {
     parser.process(application);
 
     sim::MainWindow window(parser.value(language));
+    window.setWindowIcon(icon);
     window.show();
     if (parser.isSet(theme)) {
         window.setThemeName(parser.value(theme));

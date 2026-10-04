@@ -39,6 +39,8 @@ public:
     void setCallout(const QString& text);
     void setMeasureMode(bool enabled);
     void setPreviewMode(bool enabled);
+    // Translucent copy of a mesh. The scene itself is not moved.
+    void setGhost(bool enabled);
     void setDarkChrome(bool dark);
     // Reads the widget framebuffer through IRenderer::captureRgba.
     QImage captureView();
@@ -92,7 +94,12 @@ private:
     QString callout_;
     bool measureMode_ = false;
     bool previewMode_ = false;
+    bool ghost_ = false;
     bool darkChrome_ = true;
+    bool cubePress_ = false;
+    bool cubeDrag_ = false;
+    QPoint cubePressPos_;
+    QString ghostCaption_;
     double simTime_ = 0;
     double fps_ = 0;
     int triangles_ = 0;

@@ -132,4 +132,4 @@ ctest --preset linux-system --output-on-failure
 - 项目包是 store（不压缩）ZIP，单文件约 4 GiB 上限，无 ZIP64。
 - 操作器是局部轴的平移箭头和旋转环，不是完整 CAD 三元组。
 - Windows 上的 Open CASCADE 8 与 Linux 软件包里的 7.6 若 API 不一致，需要在导入代码里加版本分支。
-- 窗口图标来自品牌 SVG 光栅化的 PNG，以及随附的 `app.ico`。
+- 窗口图标、关于页和托盘图标使用蓝色圆角方标（白 C 与深色蛋形），没有文字。Windows 包里的 `simstudio.ico` 与 `tray.ico` 是同一套多尺寸图标。

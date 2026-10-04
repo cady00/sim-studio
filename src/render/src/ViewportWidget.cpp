@@ -282,6 +282,79 @@ void ViewportWidget::paintGL() {
             }
             instances.push_back(std::move(instance));
         }
+        if (ghost_) {
+            std::shared_ptr<SceneNode> ghostNode;
+            if (auto selected = scene_->find(scene_->selectedId()); selected && !selected->meshId.empty()) {
+                ghostNode = selected;
+            }
+            if (!ghostNode) {
+                std::vector<std::shared_ptr<SceneNode>> walk{scene_->root()};
+                while (!walk.empty() && !ghostNode) {
+                    auto node = walk.back();
+                    walk.pop_back();
+                    if (!node) {
+                        continue;
+                    }
+                    for (const auto& child : node->children) {
+                        walk.push_back(child);
+                    }
+                    if (node->effectivelyVisible() && !node->meshId.empty()) {
+                        ghostNode = node;
+                    }
+                }
+            }
+            if (ghostNode) {
+                const Mat4 home = ghostNode->worldMatrix();
+                Mat4 world = home;
+                bool onPath = false;
+                for (const RobotPath& path : scene_->robotPaths) {
+                    for (auto point = path.points.rbegin(); point != path.points.rend(); ++point) {
+                        if (point->cartesian) {
+                            world(3, 0) = point->position.x;
+                            world(3, 1) = point->position.y;
+                            world(3, 2) = point->position.z;
+                            onPath = true;
+                            break;
+                        }
+                    }
+                    if (onPath) {
+                        break;
+                    }
+                }
+                if (!onPath) {
+                    Vec3 right;
+                    Vec3 up;
+                    Vec3 forward;
+                    camera_.basis(right, up, forward);
+                    const double shift = std::max(120.0, camera_.distance * 0.08);
+                    world(3, 0) += right.x * shift;
+                    world(3, 1) += right.y * shift;
+                    world(3, 2) += right.z * shift + shift * 0.15;
+                }
+                const auto mesh = scene_->mesh(ghostNode->meshId);
+                RenderInstance ghost;
+                ghost.meshKey = ghostNode->meshId;
+                ghost.world = world;
+                ghost.material.color = {0.239, 0.525, 0.910};
+                ghost.material.highlight = 0;
+                ghost.material.opacity = 0.38f;
+                ghost.worldBounds = mesh ? transformedBounds(mesh->bounds, ghost.world) : Aabb{};
+                ghost.distanceMm = static_cast<float>(length(ghost.worldBounds.center() - frame.eye));
+                instances.push_back(std::move(ghost));
+                ghostCaption_ = onPath ? QStringLiteral("幽灵在路径末点 · 场景未改 · 不是模型输出")
+                                       : QStringLiteral("幽灵是零件的平移副本 · 场景未改 · 不是模型输出");
+                LineBatch link;
+                link.width = 1.5f;
+                link.depthTest = false;
+                pushLine(link, Vec3{home(3, 0), home(3, 1), home(3, 2)}, Vec3{0.239, 0.525, 0.910});
+                pushLine(link, Vec3{world(3, 0), world(3, 1), world(3, 2)}, Vec3{0.114, 0.333, 0.702});
+                renderer_->submitLines(link);
+            } else {
+                ghostCaption_.clear();
+            }
+        } else {
+            ghostCaption_.clear();
+        }
         renderer_->submitInstances(instances);
     }
 
@@ -339,6 +412,14 @@ void ViewportWidget::setPreviewMode(bool enabled) {
     update();
 }
 
+void ViewportWidget::setGhost(bool enabled) {
+    ghost_ = enabled;
+    if (!enabled) {
+        ghostCaption_.clear();
+    }
+    update();
+}
+
 void ViewportWidget::setDarkChrome(bool dark) {
     darkChrome_ = dark;
     update();
@@ -360,7 +441,7 @@ void ViewportWidget::paintOverlay() {
     const QColor ink = darkChrome_ ? QColor(231, 233, 247) : QColor(23, 29, 56);
     const QColor muted = darkChrome_ ? QColor(166, 172, 203) : QColor(76, 83, 115);
     const QColor glass = darkChrome_ ? QColor(19, 25, 48, 190) : QColor(255, 255, 255, 220);
-    const QColor line = darkChrome_ ? QColor(142, 146, 236, 90) : QColor(92, 96, 194, 90);
+    const QColor line = darkChrome_ ? QColor(61, 134, 232, 110) : QColor(44, 110, 206, 140);
     auto capsule = [&](const QRect& rect) {
         painter.setPen(line);
         painter.setBrush(glass);
@@ -374,13 +455,17 @@ void ViewportWidget::paintOverlay() {
     if (previewMode_) {
         hud += "  ·  预览模式 · 场景未修改";
     }
+    if (!ghostCaption_.isEmpty()) {
+        hud += "  ·  " + ghostCaption_;
+    }
     if (fps_ > 0 && fps_ < 30) {
         hud += "  ·  建议检查显示负载";
     }
-    const QRect hudRect(16, 16, std::min(width() - 140, 520), 28);
+    const bool wideHud = !ghostCaption_.isEmpty();
+    const QRect hudRect(16, 16, std::min(width() - 140, wideHud ? std::max(280, width() - 150) : 520), wideHud ? 46 : 28);
     capsule(hudRect);
     painter.setPen(muted);
-    painter.drawText(hudRect.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft, hud);
+    painter.drawText(hudRect.adjusted(10, 4, -10, -4), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap, hud);
 
     cubeRect_ = QRect(width() - 112, 16, 96, 104);
     capsule(cubeRect_);
@@ -395,7 +480,7 @@ void ViewportWidget::paintOverlay() {
     painter.drawRect(faceFront_);
     painter.setBrush(QColor(54, 69, 122, 220));
     painter.drawRect(faceRight_);
-    painter.setBrush(QColor(142, 146, 236, 200));
+    painter.setBrush(QColor(44, 110, 206, 230));
     painter.drawRect(faceTop_);
     painter.setPen(ink);
     painter.drawText(faceTop_, Qt::AlignCenter, "上");
@@ -480,16 +565,10 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
         return;
     }
     const QPoint click = event->position().toPoint();
-    if (faceTop_.contains(click)) {
-        setStandardView(StandardView::Top);
-        return;
-    }
-    if (faceFront_.contains(click)) {
-        setStandardView(StandardView::Front);
-        return;
-    }
-    if (faceRight_.contains(click)) {
-        setStandardView(StandardView::Right);
+    if (cubeRect_.contains(click)) {
+        cubePress_ = true;
+        cubeDrag_ = false;
+        cubePressPos_ = click;
         return;
     }
     if (toolbarRect_.contains(click)) {
@@ -550,6 +629,16 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event) {
     const double dx = pos.x() - lastPos_.x();
     const double dy = pos.y() - lastPos_.y();
     lastPos_ = pos;
+    if (cubePress_) {
+        if ((pos - cubePressPos_).manhattanLength() > 4) {
+            cubeDrag_ = true;
+        }
+        if (cubeDrag_) {
+            camera_.orbit(dx, dy);
+            update();
+        }
+        return;
+    }
     if (draggingCamera_) {
         camera_.orbit(dx, dy);
         update();
@@ -572,6 +661,18 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event) {
         panning_ = false;
     }
     if (event->button() == Qt::LeftButton) {
+        if (cubePress_ && !cubeDrag_) {
+            const QPoint click = event->position().toPoint();
+            if (faceTop_.contains(click) || faceTop_.contains(cubePressPos_)) {
+                setStandardView(StandardView::Top);
+            } else if (faceFront_.contains(click) || faceFront_.contains(cubePressPos_)) {
+                setStandardView(StandardView::Front);
+            } else if (faceRight_.contains(click) || faceRight_.contains(cubePressPos_)) {
+                setStandardView(StandardView::Right);
+            }
+        }
+        cubePress_ = false;
+        cubeDrag_ = false;
         draggingGizmo_ = false;
         gizmoAxis_ = -1;
     }

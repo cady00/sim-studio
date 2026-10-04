@@ -2,8 +2,11 @@
 
 #include <QButtonGroup>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QPushButton>
+#include <QSignalBlocker>
+#include <QSize>
 
 namespace sim {
 
@@ -14,6 +17,15 @@ ChromeBar::ChromeBar(QWidget* parent) : QWidget(parent) {
     layout->setContentsMargins(12, 6, 12, 6);
     layout->setSpacing(10);
 
+    auto* mark = new QPushButton;
+    mark->setIcon(QIcon(":/branding/logo_256.png"));
+    mark->setIconSize(QSize(22, 22));
+    mark->setFlat(true);
+    mark->setFixedSize(28, 28);
+    mark->setToolTip(QStringLiteral("关于"));
+    mark->setCursor(Qt::PointingHandCursor);
+    connect(mark, &QPushButton::clicked, this, &ChromeBar::aboutRequested);
+    layout->addWidget(mark);
     auto* brand = new QLabel("Sim Studio");
     brand->setStyleSheet("font-weight: 600;");
     layout->addWidget(brand);
@@ -58,6 +70,10 @@ ChromeBar::ChromeBar(QWidget* parent) : QWidget(parent) {
 }
 
 void ChromeBar::setMode(int mode) {
+    if (modes_ == nullptr) {
+        return;
+    }
+    const QSignalBlocker blocker(modes_);
     if (auto* button = modes_->button(mode)) {
         button->setChecked(true);
     }

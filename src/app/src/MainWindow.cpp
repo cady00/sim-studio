@@ -48,6 +48,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
+#include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
@@ -293,6 +294,21 @@ void MainWindow::buildUi() {
     pathDock_->setWidget(pathTimeline_);
     addDockWidget(Qt::BottomDockWidgetArea, pathDock_);
 
+    plc_ = new PlcCards(this);
+    plcDock_ = new QDockWidget(this);
+    plcDock_->setObjectName("dock.plc");
+    plcDock_->setWidget(plc_);
+    addDockWidget(Qt::RightDockWidgetArea, plcDock_);
+
+    tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
+    tray_->setToolTip(QStringLiteral("Sim Studio"));
+    if (tray_->icon().isNull()) {
+        tray_->setIcon(QIcon(":/branding/logo_256.png"));
+    }
+    if (QSystemTrayIcon::isSystemTrayAvailable()) {
+        tray_->show();
+    }
+
     treeDock_->setObjectName("dock.tree");
     propertyDock_->setObjectName("dock.properties");
 
@@ -305,12 +321,20 @@ void MainWindow::buildUi() {
     connect(chrome_, &ChromeBar::intentRequested, this, [this] { showIntentBar(); });
     connect(chrome_, &ChromeBar::themeToggled, this, [this] { setThemeName(themeName_ == "dark" ? "light" : "dark"); });
     connect(chrome_, &ChromeBar::localeToggled, this, [this] { setLocale(i18n_.locale() == "zh_CN" ? "en" : "zh_CN"); });
+    connect(chrome_, &ChromeBar::aboutRequested, this, &MainWindow::showAbout);
     connect(chrome_, &ChromeBar::focusRequested, this, [this] {
         focusMode_ = !focusMode_;
         applyTaskMode(taskMode_);
     });
     palette_->setHandler([this](const std::string& id) { runUiCommand(id); });
     intent_->setApplyHandler([this](const std::string& text) { return applyIntent(text); });
+    connect(intent_, &IntentBar::undoRequested, this, [this] { undoIntent(); });
+    connect(intent_, &IntentBar::closed, this, [this] {
+        if (viewport_ != nullptr) {
+            viewport_->setPreviewMode(false);
+            viewport_->setGhost(false);
+        }
+    });
     connect(viewport_, &ViewportWidget::overlayCommand, this, [this](const QString& id) { runUiCommand(id.toStdString()); });
 
     auto* paletteShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_K), this);
@@ -334,6 +358,22 @@ void MainWindow::buildUi() {
     connect(measureShortcut, &QShortcut::activated, this, [this] { runUiCommand("ui.measure"); });
     auto* teachShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_T), this);
     connect(teachShortcut, &QShortcut::activated, this, [this] { runUiCommand("ui.teach"); });
+    auto* undoAction = new QAction(this);
+    undoAction->setShortcut(QKeySequence::Undo);
+    undoAction->setShortcutContext(Qt::WindowShortcut);
+    addAction(undoAction);
+    connect(undoAction, &QAction::triggered, this, [this] {
+        QWidget* focus = QApplication::focusWidget();
+        if (auto* line = qobject_cast<QLineEdit*>(focus)) {
+            line->undo();
+            return;
+        }
+        if (auto* plain = qobject_cast<QPlainTextEdit*>(focus)) {
+            plain->undo();
+            return;
+        }
+        undoIntent();
+    });
 
     newAction_ = new QAction(this);
     openAction_ = new QAction(this);
@@ -633,6 +673,15 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.collision")) {
         dock->setWindowTitle(trk("dock.collision"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.logic")) {
+        dock->setWindowTitle(trk("dock.logic"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.path")) {
+        dock->setWindowTitle(trk("dock.path"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.plc")) {
+        dock->setWindowTitle(trk("dock.plc"));
     }
     if (collision_ != nullptr) {
         collision_->retranslate();
@@ -1625,14 +1674,20 @@ void MainWindow::applyTaskMode(int mode) {
     show(collisionDock_, taskMode_ == 4 || taskMode_ == 5);
     show(signalDock_, taskMode_ == 2 || taskMode_ == 4 || taskMode_ == 5);
     show(scriptDock_, taskMode_ == 5);
+    show(plcDock_, taskMode_ == 5);
     if (chrome_ != nullptr) {
         chrome_->setMode(taskMode_);
     }
-    if (logicCanvas_ != nullptr) {
-        logicCanvas_->update();
+    if (logicCanvas_ != nullptr && taskMode_ == 2) {
+        logicCanvas_->reload();
+        resizeDocks({logicDock_}, {720}, Qt::Horizontal);
     }
-    if (pathTimeline_ != nullptr) {
-        pathTimeline_->update();
+    if (pathTimeline_ != nullptr && taskMode_ == 3) {
+        pathTimeline_->reload();
+        resizeDocks({pathDock_}, {260}, Qt::Vertical);
+    }
+    if (taskMode_ == 5 && plcDock_ != nullptr) {
+        resizeDocks({plcDock_}, {300}, Qt::Horizontal);
     }
     saveWorkspace();
 }
@@ -1645,6 +1700,12 @@ void MainWindow::setThemeName(const QString& theme) {
     }
     if (viewport_ != nullptr) {
         viewport_->setDarkChrome(themeName_ == "dark");
+    }
+    if (logicCanvas_ != nullptr) {
+        logicCanvas_->setDark(themeName_ == "dark");
+    }
+    if (pathTimeline_ != nullptr) {
+        pathTimeline_->setDark(themeName_ == "dark");
     }
     saveWorkspace();
 }
@@ -1664,6 +1725,7 @@ void MainWindow::showIntentBar() {
     positionFloaters();
     if (viewport_ != nullptr) {
         viewport_->setPreviewMode(true);
+        viewport_->setGhost(true);
     }
     intent_->openBar();
 }
@@ -1739,7 +1801,7 @@ void MainWindow::runUiCommand(const std::string& id) {
             scene_.robotPaths.front().points.push_back(point);
             scene_.notify(ChangeKind::Structure);
             if (pathTimeline_ != nullptr) {
-                pathTimeline_->update();
+                pathTimeline_->reload();
             }
         }
     } else {
@@ -1782,6 +1844,7 @@ bool MainWindow::applyIntent(const std::string& text) {
     }
     if (viewport_ != nullptr) {
         viewport_->setPreviewMode(false);
+        viewport_->setGhost(false);
         viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
     }
     refreshSignals();
@@ -1790,6 +1853,9 @@ bool MainWindow::applyIntent(const std::string& text) {
 
 void MainWindow::undoIntent() {
     if (!intentUndoValid_) {
+        if (intent_ != nullptr) {
+            intent_->note("没有可撤销的意图事务");
+        }
         return;
     }
     for (const auto& [id, pose] : intentPoses_) {
@@ -1800,7 +1866,12 @@ void MainWindow::undoIntent() {
     scene_.signals = intentSignals_;
     intentUndoValid_ = false;
     if (viewport_ != nullptr) {
+        viewport_->setGhost(false);
+        viewport_->setPreviewMode(false);
         viewport_->update();
+    }
+    if (intent_ != nullptr) {
+        intent_->note("已撤销上一次意图事务");
     }
     refreshSignals();
 }

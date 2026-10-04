@@ -43,6 +43,9 @@ struct MotionPlan {
     double seconds = 0;
     double dt = 1.0 / 60.0;
     std::vector<std::vector<double>> samples;
+    // Unblended duration of each path point, seconds. The cycle time in `seconds`
+    // is shorter when a zone overlaps the next point.
+    std::vector<double> segmentSeconds;
     std::vector<std::string> warnings;
     std::vector<std::pair<std::string, std::string>> collisions;
     // First contact of the continuous sweep. `sweepTime` is seconds along the samples.
