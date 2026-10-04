@@ -1,6 +1,7 @@
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Weld.hpp"
 #include "sim/io/ProjectStore.hpp"
+#include "sim/motion/Envelope.hpp"
 #include "sim/motion/WeldPlan.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -192,4 +193,47 @@ TEST_CASE("reachability, base coverage, weld order, and rrt avoid a joint slab")
     for (const std::vector<double>& sample : smooth) {
         REQUIRE_FALSE(blocked(sample));
     }
+}
+
+TEST_CASE("the tcp sweep becomes a collision set and two robots interlock") {
+    sim::Scene scene;
+    sim::KinematicResource arm = wristResource();
+    arm.name = "arm_a";
+    sim::setJointVector(arm, {15, -40, 55, 10, 40, -20});
+    sim::KinematicResource mate = arm;
+    mate.name = "arm_b";
+    scene.resources.push_back(arm);
+    scene.resources.push_back(mate);
+    const std::vector<std::vector<double>> joints{{15, -40, 55, 10, 40, -20}, {50, -25, 35, 0, 25, 10}};
+    const sim::MotionEnvelope envelope = sim::buildTcpEnvelope(scene, scene.resources.front(), joints, "sweep", 40);
+    REQUIRE(envelope.samples.size() == 2);
+    REQUIRE_FALSE(envelope.nodes.empty());
+    REQUIRE(scene.findByName(envelope.nodes.front()));
+    REQUIRE(envelope.bounds.min.x <= envelope.samples[0].x);
+    REQUIRE(envelope.bounds.max.x >= envelope.samples[0].x);
+    bool listed = false;
+    for (const sim::CollisionSet& set : scene.proximity.sets) {
+        if (set.name == "sweep" && !set.objects.empty()) {
+            listed = true;
+        }
+    }
+    REQUIRE(listed);
+
+    sim::InterlockZone zone;
+    zone.name = "cell";
+    zone.center = sim::forwardModel(scene.resources[0]).position;
+    zone.radius = 40;
+    zone.resources = {"arm_a", "arm_b"};
+    scene.interlocks.push_back(zone);
+    const std::vector<sim::InterlockHit> together = sim::evaluateInterlocks(scene);
+    REQUIRE(together.size() == 1);
+    REQUIRE(together[0].a == "arm_a");
+    REQUIRE(together[0].b == "arm_b");
+    REQUIRE(scene.findSignal("interlock_cell"));
+    REQUIRE(scene.findSignal("interlock_cell")->flag);
+
+    scene.resources[1].joints[0].position = 120;
+    const std::vector<sim::InterlockHit> apart = sim::evaluateInterlocks(scene);
+    REQUIRE(apart.empty());
+    REQUIRE_FALSE(scene.findSignal("interlock_cell")->flag);
 }

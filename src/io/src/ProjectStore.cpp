@@ -231,6 +231,8 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
         json["logic"].push_back(logicBlockToJson(block));
     }
     json["welds"] = weldsToJson(scene.welds);
+    json["envelopes"] = envelopesToJson(scene.envelopes);
+    json["interlocks"] = interlocksToJson(scene.interlocks);
     json["paths"] = nlohmann::json::array();
     for (const RobotPath& path : scene.robotPaths) {
         json["paths"].push_back(robotPathToJson(path));
@@ -411,6 +413,12 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
     }
     if (json.contains("welds")) {
         weldsFromJson(json.at("welds"), scene.welds);
+    }
+    if (json.contains("envelopes")) {
+        envelopesFromJson(json.at("envelopes"), scene.envelopes);
+    }
+    if (json.contains("interlocks")) {
+        interlocksFromJson(json.at("interlocks"), scene.interlocks);
     }
     if (json.contains("proximity")) {
         proximityFromJson(json.at("proximity"), scene.proximity);

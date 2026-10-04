@@ -27,6 +27,8 @@ private:
     void reach();
     void baseRegion();
     void planTour();
+    void envelope();
+    void interlock();
     KinematicResource* robot();
 
     Scene& scene_;

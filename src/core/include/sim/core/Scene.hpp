@@ -6,6 +6,7 @@
 #include "sim/core/PhysicsModel.hpp"
 #include "sim/core/Proximity.hpp"
 #include "sim/core/Weld.hpp"
+#include "sim/core/Envelope.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Transform.hpp"
 
@@ -120,6 +121,8 @@ public:
     std::vector<LogicBlock> logicBlocks;
     std::vector<RobotPath> robotPaths;
     std::vector<WeldSpot> welds;
+    std::vector<MotionEnvelope> envelopes;
+    std::vector<InterlockZone> interlocks;
     ProximitySetup proximity;
     std::vector<ConvexCacheEntry> convexCache;
     PhysicsDocument physicsDoc;

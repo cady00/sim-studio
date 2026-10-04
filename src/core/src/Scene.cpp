@@ -103,6 +103,8 @@ void Scene::clear() {
     logicBlocks.clear();
     robotPaths.clear();
     welds.clear();
+    envelopes.clear();
+    interlocks.clear();
     proximity = {};
     convexCache.clear();
     physicsDoc = {};
@@ -142,6 +144,8 @@ void Scene::steal(Scene& other) {
     logicBlocks = std::move(other.logicBlocks);
     robotPaths = std::move(other.robotPaths);
     welds = std::move(other.welds);
+    envelopes = std::move(other.envelopes);
+    interlocks = std::move(other.interlocks);
     proximity = std::move(other.proximity);
     convexCache = std::move(other.convexCache);
     physicsDoc = std::move(other.physicsDoc);
@@ -162,6 +166,8 @@ void Scene::steal(Scene& other) {
     other.logicBlocks.clear();
     other.robotPaths.clear();
     other.welds.clear();
+    other.envelopes.clear();
+    other.interlocks.clear();
     other.proximity = {};
     other.convexCache.clear();
     other.physicsDoc = {};
@@ -522,6 +528,8 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     logicBlocks.clear();
     robotPaths.clear();
     welds.clear();
+    envelopes.clear();
+    interlocks.clear();
     proximity = {};
     convexCache.clear();
     contactNotices.clear();

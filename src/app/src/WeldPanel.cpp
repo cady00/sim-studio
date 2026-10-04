@@ -1,5 +1,6 @@
 #include "sim/app/WeldPanel.hpp"
 
+#include "sim/motion/Envelope.hpp"
 #include "sim/motion/WeldPlan.hpp"
 
 #include <QLabel>
@@ -32,12 +33,18 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     baseButton->setObjectName("weldBase");
     auto* planButton = new QPushButton;
     planButton->setObjectName("weldPlan");
+    auto* envelopeButton = new QPushButton;
+    envelopeButton->setObjectName("weldEnvelope");
+    auto* interlockButton = new QPushButton;
+    interlockButton->setObjectName("weldInterlock");
     layout->addWidget(importButton);
     layout->addWidget(projectButton);
     layout->addWidget(alignButton);
     layout->addWidget(reachButton);
     layout->addWidget(baseButton);
     layout->addWidget(planButton);
+    layout->addWidget(envelopeButton);
+    layout->addWidget(interlockButton);
     list_ = new QListWidget;
     layout->addWidget(list_, 1);
     connect(importButton, &QPushButton::clicked, this, [this] { importText(); });
@@ -46,6 +53,8 @@ WeldPanel::WeldPanel(Scene& scene, I18nCatalog& i18n, QWidget* parent) : QWidget
     connect(reachButton, &QPushButton::clicked, this, [this] { reach(); });
     connect(baseButton, &QPushButton::clicked, this, [this] { baseRegion(); });
     connect(planButton, &QPushButton::clicked, this, [this] { planTour(); });
+    connect(envelopeButton, &QPushButton::clicked, this, [this] { envelope(); });
+    connect(interlockButton, &QPushButton::clicked, this, [this] { interlock(); });
     retranslate();
 }
 
@@ -69,6 +78,12 @@ void WeldPanel::retranslate() {
     }
     if (auto* button = findChild<QPushButton*>("weldPlan")) {
         button->setText(trk("weld.plan"));
+    }
+    if (auto* button = findChild<QPushButton*>("weldEnvelope")) {
+        button->setText(trk("weld.envelope"));
+    }
+    if (auto* button = findChild<QPushButton*>("weldInterlock")) {
+        button->setText(trk("weld.interlock"));
     }
     reload();
 }
@@ -196,6 +211,47 @@ void WeldPanel::planTour() {
     scene_.notify(ChangeKind::Structure);
     reload();
     summary_->setText(trk("weld.tour").arg(points));
+}
+
+void WeldPanel::envelope() {
+    KinematicResource* resource = robot();
+    if (resource == nullptr) {
+        summary_->setText(trk("weld.noRobot"));
+        return;
+    }
+    std::vector<std::vector<double>> joints;
+    for (const RobotPath& path : scene_.robotPaths) {
+        if (path.name != "weld_tour") {
+            continue;
+        }
+        for (const PathPoint& point : path.points) {
+            if (!point.joints.empty()) {
+                joints.push_back(point.joints);
+            }
+        }
+    }
+    const MotionEnvelope built = buildTcpEnvelope(scene_, *resource, joints, "weld_envelope", 45);
+    scene_.notify(ChangeKind::Structure);
+    reload();
+    summary_->setText(trk("weld.envelopeSummary").arg(static_cast<int>(built.nodes.size())));
+}
+
+void WeldPanel::interlock() {
+    if (scene_.interlocks.empty() && !scene_.welds.empty()) {
+        InterlockZone zone;
+        zone.name = "weld_cell";
+        zone.radius = 900;
+        zone.resources = {"kr420"};
+        for (const WeldSpot& spot : scene_.welds) {
+            zone.center = zone.center + spot.position;
+        }
+        zone.center = zone.center / static_cast<double>(scene_.welds.size());
+        scene_.interlocks.push_back(zone);
+    }
+    const std::vector<InterlockHit> hits = evaluateInterlocks(scene_);
+    scene_.notify(ChangeKind::Structure);
+    reload();
+    summary_->setText(trk("weld.interlockSummary").arg(static_cast<int>(hits.size())));
 }
 
 }  // namespace sim

@@ -12,6 +12,7 @@ add_library(sim_core
     src/Dxf.cpp
     src/DemoScene.cpp
     src/Weld.cpp
+    src/Envelope.cpp
     src/Pick.cpp
     src/I18n.cpp
 )

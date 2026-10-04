@@ -12,6 +12,7 @@
 #include "sim/app/MotionPanel.hpp"
 #include "sim/app/TaskPanels.hpp"
 #include "sim/app/WeldPanel.hpp"
+#include "sim/motion/Envelope.hpp"
 #include "sim/motion/WeldPlan.hpp"
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
@@ -1860,15 +1861,46 @@ void MainWindow::loadDemo(const QString& name) {
                     ++reachable;
                 }
             }
+            int envelopeSegments = 0;
+            if (robot != nullptr) {
+                std::vector<std::vector<double>> tourJoints;
+                for (const RobotPath& path : scene_.robotPaths) {
+                    if (path.name != "weld_tour") {
+                        continue;
+                    }
+                    for (const PathPoint& point : path.points) {
+                        if (!point.joints.empty()) {
+                            tourJoints.push_back(point.joints);
+                        }
+                    }
+                }
+                if (tourJoints.size() >= 2) {
+                    const MotionEnvelope envelope = buildTcpEnvelope(scene_, *robot, tourJoints, "weld_envelope", 45);
+                    envelopeSegments = static_cast<int>(envelope.nodes.size());
+                }
+                InterlockZone zone;
+                zone.name = "weld_cell";
+                zone.radius = 900;
+                zone.resources = {"kr420"};
+                for (const WeldSpot& spot : scene_.welds) {
+                    zone.center = zone.center + spot.position;
+                }
+                if (!scene_.welds.empty()) {
+                    zone.center = zone.center / static_cast<double>(scene_.welds.size());
+                }
+                scene_.interlocks = {zone};
+                evaluateInterlocks(scene_);
+            }
             const QString base = region.found ? QStringLiteral("底座 X %1…%2")
                                                     .arg(region.minX, 0, 'f', 0)
                                                     .arg(region.maxX, 0, 'f', 0)
                                               : QStringLiteral("底座未全覆盖");
-            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障路径 %4 点")
+            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 包络 %5 段")
                                       .arg(static_cast<int>(scene_.welds.size()))
                                       .arg(reachable)
                                       .arg(base)
-                                      .arg(tourPoints));
+                                      .arg(tourPoints)
+                                      .arg(envelopeSegments));
             applyTaskMode(3);
         } else {
             applyTaskMode(0);
