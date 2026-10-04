@@ -22,6 +22,16 @@ struct KinLink {
     // sits on a carriage this way: world = parent * mountRest.
     std::string mountedOn;
     Transform mountRest{};
+    // URDF inertial, kilograms and kilograms times square meters. Geometry stays millimeters.
+    bool hasInertia = false;
+    double mass = 0;
+    Vec3 com{0, 0, 0};
+    double ixx = 0;
+    double iyy = 0;
+    double izz = 0;
+    double ixy = 0;
+    double ixz = 0;
+    double iyz = 0;
 };
 
 struct KinJoint {
@@ -145,7 +155,7 @@ struct LogicCondition {
 };
 
 struct LogicAction {
-    // move_pose | jog | set_output | reset_output | wait
+    // move_pose | jog | set_output | reset_output | wait | wait_signal
     std::string kind = "wait";
     std::string resource;
     std::string pose;

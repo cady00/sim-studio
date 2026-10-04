@@ -16,6 +16,7 @@ layout(location = 4) in vec4 iM2;
 layout(location = 5) in vec4 iM3;
 layout(location = 6) in vec4 iColor;
 layout(location = 7) in float iOpacity;
+layout(location = 8) in vec2 iSurface;
 uniform mat4 uViewProj;
 uniform vec3 uEye;
 out vec3 vNormal;
@@ -23,6 +24,8 @@ out vec3 vWorld;
 out vec3 vColor;
 out float vHighlight;
 out float vOpacity;
+out float vMetallic;
+out float vRoughness;
 void main() {
     mat4 uModel = mat4(iM0, iM1, iM2, iM3);
     vec4 world = uModel * vec4(aPos, 1.0);
@@ -31,6 +34,8 @@ void main() {
     vColor = iColor.rgb;
     vHighlight = iColor.a;
     vOpacity = iOpacity;
+    vMetallic = iSurface.x;
+    vRoughness = iSurface.y;
     gl_Position = uViewProj * world;
 }
 )";
@@ -41,6 +46,8 @@ in vec3 vWorld;
 in vec3 vColor;
 in float vHighlight;
 in float vOpacity;
+in float vMetallic;
+in float vRoughness;
 uniform vec3 uEye;
 out vec4 fragColor;
 void main() {
@@ -49,8 +56,11 @@ void main() {
     vec3 lightB = normalize(vec3(-0.55, -0.15, 0.35));
     float diffuse = max(dot(n, lightA), 0.0) * 0.72 + max(dot(n, lightB), 0.0) * 0.22;
     vec3 viewDir = normalize(uEye - vWorld);
-    float spec = pow(max(dot(n, normalize(lightA + viewDir)), 0.0), 32.0) * 0.22;
-    vec3 color = vColor * (0.28 + diffuse) + vec3(spec);
+    float shininess = mix(48.0, 4.0, clamp(vRoughness, 0.0, 1.0));
+    float spec = pow(max(dot(n, normalize(lightA + viewDir)), 0.0), shininess) * mix(0.12, 0.85, clamp(vMetallic, 0.0, 1.0));
+    vec3 dielectric = vColor * (0.28 + diffuse);
+    vec3 metal = vColor * (0.08 + diffuse) + vColor * spec;
+    vec3 color = mix(dielectric, metal, clamp(vMetallic, 0.0, 1.0)) + vec3(spec * (1.0 - vMetallic));
     if (vHighlight > 0.5) {
         color = mix(color, vec3(0.239, 0.525, 0.910), 0.42);
     }
@@ -224,7 +234,7 @@ void OpenGLRenderer::beginFrame(const FrameParams& frame) {
 }
 
 void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>& instances, bool blend) {
-    const int count = static_cast<int>(instances.size() / 21);
+    const int count = static_cast<int>(instances.size() / 23);
     if (count <= 0 || meshProgram_ == 0 || instanceVbo_ == 0) {
         return;
     }
@@ -236,7 +246,7 @@ void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>
     glBindVertexArray(mesh.vao);
     glBindBuffer(GL_ARRAY_BUFFER, instanceVbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(instances.size() * sizeof(float)), instances.data(), GL_DYNAMIC_DRAW);
-    const int stride = 21 * static_cast<int>(sizeof(float));
+    const int stride = 23 * static_cast<int>(sizeof(float));
     for (int column = 0; column < 4; ++column) {
         const unsigned location = static_cast<unsigned>(2 + column);
         glEnableVertexAttribArray(location);
@@ -250,6 +260,9 @@ void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>
     glEnableVertexAttribArray(7);
     glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(static_cast<std::uintptr_t>(20 * sizeof(float))));
     glVertexAttribDivisor(7, 1);
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(static_cast<std::uintptr_t>(21 * sizeof(float))));
+    glVertexAttribDivisor(8, 1);
     glDrawElementsInstanced(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr, count);
     glBindVertexArray(0);
     if (blend) {
@@ -289,6 +302,8 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
         batch.push_back(static_cast<float>(instance.material.color.z));
         batch.push_back(instance.material.highlight);
         batch.push_back(instance.material.opacity);
+        batch.push_back(instance.material.metallic);
+        batch.push_back(instance.material.roughness);
     }
     float viewProj[16];
     toGl(frame_.viewProjection, viewProj);

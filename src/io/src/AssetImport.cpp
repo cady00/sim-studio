@@ -351,11 +351,11 @@ bool loadAccessor(const nlohmann::json& json, const std::vector<std::vector<std:
         return false;
     }
     const std::string type = accessor.value("type", std::string("SCALAR"));
-    components = type == "VEC3" ? 3 : type == "VEC2" ? 2 : type == "VEC4" ? 4 : 1;
+    components = type == "MAT4" ? 16 : type == "VEC4" ? 4 : type == "VEC3" ? 3 : type == "VEC2" ? 2 : 1;
     const int componentType = accessor.value("componentType", 5126);
     const int count = accessor.value("count", 0);
     std::size_t cursor = static_cast<std::size_t>(view.value("byteOffset", 0) + accessor.value("byteOffset", 0));
-    const int componentBytes = componentType == 5123 ? 2 : 4;
+    const int componentBytes = componentType == 5121 ? 1 : componentType == 5123 ? 2 : 4;
     const std::size_t stride = static_cast<std::size_t>(view.value("byteStride", componentBytes * components));
     const auto& buffer = buffers[static_cast<std::size_t>(bufferIndex)];
     values.clear();
@@ -379,8 +379,10 @@ bool loadAccessor(const nlohmann::json& json, const std::vector<std::vector<std:
                 std::uint16_t value = 0;
                 std::memcpy(&value, ptr, 2);
                 values.push_back(value);
+            } else if (componentType == 5121) {
+                values.push_back(ptr[0]);
             } else {
-                error = "gltf component type is not float or an index";
+                error = "gltf component type is not float, ushort, or ubyte";
                 return false;
             }
         }
@@ -398,6 +400,42 @@ AssetImportResult importGltfBytes(const nlohmann::json& json, const std::vector<
         return result;
     }
     auto mesh = std::make_shared<MeshData>();
+    Vec3 baseColor{0.55, 0.62, 0.74};
+    float metallic = 0;
+    float roughness = 1;
+    bool sawMaterial = false;
+    std::unordered_map<int, Mat4> nodeWorld;
+    if (json.contains("nodes")) {
+        const auto bake = [&](auto&& self, int nodeIndex, const Mat4& parent) -> void {
+            if (nodeIndex < 0 || nodeIndex >= static_cast<int>(json.at("nodes").size())) {
+                return;
+            }
+            const Mat4 world = mul(parent, gltfNodeMatrix(json.at("nodes").at(nodeIndex)));
+            nodeWorld[nodeIndex] = world;
+            const auto& node = json.at("nodes").at(nodeIndex);
+            if (node.contains("children")) {
+                for (const auto& child : node.at("children")) {
+                    self(self, child.get<int>(), world);
+                }
+            }
+        };
+        std::vector<int> bakedRoots;
+        if (json.contains("scenes")) {
+            const int sceneIndex = json.value("scene", 0);
+            if (sceneIndex >= 0 && sceneIndex < static_cast<int>(json.at("scenes").size()) &&
+                json.at("scenes").at(sceneIndex).contains("nodes")) {
+                for (const auto& node : json.at("scenes").at(sceneIndex).at("nodes")) {
+                    bakedRoots.push_back(node.get<int>());
+                }
+            }
+        }
+        if (bakedRoots.empty()) {
+            bakedRoots.push_back(0);
+        }
+        for (int root : bakedRoots) {
+            bake(bake, root, Mat4::identity());
+        }
+    }
     const auto visit = [&](auto&& self, int nodeIndex, const Mat4& parent) -> void {
         if (!json.contains("nodes") || nodeIndex < 0 || nodeIndex >= static_cast<int>(json.at("nodes").size())) {
             return;
@@ -423,11 +461,75 @@ AssetImportResult importGltfBytes(const nlohmann::json& json, const std::vector<
                 int indexComponents = 0;
                 const bool indexed = primitive.contains("indices") &&
                                      loadAccessor(json, buffers, primitive.at("indices").get<int>(), indices, indexComponents, error);
+                std::vector<double> joints;
+                std::vector<double> weights;
+                std::vector<double> inverseBind;
+                std::vector<int> jointNodes;
+                int jointComponents = 0;
+                int weightComponents = 0;
+                int bindComponents = 0;
+                const int skinIndex = node.value("skin", -1);
+                const bool skinned = skinIndex >= 0 && json.contains("skins") && skinIndex < static_cast<int>(json.at("skins").size()) &&
+                                     primitive.at("attributes").contains("JOINTS_0") && primitive.at("attributes").contains("WEIGHTS_0");
+                if (skinned) {
+                    const auto& skin = json.at("skins").at(skinIndex);
+                    if (skin.contains("joints")) {
+                        for (const auto& joint : skin.at("joints")) {
+                            jointNodes.push_back(joint.get<int>());
+                        }
+                    }
+                    if (skin.contains("inverseBindMatrices")) {
+                        loadAccessor(json, buffers, skin.at("inverseBindMatrices").get<int>(), inverseBind, bindComponents, error);
+                    }
+                    loadAccessor(json, buffers, primitive.at("attributes").at("JOINTS_0").get<int>(), joints, jointComponents, error);
+                    loadAccessor(json, buffers, primitive.at("attributes").at("WEIGHTS_0").get<int>(), weights, weightComponents, error);
+                }
+                if (primitive.contains("material") && json.contains("materials")) {
+                    const int materialIndex = primitive.at("material").get<int>();
+                    if (materialIndex >= 0 && materialIndex < static_cast<int>(json.at("materials").size())) {
+                        const auto& material = json.at("materials").at(materialIndex);
+                        if (material.contains("pbrMetallicRoughness")) {
+                            const auto& pbr = material.at("pbrMetallicRoughness");
+                            if (pbr.contains("baseColorFactor") && pbr.at("baseColorFactor").size() >= 3) {
+                                baseColor = {pbr.at("baseColorFactor")[0].get<double>(), pbr.at("baseColorFactor")[1].get<double>(),
+                                             pbr.at("baseColorFactor")[2].get<double>()};
+                            }
+                            metallic = static_cast<float>(pbr.value("metallicFactor", 0.0));
+                            roughness = static_cast<float>(pbr.value("roughnessFactor", 1.0));
+                            sawMaterial = true;
+                        }
+                    }
+                }
                 const auto pointAt = [&](int vertex) {
                     const std::size_t base = static_cast<std::size_t>(vertex) * 3;
                     Vec3 point{positions[base], positions[base + 1], positions[base + 2]};
-                    point = transformPoint(world, point) * 1000.0;
-                    return point;
+                    if (skinned && jointComponents >= 4 && weightComponents >= 4 &&
+                        static_cast<int>(joints.size()) >= (vertex + 1) * jointComponents &&
+                        static_cast<int>(weights.size()) >= (vertex + 1) * weightComponents) {
+                        Vec3 skinnedPoint;
+                        const std::size_t jbase = static_cast<std::size_t>(vertex * jointComponents);
+                        const std::size_t wbase = static_cast<std::size_t>(vertex * weightComponents);
+                        for (int influence = 0; influence < 4; ++influence) {
+                            const double weight = weights[wbase + static_cast<std::size_t>(influence)];
+                            const int joint = static_cast<int>(joints[jbase + static_cast<std::size_t>(influence)]);
+                            if (weight <= 1e-8 || joint < 0 || joint >= static_cast<int>(jointNodes.size())) {
+                                continue;
+                            }
+                            Mat4 bind = Mat4::identity();
+                            if (bindComponents == 16 &&
+                                static_cast<int>(inverseBind.size()) >= (joint + 1) * 16) {
+                                for (int element = 0; element < 16; ++element) {
+                                    bind.m[element] = inverseBind[static_cast<std::size_t>(joint * 16 + element)];
+                                }
+                            }
+                            const int jointNode = jointNodes[static_cast<std::size_t>(joint)];
+                            const auto posed = nodeWorld.find(jointNode);
+                            const Mat4 jointMatrix = posed == nodeWorld.end() ? Mat4::identity() : posed->second;
+                            skinnedPoint = skinnedPoint + transformPoint(mul(jointMatrix, bind), point) * weight;
+                        }
+                        return skinnedPoint * 1000.0;
+                    }
+                    return transformPoint(world, point) * 1000.0;
                 };
                 if (indexed) {
                     for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
@@ -464,7 +566,15 @@ AssetImportResult importGltfBytes(const nlohmann::json& json, const std::vector<
     for (int root : roots) {
         visit(visit, root, Mat4::identity());
     }
-    return adoptMesh(scene, mesh, "gltf", "gltf");
+    const int childCount = scene.root() ? static_cast<int>(scene.root()->children.size()) : 0;
+    AssetImportResult imported = adoptMesh(scene, mesh, "gltf", "gltf");
+    if (imported.ok && sawMaterial && scene.root() && static_cast<int>(scene.root()->children.size()) > childCount) {
+        auto node = scene.root()->children.back();
+        node->color = baseColor;
+        node->metallic = metallic;
+        node->roughness = roughness;
+    }
+    return imported;
 }
 
 AssetImportResult importGltfFile(const std::string& path, Scene& scene) {
@@ -557,7 +667,44 @@ const XmlNode* childNamed(const XmlNode& node, const std::string& name) {
     return nullptr;
 }
 
-AssetImportResult importUrdfText(const std::string& text, Scene& scene) {
+void scalePositions(MeshData& mesh, double factor) {
+    for (float& value : mesh.positions) {
+        value = static_cast<float>(value * factor);
+    }
+    mesh.recomputeBounds();
+}
+
+std::shared_ptr<MeshData> meshFromUrdfFile(const std::string& path, double scale, std::string& error) {
+    const std::string ext = extensionOf(path);
+    if (ext == "stl") {
+        const std::string bytes = readFile(path, error);
+        if (!error.empty()) {
+            return {};
+        }
+        auto mesh = meshFromStl(bytes, error);
+        if (mesh) {
+            scalePositions(*mesh, scale);
+        }
+        return mesh;
+    }
+    if (ext == "obj") {
+        Scene side;
+        ObjImporter importer;
+        const ImportResult imported = importer.importFile(path, side);
+        if (!imported.ok || side.meshes().empty()) {
+            error = imported.message.empty() ? "urdf mesh was not read" : imported.message;
+            return {};
+        }
+        auto mesh = std::make_shared<MeshData>(*side.meshes().begin()->second);
+        scalePositions(*mesh, scale);
+        error.clear();
+        return mesh;
+    }
+    error = "urdf mesh needs an stl or obj file";
+    return {};
+}
+
+AssetImportResult importUrdfText(const std::string& text, Scene& scene, const std::string& baseDir) {
     AssetImportResult result;
     result.format = "urdf";
     XmlNode root;
@@ -607,28 +754,100 @@ AssetImportResult importUrdfText(const std::string& text, Scene& scene) {
         }
         const std::string name = element.attributes.count("name") ? element.attributes.at("name") : "link";
         auto node = linkOf(name);
+        if (const XmlNode* inertial = childNamed(element, "inertial")) {
+            for (KinLink& link : resource.links) {
+                if (link.name != name) {
+                    continue;
+                }
+                link.hasInertia = true;
+                if (const XmlNode* mass = childNamed(*inertial, "mass")) {
+                    if (mass->attributes.count("value")) {
+                        link.mass = std::stod(mass->attributes.at("value"));
+                    }
+                }
+                if (const XmlNode* origin = childNamed(*inertial, "origin")) {
+                    if (origin->attributes.count("xyz")) {
+                        const std::vector<double> xyz = splitNumbers(origin->attributes.at("xyz"));
+                        if (xyz.size() >= 3) {
+                            link.com = {xyz[0], xyz[1], xyz[2]};
+                        }
+                    }
+                }
+                if (const XmlNode* inertia = childNamed(*inertial, "inertia")) {
+                    auto coeff = [&](const char* key) {
+                        return inertia->attributes.count(key) ? std::stod(inertia->attributes.at(key)) : 0.0;
+                    };
+                    link.ixx = coeff("ixx");
+                    link.iyy = coeff("iyy");
+                    link.izz = coeff("izz");
+                    link.ixy = coeff("ixy");
+                    link.ixz = coeff("ixz");
+                    link.iyz = coeff("iyz");
+                }
+            }
+        }
         const XmlNode* visual = childNamed(element, "visual");
         const XmlNode* geometry = visual == nullptr ? nullptr : childNamed(*visual, "geometry");
-        const XmlNode* box = geometry == nullptr ? nullptr : childNamed(*geometry, "box");
-        if (box == nullptr || !box->attributes.count("size")) {
+        if (geometry == nullptr) {
             continue;
         }
-        const std::vector<double> size = splitNumbers(box->attributes.at("size"));
-        if (size.size() < 3) {
+        std::shared_ptr<MeshData> mesh;
+        std::string meshError;
+        if (const XmlNode* box = childNamed(*geometry, "box")) {
+            if (box->attributes.count("size")) {
+                const std::vector<double> size = splitNumbers(box->attributes.at("size"));
+                if (size.size() >= 3) {
+                    mesh = makeBoxMesh({size[0] * 500.0, size[1] * 500.0, size[2] * 500.0});
+                }
+            }
+        } else if (const XmlNode* cylinder = childNamed(*geometry, "cylinder")) {
+            const double radius = cylinder->attributes.count("radius") ? std::stod(cylinder->attributes.at("radius")) : 0;
+            const double length = cylinder->attributes.count("length") ? std::stod(cylinder->attributes.at("length")) : 0;
+            if (radius > 0 && length > 0) {
+                mesh = makeCylinderMesh(radius * 1000.0, length * 500.0, 16);
+            }
+        } else if (const XmlNode* sphere = childNamed(*geometry, "sphere")) {
+            const double radius = sphere->attributes.count("radius") ? std::stod(sphere->attributes.at("radius")) : 0;
+            if (radius > 0) {
+                mesh = makeSphereMesh(radius * 1000.0, 12);
+            }
+        } else if (const XmlNode* file = childNamed(*geometry, "mesh")) {
+            std::string filename = file->attributes.count("filename") ? file->attributes.at("filename") : "";
+            double scale = 1000.0;
+            if (file->attributes.count("scale")) {
+                const std::vector<double> values = splitNumbers(file->attributes.at("scale"));
+                if (!values.empty()) {
+                    scale *= values.front();
+                }
+            }
+            if (filename.rfind("package://", 0) == 0) {
+                meshError = "package URI is not resolved";
+            } else if (!filename.empty()) {
+                const bool absolute = !filename.empty() && (filename[0] == '/' || (filename.size() > 2 && filename[1] == ':'));
+                const std::string path = absolute ? filename : baseDir + filename;
+                mesh = meshFromUrdfFile(path, scale, meshError);
+            }
+        }
+        if (!mesh || mesh->empty()) {
+            if (!meshError.empty()) {
+                result.message += meshError + "; ";
+            }
             continue;
         }
-        const Vec3 half{size[0] * 500.0, size[1] * 500.0, size[2] * 500.0};
-        auto mesh = makeBoxMesh(half);
         auto visualNode = scene.makeNode(NodeKind::Part, name + "_visual");
         visualNode->meshId = scene.addMesh(mesh);
         visualNode->color = {0.45, 0.62, 0.84};
-        if (visual != nullptr) {
-            if (const XmlNode* origin = childNamed(*visual, "origin")) {
-                if (origin->attributes.count("xyz")) {
-                    const std::vector<double> xyz = splitNumbers(origin->attributes.at("xyz"));
-                    if (xyz.size() >= 3) {
-                        visualNode->local.translation = {xyz[0] * 1000.0, xyz[1] * 1000.0, xyz[2] * 1000.0};
-                    }
+        if (const XmlNode* origin = childNamed(*visual, "origin")) {
+            if (origin->attributes.count("xyz")) {
+                const std::vector<double> xyz = splitNumbers(origin->attributes.at("xyz"));
+                if (xyz.size() >= 3) {
+                    visualNode->local.translation = {xyz[0] * 1000.0, xyz[1] * 1000.0, xyz[2] * 1000.0};
+                }
+            }
+            if (origin->attributes.count("rpy")) {
+                const std::vector<double> rpy = splitNumbers(origin->attributes.at("rpy"));
+                if (rpy.size() >= 3) {
+                    visualNode->local.rotation = Quat::fromEulerXYZ(rpy[0], rpy[1], rpy[2]);
                 }
             }
         }
@@ -823,7 +1042,9 @@ public:
             result.message = error;
             return result;
         }
-        return importUrdfText(bytes, scene);
+        const auto slash = path.find_last_of("/\\");
+        const std::string base = slash == std::string::npos ? std::string{} : path.substr(0, slash + 1);
+        return importUrdfText(bytes, scene, base);
     }
 };
 
@@ -887,7 +1108,9 @@ public:
             return result;
         }
         if (bytes.find("<robot") != std::string::npos) {
-            return importUrdfText(bytes, scene);
+            const auto slash = path.find_last_of("/\\");
+            const std::string base = slash == std::string::npos ? std::string{} : path.substr(0, slash + 1);
+            return importUrdfText(bytes, scene, base);
         }
         const EmsImportResult imported = importEmsXml(path, scene);
         result.ok = imported.ok;

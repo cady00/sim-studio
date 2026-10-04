@@ -434,7 +434,7 @@ EOF
     addOp("load", "上料", "line", OpKind::Task, 0, "st_load", 8, "", "load_seq");
     addOp("weld", "焊接", "line", OpKind::Task, 1, "st_weld", 12, "cycle", "weld_seq");
     addOp("branch", "检查并行", "line", OpKind::Parallel, 2, "", 0, "", "");
-    addOp("inspect", "检查", "branch", OpKind::Task, 0, "st_inspect", 6, "", "");
+    addOp("inspect", "检查", "branch", OpKind::Task, 0, "st_inspect", 6, "", "inspect_seq");
     addOp("prep", "夹具准备", "branch", OpKind::Task, 1, "st_inspect", 4, "", "");
     addOp("unload", "下料", "line", OpKind::Task, 3, "st_unload", 5, "", "");
     for (Operation& operation : scene.operations) {
@@ -448,6 +448,12 @@ EOF
         pad->mech.speed = 250;
         pad->mech.direction = {1, 0, 0};
     }
+    Mech eye;
+    eye.kind = MechKind::CollisionSensor;
+    eye.motion = BodyMotion::Anchored;
+    eye.halfExtents = {40, 80, 40};
+    eye.signal = "part_seen";
+    addBox(scene, "InspectEye", eye.halfExtents, {5000, 0, 140}, {0.95, 0.72, 0.28}, eye);
 
     ProductNode product;
     product.id = "prod_bracket";
@@ -505,6 +511,15 @@ EOF
     loadStep.actions.push_back(wait);
     load.steps.push_back(std::move(loadStep));
     scene.logicBlocks.push_back(std::move(load));
+    LogicBlock inspect;
+    inspect.name = "inspect_seq";
+    LogicAction seen;
+    seen.kind = "wait_signal";
+    seen.signal = "part_seen";
+    LogicStep inspectStep;
+    inspectStep.actions.push_back(seen);
+    inspect.steps.push_back(std::move(inspectStep));
+    scene.logicBlocks.push_back(std::move(inspect));
     scene.markClean();
 }
 

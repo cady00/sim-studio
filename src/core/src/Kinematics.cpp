@@ -155,10 +155,16 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
                      {"tcp", vec3ToJson(resource.scara.tcp)}};
     json["links"] = nlohmann::json::array();
     for (const KinLink& link : resource.links) {
-        json["links"].push_back({{"name", link.name},
-                                 {"node", link.nodeId},
-                                 {"mountedOn", link.mountedOn},
-                                 {"mount", transformToJson(link.mountRest)}});
+        nlohmann::json item = {{"name", link.name},
+                               {"node", link.nodeId},
+                               {"mountedOn", link.mountedOn},
+                               {"mount", transformToJson(link.mountRest)}};
+        if (link.hasInertia) {
+            item["mass"] = link.mass;
+            item["com"] = vec3ToJson(link.com);
+            item["inertia"] = {link.ixx, link.iyy, link.izz, link.ixy, link.ixz, link.iyz};
+        }
+        json["links"].push_back(std::move(item));
     }
     json["joints"] = nlohmann::json::array();
     for (const KinJoint& joint : resource.joints) {
@@ -242,6 +248,21 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
             link.mountedOn = item.value("mountedOn", std::string{});
             if (item.contains("mount")) {
                 link.mountRest = transformFromJson(item.at("mount"));
+            }
+            if (item.contains("mass")) {
+                link.hasInertia = true;
+                link.mass = item.value("mass", 0.0);
+                if (item.contains("com")) {
+                    link.com = vec3FromJson(item.at("com"));
+                }
+                if (item.contains("inertia") && item.at("inertia").is_array() && item.at("inertia").size() >= 6) {
+                    link.ixx = item.at("inertia")[0].get<double>();
+                    link.iyy = item.at("inertia")[1].get<double>();
+                    link.izz = item.at("inertia")[2].get<double>();
+                    link.ixy = item.at("inertia")[3].get<double>();
+                    link.ixz = item.at("inertia")[4].get<double>();
+                    link.iyz = item.at("inertia")[5].get<double>();
+                }
             }
             if (!link.name.empty()) {
                 resource.links.push_back(std::move(link));

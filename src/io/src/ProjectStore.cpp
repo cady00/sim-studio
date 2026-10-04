@@ -102,6 +102,8 @@ nlohmann::json writeNode(const SceneNode& node) {
     json["kind"] = nodeKindName(node.kind);
     json["visible"] = node.visible;
     json["color"] = {node.color.x, node.color.y, node.color.z};
+    json["metallic"] = node.metallic;
+    json["roughness"] = node.roughness;
     json["transform"] = {
         {"translation", {node.local.translation.x, node.local.translation.y, node.local.translation.z}},
         {"rotation", {node.local.rotation.w, node.local.rotation.x, node.local.rotation.y, node.local.rotation.z}},
@@ -150,6 +152,8 @@ std::shared_ptr<SceneNode> readNode(const nlohmann::json& json, std::string& err
         node->color = {json.at("color")[0].get<double>(), json.at("color")[1].get<double>(),
                        json.at("color")[2].get<double>()};
     }
+    node->metallic = static_cast<float>(json.value("metallic", 0.0));
+    node->roughness = static_cast<float>(json.value("roughness", 1.0));
     if (json.contains("transform")) {
         const auto& transform = json.at("transform");
         const auto& translation = transform.at("translation");

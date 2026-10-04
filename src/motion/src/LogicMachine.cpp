@@ -143,12 +143,24 @@ void LogicMachine::step(Scene& scene, double dt) {
         }
         Run& run = *existing;
         if (run.waiting) {
-            run.waitLeft -= dt;
-            if (run.waitLeft > 0) {
-                continue;
+            if (run.waitSignal) {
+                bool isBool = false;
+                bool flag = false;
+                signalNumber(scene, block, run.signal, isBool, flag);
+                if (!flag) {
+                    continue;
+                }
+                run.waiting = false;
+                run.waitSignal = false;
+                ++run.action;
+            } else {
+                run.waitLeft -= dt;
+                if (run.waitLeft > 0) {
+                    continue;
+                }
+                run.waiting = false;
+                ++run.action;
             }
-            run.waiting = false;
-            ++run.action;
         } else if (run.move.active) {
             KinematicResource* resource = findResource(scene.resources, block.resource);
             if (resource == nullptr) {
@@ -201,7 +213,14 @@ void LogicMachine::step(Scene& scene, double dt) {
             }
             if (action.kind == "wait") {
                 run.waiting = true;
+                run.waitSignal = false;
                 run.waitLeft = action.seconds;
+                break;
+            }
+            if (action.kind == "wait_signal") {
+                run.waiting = true;
+                run.waitSignal = true;
+                run.signal = action.signal;
                 break;
             }
             const std::string& resourceName = action.resource.empty() ? block.resource : action.resource;
@@ -236,7 +255,7 @@ void LogicMachine::step(Scene& scene, double dt) {
             run.finished = true;
             break;
         }
-        if (run.step >= block.steps.size() && !run.waiting && !run.jogging && !run.move.active) {
+        if (run.step >= block.steps.size() && !run.waiting && !run.jogging && !run.move.active && !run.waitSignal) {
             run.finished = true;
             run.active = false;
         }

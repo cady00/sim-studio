@@ -40,6 +40,9 @@ struct SceneNode {
     Transform local;
     std::string meshId;
     Vec3 color{0.55, 0.58, 0.66};
+    // glTF pbrMetallicRoughness. 0 metal and 1 rough is a plain painted part.
+    float metallic = 0;
+    float roughness = 1;
     bool visible = true;
     // Extracted at STEP import. Empty for boxes and meshes that were not exploded from B-rep.
     std::vector<FaceAxis> faceAxes;

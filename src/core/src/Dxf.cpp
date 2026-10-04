@@ -271,8 +271,18 @@ DxfResult parseDxf(const std::string& text, double mmPerUnit) {
         std::string name;
         std::vector<double> x;
         std::vector<double> y;
+        std::vector<double> z;
         std::vector<double> x2;
         std::vector<double> y2;
+        std::vector<double> z2;
+        std::vector<double> x3;
+        std::vector<double> y3;
+        std::vector<double> z3;
+        std::vector<double> x4;
+        std::vector<double> y4;
+        std::vector<double> z4;
+        std::vector<double> x5;
+        std::vector<double> y5;
         std::vector<double> knots;
         double radius = 0;
         double startAngle = 0;
@@ -314,6 +324,67 @@ DxfResult parseDxf(const std::string& text, double mmPerUnit) {
                    current.layer);
         } else if (current.type == "SPLINE") {
             addSpline(local, current.x, current.y, current.degree, scale, current.layer);
+        } else if (current.type == "ELLIPSE" && !current.x.empty() && !current.y.empty() && !current.x2.empty() && !current.y2.empty()) {
+            const Vec3 center{current.x.front(), current.y.front(), current.z.empty() ? 0 : current.z.front()};
+            const Vec3 major{current.x2.front(), current.y2.front(), 0};
+            const double majorLen = length(major);
+            const double ratio = current.radius > 1e-9 ? current.radius : 1;
+            if (majorLen > 1e-9 && ratio > 0) {
+                const Vec3 majorDir = major * (1.0 / majorLen);
+                const Vec3 minorDir{-majorDir.y, majorDir.x, 0};
+                double a0 = current.startAngle;
+                double a1 = current.endAngle == 0 && current.startAngle == 0 ? 2.0 * kPi : current.endAngle;
+                if (a1 <= a0) {
+                    a1 += 2.0 * kPi;
+                }
+                const int steps = std::max(12, static_cast<int>(std::ceil((a1 - a0) / (kPi / 12.0))));
+                auto at = [&](double angle) {
+                    return Vec3{(center.x + majorDir.x * majorLen * std::cos(angle) + minorDir.x * majorLen * ratio * std::sin(angle)) * scale,
+                                (center.y + majorDir.y * majorLen * std::cos(angle) + minorDir.y * majorLen * ratio * std::sin(angle)) * scale,
+                                center.z * scale};
+                };
+                Vec3 previous = at(a0);
+                for (int step = 1; step <= steps; ++step) {
+                    const Vec3 next = at(a0 + (a1 - a0) * step / steps);
+                    pushSegment(local, previous, next, current.layer);
+                    previous = next;
+                }
+            }
+        } else if (current.type == "3DFACE") {
+            auto coord = [](const std::vector<double>& values, std::size_t index) {
+                return index < values.size() ? values[index] : 0.0;
+            };
+            const Vec3 points[4] = {
+                {coord(current.x, 0) * scale, coord(current.y, 0) * scale, coord(current.z, 0) * scale},
+                {coord(current.x2, 0) * scale, coord(current.y2, 0) * scale, coord(current.z2, 0) * scale},
+                {coord(current.x3, 0) * scale, coord(current.y3, 0) * scale, coord(current.z3, 0) * scale},
+                {coord(current.x4, 0) * scale, coord(current.y4, 0) * scale, coord(current.z4, 0) * scale},
+            };
+            const bool triangle = length(points[3] - points[2]) < 1e-6;
+            const int edges = triangle ? 3 : 4;
+            for (int edge = 0; edge < edges; ++edge) {
+                pushSegment(local, points[edge], points[(edge + 1) % edges], current.layer);
+            }
+        } else if (current.type == "HATCH") {
+            const std::size_t n = std::min(current.x.size(), current.y.size());
+            for (std::size_t i = 1; i < n; ++i) {
+                pushSegment(local, {current.x[i - 1] * scale, current.y[i - 1] * scale, 0},
+                            {current.x[i] * scale, current.y[i] * scale, 0}, current.layer);
+            }
+            if (n >= 3) {
+                pushSegment(local, {current.x[n - 1] * scale, current.y[n - 1] * scale, 0},
+                            {current.x.front() * scale, current.y.front() * scale, 0}, current.layer);
+            }
+        } else if (current.type == "DIMENSION") {
+            auto coord = [](const std::vector<double>& values) { return values.empty() ? 0.0 : values.front(); };
+            if (!current.x4.empty() && !current.x5.empty()) {
+                pushSegment(local, {coord(current.x4) * scale, coord(current.y4) * scale, coord(current.z4) * scale},
+                            {coord(current.x5) * scale, coord(current.y5) * scale, 0}, current.layer);
+            }
+            if (!current.x.empty() && !current.x2.empty()) {
+                pushSegment(local, {coord(current.x) * scale, coord(current.y) * scale, coord(current.z) * scale},
+                            {coord(current.x2) * scale, coord(current.y2) * scale, coord(current.z2) * scale}, current.layer);
+            }
         } else if (current.type == "INSERT" && !current.name.empty()) {
             const Block* block = nullptr;
             for (const Block& candidate : blocks) {
@@ -414,17 +485,45 @@ DxfResult parseDxf(const std::string& text, double mmPerUnit) {
                 current.x.push_back(std::stod(group.value));
             } else if (group.code == 20) {
                 current.y.push_back(std::stod(group.value));
+            } else if (group.code == 30) {
+                current.z.push_back(std::stod(group.value));
             } else if (group.code == 11) {
                 current.x2.push_back(std::stod(group.value));
             } else if (group.code == 21) {
                 current.y2.push_back(std::stod(group.value));
+            } else if (group.code == 31) {
+                current.z2.push_back(std::stod(group.value));
+            } else if (group.code == 12) {
+                current.x3.push_back(std::stod(group.value));
+            } else if (group.code == 22) {
+                current.y3.push_back(std::stod(group.value));
+            } else if (group.code == 32) {
+                current.z3.push_back(std::stod(group.value));
+            } else if (group.code == 13) {
+                current.x4.push_back(std::stod(group.value));
+            } else if (group.code == 23) {
+                current.y4.push_back(std::stod(group.value));
+            } else if (group.code == 33) {
+                current.z4.push_back(std::stod(group.value));
+            } else if (group.code == 14) {
+                current.x5.push_back(std::stod(group.value));
+            } else if (group.code == 24) {
+                current.y5.push_back(std::stod(group.value));
             } else if (group.code == 40) {
                 current.radius = std::stod(group.value);
                 current.knots.push_back(current.radius);
             } else if (group.code == 41) {
-                current.sx = std::stod(group.value);
+                if (current.type == "ELLIPSE") {
+                    current.startAngle = std::stod(group.value);
+                } else {
+                    current.sx = std::stod(group.value);
+                }
             } else if (group.code == 42) {
-                current.sy = std::stod(group.value);
+                if (current.type == "ELLIPSE") {
+                    current.endAngle = std::stod(group.value);
+                } else {
+                    current.sy = std::stod(group.value);
+                }
             } else if (group.code == 50) {
                 current.startAngle = std::stod(group.value);
                 current.rotation = current.startAngle;

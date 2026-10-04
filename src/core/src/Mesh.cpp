@@ -48,6 +48,57 @@ std::shared_ptr<MeshData> makeBoxMesh(Vec3 halfExtents) {
     return mesh;
 }
 
+std::shared_ptr<MeshData> makeCylinderMesh(double radius, double halfHeight, int segments) {
+    auto mesh = std::make_shared<MeshData>();
+    const int sides = std::max(3, segments);
+    const double r = std::max(radius, 1e-6);
+    const double h = std::max(halfHeight, 1e-6);
+    for (int i = 0; i < sides; ++i) {
+        const double a0 = 2.0 * kPi * i / sides;
+        const double a1 = 2.0 * kPi * (i + 1) / sides;
+        const Vec3 p0{r * std::cos(a0), r * std::sin(a0), -h};
+        const Vec3 p1{r * std::cos(a1), r * std::sin(a1), -h};
+        const Vec3 p2{r * std::cos(a1), r * std::sin(a1), h};
+        const Vec3 p3{r * std::cos(a0), r * std::sin(a0), h};
+        addQuad(*mesh, p0, p1, p2, p3);
+        addQuad(*mesh, {0, 0, -h}, p1, p0, {0, 0, -h});
+        addQuad(*mesh, {0, 0, h}, p3, p2, {0, 0, h});
+    }
+    mesh->recomputeBounds();
+    return mesh;
+}
+
+std::shared_ptr<MeshData> makeSphereMesh(double radius, int segments) {
+    auto mesh = std::make_shared<MeshData>();
+    const int slices = std::max(3, segments);
+    const int stacks = std::max(2, segments / 2);
+    const double r = std::max(radius, 1e-6);
+    for (int stack = 0; stack < stacks; ++stack) {
+        const double v0 = kPi * stack / stacks;
+        const double v1 = kPi * (stack + 1) / stacks;
+        for (int slice = 0; slice < slices; ++slice) {
+            const double u0 = 2.0 * kPi * slice / slices;
+            const double u1 = 2.0 * kPi * (slice + 1) / slices;
+            auto at = [&](double u, double v) {
+                return Vec3{r * std::sin(v) * std::cos(u), r * std::sin(v) * std::sin(u), r * std::cos(v)};
+            };
+            const Vec3 a = at(u0, v0);
+            const Vec3 b = at(u1, v0);
+            const Vec3 c = at(u1, v1);
+            const Vec3 d = at(u0, v1);
+            if (stack == 0) {
+                addQuad(*mesh, a, c, d, a);
+            } else if (stack + 1 == stacks) {
+                addQuad(*mesh, a, b, c, a);
+            } else {
+                addQuad(*mesh, a, b, c, d);
+            }
+        }
+    }
+    mesh->recomputeBounds();
+    return mesh;
+}
+
 std::shared_ptr<MeshData> makeTriangleGrid(int triangles, double size) {
     const int count = std::max(2, triangles + (triangles % 2));
     const int quads = count / 2;

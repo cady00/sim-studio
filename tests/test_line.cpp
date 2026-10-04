@@ -8,6 +8,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -460,4 +461,123 @@ EOF
     REQUIRE(binaryResult.lines.size() == 1);
     REQUIRE(binaryResult.layers.front() == "Bin");
     REQUIRE(binaryResult.lines.front().second.x == Approx(25));
+
+    const char* extra = R"(0
+SECTION
+2
+ENTITIES
+0
+3DFACE
+8
+Solid
+10
+0
+20
+0
+30
+0
+11
+10
+21
+0
+31
+5
+12
+10
+22
+10
+32
+5
+13
+0
+23
+10
+33
+0
+0
+ELLIPSE
+8
+Solid
+10
+0
+20
+0
+11
+20
+21
+0
+40
+0.5
+41
+0
+42
+6.283185
+0
+HATCH
+8
+Fill
+93
+3
+10
+0
+20
+0
+10
+30
+20
+0
+10
+30
+20
+15
+0
+DIMENSION
+8
+Notes
+10
+0
+20
+5
+11
+15
+21
+5
+13
+0
+23
+0
+14
+40
+24
+0
+0
+ENDSEC
+0
+EOF
+)";
+    const sim::DxfResult drawn = sim::parseDxf(extra, 1);
+    REQUIRE(drawn.ok);
+    bool sawHeight = false;
+    bool sawSpan = false;
+    int solid = 0;
+    int fill = 0;
+    int notes = 0;
+    for (std::size_t i = 0; i < drawn.lines.size(); ++i) {
+        const std::string layer = i < drawn.layers.size() ? drawn.layers[i] : "";
+        solid += layer == "Solid" ? 1 : 0;
+        fill += layer == "Fill" ? 1 : 0;
+        notes += layer == "Notes" ? 1 : 0;
+        if (std::abs(drawn.lines[i].first.z) > 1 || std::abs(drawn.lines[i].second.z) > 1) {
+            sawHeight = true;
+        }
+        const double span = std::abs(drawn.lines[i].second.x - drawn.lines[i].first.x);
+        if (layer == "Notes" && span > 30) {
+            sawSpan = true;
+        }
+    }
+    REQUIRE(solid > 8);
+    REQUIRE(fill >= 3);
+    REQUIRE(notes >= 1);
+    REQUIRE(sawHeight);
+    REQUIRE(sawSpan);
 }

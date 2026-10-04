@@ -23,6 +23,8 @@ struct RenderMaterial {
     float highlight = 0;
     // 1 is opaque. Below 1 the backend blends and skips the depth write.
     float opacity = 1;
+    float metallic = 0;
+    float roughness = 1;
 };
 
 struct RenderInstance {

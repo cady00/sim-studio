@@ -324,6 +324,8 @@ void ViewportWidget::paintGL() {
             instance.world = world;
             instance.material.color = node->color;
             instance.material.highlight = selectedBranch(*node, *scene_) ? 1.0f : 0.0f;
+            instance.material.metallic = node->metallic;
+            instance.material.roughness = node->roughness;
             instance.worldBounds = bounds;
             instance.distanceMm = distance;
             instance.lodLevels = 1;

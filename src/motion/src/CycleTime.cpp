@@ -86,6 +86,83 @@ bool measureConveyor(double speed, Vec3 direction, double travel, double& second
     return false;
 }
 
+const LogicAction* signalWait(const LogicBlock& block) {
+    for (const LogicStep& step : block.steps) {
+        for (const LogicAction& action : step.actions) {
+            if (action.kind == "wait_signal" && !action.signal.empty()) {
+                return &action;
+            }
+        }
+    }
+    return nullptr;
+}
+
+bool measureNamedSensor(const Scene& source, const std::string& signal, double& seconds, std::string& note) {
+    const SceneNode* sensor = nullptr;
+    std::vector<std::shared_ptr<SceneNode>> stack{source.root()};
+    while (!stack.empty()) {
+        auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+        const bool sensing = node->mech.kind == MechKind::CollisionSensor || node->mech.kind == MechKind::LightBarrier ||
+                             node->mech.kind == MechKind::DistanceSensor;
+        if (sensing && (node->mech.signal == signal || node->name == signal)) {
+            sensor = node.get();
+        }
+    }
+    if (sensor == nullptr) {
+        note = "sensor missing";
+        return false;
+    }
+    Scene world;
+    auto eye = world.makeNode(NodeKind::Part, "eye");
+    eye->mech = sensor->mech;
+    eye->mech.signal = signal;
+    eye->mech.motion = BodyMotion::Anchored;
+    world.addChild(world.root(), eye);
+    auto box = world.makeNode(NodeKind::Part, "part");
+    box->mech.kind = MechKind::Rigid;
+    box->mech.kinematic = true;
+    box->mech.halfExtents = {30, 30, 30};
+    const double reach = sensor->mech.kind == MechKind::CollisionSensor
+                             ? std::max(sensor->mech.halfExtents.x, 20.0) + box->mech.halfExtents.x
+                             : std::max(sensor->mech.range, 80.0);
+    const double approach = reach + 160.0;
+    const double speed = 400.0;
+    Vec3 axis = length(sensor->mech.axis) > 1e-8 ? normalize(sensor->mech.axis) : Vec3{1, 0, 0};
+    if (sensor->mech.kind == MechKind::CollisionSensor) {
+        axis = {1, 0, 0};
+    }
+    box->local.translation = axis * -approach;
+    world.addChild(world.root(), box);
+    auto engine = createPhysicsEngine(PhysicsBackend::Builtin);
+    std::string error;
+    if (!engine->build(world, error)) {
+        note = error.empty() ? "sensor world was not built" : error;
+        return false;
+    }
+    const double dt = Simulation::kFixedDt;
+    double elapsed = 0;
+    const double cap = std::max(0.2, approach / speed * 4.0);
+    while (elapsed < cap) {
+        box->local.translation = box->local.translation + axis * (speed * dt);
+        engine->step(dt);
+        elapsed += dt;
+        if (const Signal* tripped = world.findSignal(signal); tripped != nullptr && tripped->flag) {
+            seconds = elapsed;
+            note = "sensor " + signal;
+            return true;
+        }
+    }
+    note = "sensor did not trip";
+    return false;
+}
+
 }  // namespace
 
 std::string pathFingerprint(const RobotPath& path, const KinematicResource* resource) {
@@ -162,8 +239,42 @@ MeasureResult measureOperationTimes(Scene& scene, bool force) {
             if (!force && operation.timeSource == "pinned") {
                 continue;
             }
-            if (findBlock(scene, operation.logic) == nullptr) {
+            const LogicBlock* block = findBlock(scene, operation.logic);
+            if (block == nullptr) {
                 result.note += operation.id + " logic missing; ";
+                continue;
+            }
+            double sensorTrip = -1;
+            std::string sensorNote;
+            const LogicAction* waitedSignal = signalWait(*block);
+            if (waitedSignal != nullptr && measureNamedSensor(scene, waitedSignal->signal, sensorTrip, sensorNote)) {
+                LogicMachine machine;
+                std::string error;
+                if (!machine.start(scene, operation.logic, error)) {
+                    result.note += error + "; ";
+                    continue;
+                }
+                const double dt = 0.01;
+                double elapsed = 0;
+                bool fired = false;
+                while (!machine.finished(operation.logic) && elapsed < 120.0) {
+                    if (!fired && elapsed + 1e-9 >= sensorTrip) {
+                        scene.upsertSignal(waitedSignal->signal, SignalType::Bool).flag = true;
+                        fired = true;
+                    }
+                    machine.step(scene, dt);
+                    elapsed += dt;
+                }
+                if (!machine.finished(operation.logic)) {
+                    result.note += operation.id + " sensor logic did not finish; ";
+                    continue;
+                }
+                operation.seconds = std::max(0.01, elapsed);
+                operation.timeSource = "sensor";
+                operation.timeKey = waitedSignal->signal;
+                operation.timeNote = sensorNote;
+                ++result.sensor;
+                ++result.updated;
                 continue;
             }
             LogicMachine machine;

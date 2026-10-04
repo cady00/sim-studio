@@ -137,6 +137,8 @@ private:
         std::size_t action = 0;
         double waitLeft = 0;
         bool waiting = false;
+        bool waitSignal = false;
+        std::string signal;
         bool jogging = false;
         std::string jogJoint;
         double jogSpeed = 0;
@@ -154,6 +156,7 @@ struct MeasureResult {
     int planned = 0;
     int logic = 0;
     int conveyor = 0;
+    int sensor = 0;
     std::string note;
 };
 

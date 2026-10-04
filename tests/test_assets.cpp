@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -246,4 +247,152 @@ TEST_CASE("frustum culling and mesh lod drop work at field scale", "[assets]") {
     REQUIRE(sim::selectLodLevel(1000, 3) == 0);
     REQUIRE(sim::selectLodLevel(5000, 3) == 1);
     REQUIRE(sim::selectLodLevel(9000, 3) == 2);
+}
+
+TEST_CASE("urdf reads cylinder sphere mesh and inertia", "[assets]") {
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto stlPath = dir / "simstudio_link.stl";
+    {
+        std::ofstream out(stlPath);
+        out << "solid tip\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 0.1 0 0\nvertex 0 0.1 0\nendloop\nendfacet\nendsolid tip\n";
+    }
+    const auto urdfPath = dir / "simstudio_shapes.urdf";
+    {
+        std::ofstream out(urdfPath);
+        out << R"(<robot name="shapes">
+<link name="base">
+  <inertial>
+    <origin xyz="0 0 0.02"/>
+    <mass value="3.5"/>
+    <inertia ixx="0.1" ixy="0.01" ixz="0" iyy="0.2" iyz="0" izz="0.3"/>
+  </inertial>
+  <visual><geometry><cylinder radius="0.05" length="0.2"/></geometry></visual>
+</link>
+<link name="head">
+  <visual><geometry><sphere radius="0.04"/></geometry></visual>
+</link>
+<link name="tip">
+  <visual><geometry><mesh filename="simstudio_link.stl" scale="1 1 1"/></geometry></visual>
+</link>
+<joint name="neck" type="fixed"><parent link="base"/><child link="head"/></joint>
+<joint name="nose" type="fixed"><parent link="head"/><child link="tip"/></joint>
+</robot>)";
+    }
+    sim::Scene scene;
+    const sim::AssetImportResult imported = sim::createBuiltinRegistry()->importPath(urdfPath.string(), scene);
+    REQUIRE(imported.ok);
+    REQUIRE(imported.triangleCount > 24);
+    REQUIRE(scene.resources.size() == 1);
+    const sim::KinLink& base = scene.resources.front().links.front();
+    REQUIRE(base.hasInertia);
+    REQUIRE(base.mass == Approx(3.5));
+    REQUIRE(base.com.z == Approx(0.02));
+    REQUIRE(base.ixx == Approx(0.1));
+    REQUIRE(base.izz == Approx(0.3));
+    bool sawWide = false;
+    for (const auto& [id, mesh] : scene.meshes()) {
+        (void)id;
+        if (mesh && mesh->bounds.max.x > 50) {
+            sawWide = true;
+        }
+    }
+    REQUIRE(sawWide);
+}
+
+TEST_CASE("gltf reads pbr factors and a skinned vertex", "[assets]") {
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto binPath = dir / "simstudio_skin.bin";
+    std::string bin(256, '\0');
+    auto writeFloats = [&](std::size_t offset, const std::vector<float>& values) {
+        std::memcpy(bin.data() + offset, values.data(), values.size() * sizeof(float));
+    };
+    std::vector<float> identity(16, 0);
+    identity[0] = identity[5] = identity[10] = identity[15] = 1;
+    writeFloats(0, identity);
+    writeFloats(64, identity);
+    writeFloats(128, {0.f, 0.f, 0.f, 0.1f, 0.f, 0.f, 0.f, 0.1f, 0.f});
+    const std::uint16_t joints[] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::memcpy(bin.data() + 164, joints, sizeof(joints));
+    writeFloats(188, {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f});
+    const std::uint16_t indices[] = {0, 1, 2};
+    std::memcpy(bin.data() + 236, indices, sizeof(indices));
+    {
+        std::ofstream out(binPath, std::ios::binary);
+        out.write(bin.data(), static_cast<std::streamsize>(bin.size()));
+    }
+    const auto gltfPath = dir / "simstudio_skin.gltf";
+    {
+        std::ofstream out(gltfPath);
+        out << R"({
+  "asset": {"version": "2.0"},
+  "scene": 0,
+  "scenes": [{"nodes": [0, 2]}],
+  "nodes": [
+    {"name": "root", "children": [1]},
+    {"name": "bone", "translation": [1, 0, 0]},
+    {"name": "skin", "mesh": 0, "skin": 0}
+  ],
+  "skins": [{"joints": [0, 1], "inverseBindMatrices": 0}],
+  "materials": [{"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.8, 1], "metallicFactor": 0.3, "roughnessFactor": 0.6}}],
+  "meshes": [{"primitives": [{"attributes": {"POSITION": 1, "JOINTS_0": 2, "WEIGHTS_0": 3}, "indices": 4, "material": 0, "mode": 4}]}],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 2, "type": "MAT4"},
+    {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5123, "count": 3, "type": "VEC4"},
+    {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4"},
+    {"bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR"}
+  ],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 128},
+    {"buffer": 0, "byteOffset": 128, "byteLength": 36},
+    {"buffer": 0, "byteOffset": 164, "byteLength": 24},
+    {"buffer": 0, "byteOffset": 188, "byteLength": 48},
+    {"buffer": 0, "byteOffset": 236, "byteLength": 6}
+  ],
+  "buffers": [{"uri": "simstudio_skin.bin", "byteLength": 256}]
+})";
+    }
+    sim::Scene scene;
+    const sim::AssetImportResult imported = sim::createBuiltinRegistry()->importPath(gltfPath.string(), scene);
+    REQUIRE(imported.ok);
+    REQUIRE(imported.triangleCount == 1);
+    auto node = scene.findByName("gltf");
+    REQUIRE(node);
+    REQUIRE(node->color.x == Approx(0.2));
+    REQUIRE(node->color.y == Approx(0.4));
+    REQUIRE(node->metallic == Approx(0.3f));
+    REQUIRE(node->roughness == Approx(0.6f));
+    const auto mesh = scene.mesh(node->meshId);
+    REQUIRE(mesh);
+    REQUIRE(mesh->bounds.max.x == Approx(1000).margin(1));
+}
+
+TEST_CASE("a collision sensor measures an inspect operation", "[assets]") {
+    sim::Scene scene;
+    auto eye = scene.makeNode(sim::NodeKind::Part, "InspectEye");
+    eye->mech.kind = sim::MechKind::CollisionSensor;
+    eye->mech.halfExtents = {40, 40, 40};
+    eye->mech.signal = "part_seen";
+    scene.addChild(scene.root(), eye);
+    sim::LogicBlock block;
+    block.name = "inspect_seq";
+    sim::LogicAction action;
+    action.kind = "wait_signal";
+    action.signal = "part_seen";
+    sim::LogicStep step;
+    step.actions.push_back(action);
+    block.steps.push_back(step);
+    scene.logicBlocks.push_back(block);
+    sim::Operation operation;
+    operation.id = "inspect";
+    operation.kind = sim::OpKind::Task;
+    operation.logic = "inspect_seq";
+    operation.seconds = 6;
+    scene.operations.push_back(operation);
+    const sim::MeasureResult measured = sim::measureOperationTimes(scene, true);
+    REQUIRE(measured.sensor == 1);
+    REQUIRE(scene.operations.front().timeSource == "sensor");
+    REQUIRE(scene.operations.front().seconds > 0.2);
+    REQUIRE(scene.operations.front().seconds < 3.0);
+    REQUIRE(scene.operations.front().seconds != Approx(6));
 }
