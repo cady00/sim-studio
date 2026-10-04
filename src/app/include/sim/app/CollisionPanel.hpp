@@ -23,6 +23,7 @@ public:
     void retranslate();
     void reload();
     void runQuery();
+    QString summaryText() const;
     void setViewport(QWidget* viewport) { viewport_ = viewport; }
 
 private:

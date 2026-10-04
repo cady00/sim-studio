@@ -56,6 +56,10 @@ OCCT 的 Draw 模块没有链接。`ldd` 里没有 `TKDraw`、`TKTopTest`。
 
 没有链接 NVIDIA PhysX、Bullet、bgfx、Diligent、CoACD、V-HACD、libccd、zlib 源码（zip 容器自己写，见下）、OpenUSD、OPC UA 协议栈。OCCT 的 CMake 配置把 `HAVE_RAPIDJSON` 传进了编译定义。本机 `ldd` 没有加载 RapidJSON，我们的源文件也不包含它。RapidJSON 若被 OCCT 以头文件用到，许可证是 MIT。
 
+界面字体栈按顺序尝试 HarmonyOS Sans SC、思源黑体、Noto Sans CJK SC，然后是系统里已有的微软雅黑或苹方。**没有把 HarmonyOS Sans 打进安装包。** 若以后嵌入该字体，须保留版权与许可、不得修改字形、不得把字体文件单独再分发，并在软件关于页声明使用。思源黑体与 Inter、JetBrains Mono 若以后嵌入，许可证是 SIL OFL 1.1。当前二进制不包含这些字体文件。
+
+Qt Advanced Docking System 是 LGPL-2.1。闭源产品可以动态链接它，并允许接收者替换该库；改过的 ADS 源码要按 LGPL 提供。本仓库没有链接 ADS，也没有为了它去拉取源码。停靠用的是 Qt 自带的 `QDockWidget`，布局写成 `QSettings` 里的模式、专注和主题。KDDockWidgets 是 GPL 加商业双许可，不采用。
+
 ## 只在 CI 或构建机上出现
 
 这些不进 `simstudio` 的链接表。

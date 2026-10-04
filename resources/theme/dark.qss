@@ -1,0 +1,117 @@
+
+* {
+  font-family: "Inter", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  color: #E7E9F7;
+  font-size: 12px;
+}
+QMainWindow, QDialog {
+  background: #0E1324;
+}
+QMenuBar, QStatusBar, #chrome {
+  background: #0A0E1A;
+  color: #A6ACCB;
+  border: none;
+}
+QStatusBar {
+  border-top: 1px solid #1C2444;
+  font-size: 11px;
+}
+QMenuBar::item:selected, QMenu::item:selected {
+  background: #2A3360;
+  color: #E7E9F7;
+}
+QMenu {
+  background: #131A31;
+  border: 1px solid #252E52;
+  padding: 4px;
+}
+QDockWidget {
+  color: #A6ACCB;
+  titlebar-close-icon: none;
+}
+QDockWidget::title {
+  background: #131A31;
+  padding: 6px 8px;
+  border-bottom: 1px solid #1C2444;
+  text-align: left;
+}
+QTreeWidget, QTableWidget, QListWidget, QPlainTextEdit, QTextEdit {
+  background: #131A31;
+  alternate-background-color: #1A2140;
+  border: none;
+  selection-background-color: #2A3360;
+  selection-color: #E7E9F7;
+}
+QHeaderView::section {
+  background: #0A0E1A;
+  color: #6E769C;
+  border: none;
+  border-bottom: 1px solid #1C2444;
+  padding: 4px 6px;
+}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+  background: #0F1529;
+  border: 1px solid #252E52;
+  border-radius: 6px;
+  padding: 3px 6px;
+  min-height: 20px;
+  selection-background-color: #8E92EC;
+  selection-color: #0C1030;
+}
+QPushButton {
+  background: #1A2140;
+  border: 1px solid #344070;
+  border-radius: 7px;
+  padding: 4px 10px;
+  min-height: 22px;
+}
+QPushButton:hover {
+  background: #222A4D;
+}
+QPushButton:checked, QToolButton:checked {
+  background: #2A3360;
+  border: 1px solid #8E92EC;
+  color: #E7E9F7;
+}
+QToolButton {
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: #A6ACCB;
+  padding: 4px;
+}
+QToolButton:hover {
+  background: #222A4D;
+  color: #E7E9F7;
+}
+QScrollBar:vertical {
+  background: #131A31;
+  width: 10px;
+}
+QScrollBar::handle:vertical {
+  background: #344070;
+  border-radius: 4px;
+  min-height: 24px;
+}
+#modeButton {
+  color: #A6ACCB;
+  background: transparent;
+  border-radius: 7px;
+  padding: 4px 10px;
+}
+#modeButton:checked {
+  background: #2A3360;
+  color: #E7E9F7;
+  border: 1px solid #8E92EC;
+}
+#commandHint, #intentBar, #commandPalette, #overlayGlass {
+  background: #131A31;
+  border: 1px solid #252E52;
+  border-radius: 12px;
+}
+#accentButton {
+  background: #8E92EC;
+  color: #0C1030;
+  border: none;
+  font-weight: 600;
+}

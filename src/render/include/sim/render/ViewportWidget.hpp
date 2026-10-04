@@ -6,6 +6,7 @@
 #include <QOpenGLWidget>
 #include <QImage>
 #include <QPoint>
+#include <QRect>
 #include <QString>
 
 #include <cstdint>
@@ -34,6 +35,11 @@ public:
     void setStandardView(StandardView view);
     void setGizmoMode(GizmoMode mode);
     GizmoMode gizmoMode() const { return gizmoMode_; }
+    void setSimTime(double seconds);
+    void setCallout(const QString& text);
+    void setMeasureMode(bool enabled);
+    void setPreviewMode(bool enabled);
+    void setDarkChrome(bool dark);
     // Reads the widget framebuffer through IRenderer::captureRgba.
     QImage captureView();
 
@@ -42,6 +48,7 @@ signals:
     void pointPicked(double x, double y, double z, double nx, double ny, double nz, const QString& nodeId);
     void transformEdited();
     void glError(const QString& message);
+    void overlayCommand(const QString& id);
 
 protected:
     void initializeGL() override;
@@ -76,6 +83,21 @@ private:
     Vec3 gizmoRotateStart_;
     Quat gizmoRotateBasis_;
     Vec3 gizmoRotateTranslation_;
+    void paintOverlay();
+    QRect cubeRect_;
+    QRect faceTop_;
+    QRect faceFront_;
+    QRect faceRight_;
+    QRect toolbarRect_;
+    QString callout_;
+    bool measureMode_ = false;
+    bool previewMode_ = false;
+    bool darkChrome_ = true;
+    double simTime_ = 0;
+    double fps_ = 0;
+    int triangles_ = 0;
+    qint64 lastFrameMs_ = 0;
+    std::vector<Vec3> measurePoints_;
 };
 
 }  // namespace sim

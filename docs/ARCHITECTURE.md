@@ -109,6 +109,16 @@ KR 420 R3080 / KR 280 R3080 的扁平 STEP 也在 `testdata/local/`，不进仓�
 
 OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的另一个导入器里，把 USD 的 prim 层级写成现有场景节点和共享网格，单位换成毫米。不把 USD 的舞台对象留在场景图里，这样 `.simproj` 仍然只存自己的 JSON 和网格。导出时从场景图写 USD，而不是从 OCCT 文档转。
 
+## 界面外壳
+
+任务模式、命令面板和主题令牌在 `docs/ui/UI_DESIGN_SPEC.md`。`resources/tokens.json` 是颜色令牌的来源，`tools/generate_theme.py` 生成 `resources/theme/dark.qss` 和 `light.qss`。字体栈会优先用已安装的 HarmonyOS Sans SC，安装包里没有这套字体。
+
+六个模式只切换 `QDockWidget` 的可见性，数据还是同一份场景。布局（模式、专注、主题）写在 `QSettings`。没有链接 Qt Advanced Docking System。专注模式是 `Ctrl+\`。
+
+命令面板 `Ctrl+K` 和 AI 意图栏 `Ctrl+I` 都走 `CommandRegistry`。能执行的场景操作仍进 `CommandExecutor`。意图栏只用本地规则把「播放」「近碰」「#信号」对应到已注册命令。提供者保持关闭。应用前会记下位姿和信号，`undoIntent()` 可以整组退回；界面上还没有把 Ctrl+Z 接到这个函数。
+
+视口浮层（HUD、视图方块、上下文工具条、近碰字、测量）画在 `ViewportWidget` 的 OpenGL 帧之后，用 `QPainter`，所以截图能拍到。逻辑块画布和路径时间线读场景里已有的块和路径，不是第二套数据。
+
 ## 界面线程
 
 `MainWindow::importStepAsync` 使用 `std::thread`。窗口析构把 `alive_` 置为 false 再 `join`。

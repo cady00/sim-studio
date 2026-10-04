@@ -175,4 +175,6 @@ void CollisionPanel::runQuery() {
     }
 }
 
+QString CollisionPanel::summaryText() const { return summary_ == nullptr ? QString() : summary_->text(); }
+
 }  // namespace sim

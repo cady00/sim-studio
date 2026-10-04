@@ -96,7 +96,16 @@ public:
     std::string name = "Untitled";
     std::string units = "mm";
     std::vector<std::string> sourceFiles;
+#ifdef signals
+#pragma push_macro("signals")
+#undef signals
+#define SIM_SCENE_RESTORE_SIGNALS
+#endif
     std::vector<Signal> signals;
+#ifdef SIM_SCENE_RESTORE_SIGNALS
+#pragma pop_macro("signals")
+#undef SIM_SCENE_RESTORE_SIGNALS
+#endif
     std::vector<ProjectScript> scripts;
     std::string activeScript;
     std::vector<KinematicResource> resources;

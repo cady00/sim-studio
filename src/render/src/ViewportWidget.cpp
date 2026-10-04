@@ -2,9 +2,11 @@
 
 #include "sim/render/Renderer.hpp"
 
+#include <QDateTime>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
+#include <QPainter>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -247,6 +249,7 @@ void ViewportWidget::paintGL() {
     frame.width = std::max(width(), 1);
     frame.height = std::max(height(), 1);
     frame.frustumCull = true;
+    frame.clearColor = darkChrome_ ? Vec3{0.07, 0.09, 0.14} : Vec3{0.94, 0.94, 0.97};
     renderer_->beginFrame(frame);
     drawGrid();
 
@@ -274,6 +277,9 @@ void ViewportWidget::paintGL() {
             instance.worldBounds = mesh ? transformedBounds(mesh->bounds, instance.world) : Aabb{};
             instance.distanceMm = static_cast<float>(length(instance.worldBounds.center() - frame.eye));
             instance.lodLevels = 1;
+            if (mesh) {
+                triangles_ += static_cast<int>(mesh->triangleCount());
+            }
             instances.push_back(std::move(instance));
         }
         renderer_->submitInstances(instances);
@@ -310,6 +316,123 @@ void ViewportWidget::paintGL() {
         renderer_->submitLines(gizmo);
     }
     renderer_->endFrame();
+    paintOverlay();
+}
+
+void ViewportWidget::setSimTime(double seconds) { simTime_ = seconds; }
+
+void ViewportWidget::setCallout(const QString& text) {
+    callout_ = text;
+    update();
+}
+
+void ViewportWidget::setMeasureMode(bool enabled) {
+    measureMode_ = enabled;
+    if (!enabled) {
+        measurePoints_.clear();
+    }
+    update();
+}
+
+void ViewportWidget::setPreviewMode(bool enabled) {
+    previewMode_ = enabled;
+    update();
+}
+
+void ViewportWidget::setDarkChrome(bool dark) {
+    darkChrome_ = dark;
+    update();
+}
+
+void ViewportWidget::paintOverlay() {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (lastFrameMs_ != 0) {
+        const double dt = static_cast<double>(now - lastFrameMs_) / 1000.0;
+        if (dt > 0.001) {
+            const double instant = 1.0 / dt;
+            fps_ = fps_ <= 0 ? instant : fps_ * 0.8 + instant * 0.2;
+        }
+    }
+    lastFrameMs_ = now;
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QColor ink = darkChrome_ ? QColor(231, 233, 247) : QColor(23, 29, 56);
+    const QColor muted = darkChrome_ ? QColor(166, 172, 203) : QColor(76, 83, 115);
+    const QColor glass = darkChrome_ ? QColor(19, 25, 48, 190) : QColor(255, 255, 255, 220);
+    const QColor line = darkChrome_ ? QColor(142, 146, 236, 90) : QColor(92, 96, 194, 90);
+    auto capsule = [&](const QRect& rect) {
+        painter.setPen(line);
+        painter.setBrush(glass);
+        painter.drawRoundedRect(rect, 10, 10);
+    };
+
+    QString hud = QString("透视  ·  t %1 s  ·  %2 fps  ·  %3 三角")
+                      .arg(simTime_, 0, 'f', 2)
+                      .arg(fps_, 0, 'f', 0)
+                      .arg(triangles_);
+    if (previewMode_) {
+        hud += "  ·  预览模式 · 场景未修改";
+    }
+    if (fps_ > 0 && fps_ < 30) {
+        hud += "  ·  建议检查显示负载";
+    }
+    const QRect hudRect(16, 16, std::min(width() - 140, 520), 28);
+    capsule(hudRect);
+    painter.setPen(muted);
+    painter.drawText(hudRect.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft, hud);
+
+    cubeRect_ = QRect(width() - 112, 16, 96, 104);
+    capsule(cubeRect_);
+    faceTop_ = QRect(cubeRect_.left() + 28, cubeRect_.top() + 8, 40, 26);
+    faceFront_ = QRect(cubeRect_.left() + 8, cubeRect_.top() + 40, 40, 28);
+    faceRight_ = QRect(cubeRect_.left() + 48, cubeRect_.top() + 40, 40, 28);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(91, 140, 255, 180));
+    painter.drawPolygon(QPolygon() << faceTop_.topLeft() << faceTop_.topRight() << faceRight_.bottomRight()
+                                   << faceFront_.bottomLeft());
+    painter.setBrush(QColor(42, 54, 94, 220));
+    painter.drawRect(faceFront_);
+    painter.setBrush(QColor(54, 69, 122, 220));
+    painter.drawRect(faceRight_);
+    painter.setBrush(QColor(142, 146, 236, 200));
+    painter.drawRect(faceTop_);
+    painter.setPen(ink);
+    painter.drawText(faceTop_, Qt::AlignCenter, "上");
+    painter.drawText(faceFront_, Qt::AlignCenter, "前");
+    painter.drawText(faceRight_, Qt::AlignCenter, "右");
+
+    if (!callout_.isEmpty()) {
+        const QRect box(24, 56, std::min(width() - 48, 460), 32);
+        painter.setPen(QColor(255, 178, 36));
+        painter.setBrush(QColor(42, 32, 8, 210));
+        painter.drawRoundedRect(box, 8, 8);
+        painter.drawText(box.adjusted(8, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft, callout_);
+    }
+    if (measurePoints_.size() == 2) {
+        const double distance = length(measurePoints_[1] - measurePoints_[0]);
+        const QRect box(24, height() - 48, 220, 28);
+        painter.setPen(QColor(98, 210, 242));
+        painter.setBrush(glass);
+        painter.drawRoundedRect(box, 8, 8);
+        painter.drawText(box, Qt::AlignCenter, QString("测量  %1 mm").arg(distance, 0, 'f', 1));
+    } else if (measureMode_) {
+        painter.setPen(QColor(98, 210, 242));
+        painter.drawText(24, height() - 28, "测量：在模型上点两个点");
+    }
+
+    toolbarRect_ = QRect();
+    if (scene_ != nullptr && !scene_->selectedId().empty()) {
+        toolbarRect_ = QRect(std::max(16, width() / 2 - 140), std::max(56, height() - 78), 280, 34);
+        capsule(toolbarRect_);
+        painter.setPen(ink);
+        const QString labels[] = {"聚焦", "移动", "测量"};
+        for (int i = 0; i < 3; ++i) {
+            const QRect slot(toolbarRect_.left() + i * 92, toolbarRect_.top(), 92, toolbarRect_.height());
+            painter.drawText(slot, Qt::AlignCenter, labels[i]);
+        }
+    }
+    triangles_ = 0;
 }
 
 QImage ViewportWidget::captureView() {
@@ -356,6 +479,25 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton || scene_ == nullptr) {
         return;
     }
+    const QPoint click = event->position().toPoint();
+    if (faceTop_.contains(click)) {
+        setStandardView(StandardView::Top);
+        return;
+    }
+    if (faceFront_.contains(click)) {
+        setStandardView(StandardView::Front);
+        return;
+    }
+    if (faceRight_.contains(click)) {
+        setStandardView(StandardView::Right);
+        return;
+    }
+    if (toolbarRect_.contains(click)) {
+        const int slot = std::clamp((click.x() - toolbarRect_.left()) / 92, 0, 2);
+        const char* ids[] = {"ui.fit", "ui.move", "ui.measure"};
+        emit overlayCommand(QString::fromLatin1(ids[slot]));
+        return;
+    }
     const int axis = pickGizmo(event->position().x(), event->position().y());
     if (axis >= 0 && !scene_->selectedId().empty()) {
         Vec3 origin, axisX, axisY, axisZ;
@@ -393,6 +535,12 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
     emit selectionChanged(id);
     if (hit) {
         emit pointPicked(hit->point.x, hit->point.y, hit->point.z, hit->normal.x, hit->normal.y, hit->normal.z, id);
+        if (measureMode_) {
+            measurePoints_.push_back(hit->point);
+            if (measurePoints_.size() > 2) {
+                measurePoints_.erase(measurePoints_.begin());
+            }
+        }
     }
     update();
 }
