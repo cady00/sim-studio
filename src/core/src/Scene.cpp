@@ -301,7 +301,9 @@ std::shared_ptr<SceneNode> Scene::spawnClone(const std::shared_ptr<SceneNode>& p
     copy->faceAxes = prototype->faceAxes;
     copy->mech = prototype->mech;
     copy->mech.kind = MechKind::Rigid;
+    copy->mech.motion = BodyMotion::Free;
     copy->mech.kinematic = false;
+    copy->mech.asleep = false;
     copy->mech.drive = DriveMode::None;
     if (!mechCreatesBody(prototype->mech.kind) && prototype->mech.kind != MechKind::Rigid) {
         copy->mech.kind = MechKind::Rigid;

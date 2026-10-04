@@ -1,6 +1,7 @@
 #include "sim/ai/Commands.hpp"
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/LineModel.hpp"
+#include "sim/motion/Motion.hpp"
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/ZipArchive.hpp"
 #include "sim/scripting/ScriptHost.hpp"
@@ -580,4 +581,119 @@ EOF
     REQUIRE(notes >= 1);
     REQUIRE(sawHeight);
     REQUIRE(sawSpan);
+}
+
+TEST_CASE("logic blocks and the operation list can cycle", "[line]") {
+    sim::Scene scene;
+    sim::LogicBlock block;
+    block.name = "spin";
+    block.repeat = true;
+    sim::LogicAction pulse;
+    pulse.kind = "set_output";
+    pulse.signal = "tick";
+    sim::LogicAction wait;
+    wait.kind = "wait";
+    wait.seconds = 0.05;
+    sim::LogicStep step;
+    step.actions = {pulse, wait};
+    block.steps.push_back(step);
+    scene.logicBlocks.push_back(block);
+    sim::LogicMachine machine;
+    std::string error;
+    REQUIRE(machine.start(scene, "spin", error));
+    for (int i = 0; i < 40; ++i) {
+        machine.step(scene, 0.01);
+    }
+    REQUIRE_FALSE(machine.finished("spin"));
+    REQUIRE(scene.findSignal("tick") != nullptr);
+    REQUIRE(scene.findSignal("tick")->flag);
+
+    sim::Station slow;
+    slow.id = "slow";
+    slow.x = 0;
+    sim::Station fast;
+    fast.id = "fast";
+    fast.x = 1000;
+    scene.layout.stations = {slow, fast};
+    scene.layout.cyclic = true;
+    sim::Operation line;
+    line.id = "line";
+    line.kind = sim::OpKind::Sequence;
+    sim::Operation first = task("first", "line", 0, "slow", 10);
+    sim::Operation second = task("second", "line", 1, "fast", 10);
+    second.after = {"first"};
+    scene.operations = {line, first, second};
+    auto feeder = scene.makeNode(sim::NodeKind::Part, "Feeder");
+    feeder->mech.kind = sim::MechKind::Source;
+    feeder->mech.interval = 10;
+    scene.addChild(scene.root(), feeder);
+
+    sim::LineProduction production;
+    REQUIRE(production.start(scene, error));
+    production.step(100);
+    const sim::ProductionStats stats = production.stats();
+    REQUIRE(stats.output == 8);
+    REQUIRE(stats.jobsPerHour == Approx(288));
+    REQUIRE(stats.stations.size() == 2);
+    REQUIRE(stats.stations[0].busySeconds == Approx(90).margin(0.05));
+    REQUIRE(stats.stations[0].starvedSeconds == Approx(10).margin(0.05));
+    REQUIRE(stats.stations[0].blockedSeconds == Approx(0).margin(0.05));
+    REQUIRE(stats.stations[1].starvedSeconds == Approx(20).margin(0.05));
+    REQUIRE(stats.stations[1].busySeconds == Approx(80).margin(0.05));
+
+    scene.operations[1].seconds = 5;
+    scene.operations[2].seconds = 10;
+    feeder->mech.interval = 5;
+    sim::LineProduction blocked;
+    REQUIRE(blocked.start(scene, error));
+    blocked.step(100);
+    const sim::ProductionStats tight = blocked.stats();
+    REQUIRE(tight.output >= 8);
+    REQUIRE(tight.stations[0].blockedSeconds > 1.0);
+    REQUIRE(tight.sourceBlockedSeconds > 1.0);
+}
+
+TEST_CASE("the example line keeps feeding for an hour", "[line]") {
+    sim::Scene scene;
+    sim::buildExampleLine(scene);
+    REQUIRE(scene.layout.cyclic);
+    bool repeating = false;
+    bool feeder = false;
+    for (const sim::LogicBlock& block : scene.logicBlocks) {
+        repeating = repeating || block.repeat;
+    }
+    std::vector<std::shared_ptr<sim::SceneNode>> stack{scene.root()};
+    while (!stack.empty()) {
+        auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+        if (node->mech.kind == sim::MechKind::Source && node->mech.prototype == "Blank") {
+            feeder = true;
+        }
+    }
+    REQUIRE(repeating);
+    REQUIRE(feeder);
+    sim::LineProduction production;
+    std::string error;
+    REQUIRE(production.start(scene, error));
+    production.step(3600);
+    const sim::ProductionStats stats = production.stats();
+    REQUIRE(stats.output > 200);
+    REQUIRE(stats.jobsPerHour > 200);
+    const sim::StationAccount* weld = nullptr;
+    for (const sim::StationAccount& station : stats.stations) {
+        if (station.id == "st_weld") {
+            weld = &station;
+        }
+    }
+    REQUIRE(weld != nullptr);
+    REQUIRE(weld->busySeconds / stats.time > 0.8);
+    std::cout << "LINE_JPH output=" << stats.output << " jph=" << stats.jobsPerHour << " weld_util="
+              << (weld->busySeconds / stats.time) << " weld_block=" << weld->blockedSeconds
+              << " weld_starve=" << weld->starvedSeconds << " source_block=" << stats.sourceBlockedSeconds << std::endl;
 }

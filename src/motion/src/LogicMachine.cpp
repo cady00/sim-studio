@@ -262,8 +262,15 @@ void LogicMachine::step(Scene& scene, double dt) {
             break;
         }
         if (run.step >= block.steps.size() && !run.waiting && !run.jogging && !run.move.active && !run.waitSignal) {
-            run.finished = true;
-            run.active = false;
+            if (block.repeat) {
+                run.step = 0;
+                run.action = 0;
+                run.finished = false;
+                run.active = true;
+            } else {
+                run.finished = true;
+                run.active = false;
+            }
         }
     }
 }

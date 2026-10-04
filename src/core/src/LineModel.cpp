@@ -876,6 +876,7 @@ nlohmann::json layoutToJson(const LineLayout& layout) {
         layers.push_back(layer);
     }
     return {{"example", layout.example},
+            {"cyclic", layout.cyclic},
             {"title", layout.title},
             {"gridMm", layout.gridMm},
             {"stations", std::move(stations)},
@@ -895,6 +896,7 @@ void layoutFromJson(const nlohmann::json& json, LineLayout& layout) {
         return;
     }
     layout.example = json.value("example", false);
+    layout.cyclic = json.value("cyclic", false);
     layout.title = json.value("title", std::string{});
     layout.gridMm = json.value("gridMm", 500.0);
     if (json.contains("stations") && json.at("stations").is_array()) {

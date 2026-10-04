@@ -165,6 +165,57 @@ std::string pathFingerprint(const RobotPath& path, const KinematicResource* reso
 // Robot tasks use planRobotPath. Logic tasks step the event machine. Conveyor tasks
 // step the builtin solver on a small belt. A pinned bar stays until its fingerprint changes.
 MeasureResult measureOperationTimes(Scene& scene, bool force);
+
+struct StationAccount {
+    std::string id;
+    double busySeconds = 0;
+    double starvedSeconds = 0;
+    double blockedSeconds = 0;
+    int completions = 0;
+    double processSeconds = 0;
+};
+
+struct ProductionStats {
+    double time = 0;
+    int output = 0;
+    double jobsPerHour = 0;
+    double sourceBlockedSeconds = 0;
+    std::vector<StationAccount> stations;
+};
+
+// One-piece flow. The source keeps a single input slot full on its interval.
+// A station is busy while it works, blocked when the next station still holds a part, and starved when it has none.
+class LineProduction {
+public:
+    bool start(const Scene& scene, std::string& error);
+    void step(double dt);
+    ProductionStats stats() const;
+
+private:
+    struct Stage {
+        std::string id;
+        double process = 0;
+        bool occupied = false;
+        bool processing = false;
+        double worked = 0;
+        double busy = 0;
+        double starved = 0;
+        double blocked = 0;
+        int completions = 0;
+    };
+
+    void advance(double dt);
+    void transfer();
+
+    std::vector<Stage> stages_;
+    double interval_ = 1;
+    double sourceClock_ = 0;
+    bool input_ = false;
+    double time_ = 0;
+    int output_ = 0;
+    double sourceBlocked_ = 0;
+    bool running_ = false;
+};
 // Cubic Hermite on u in [0, 1]. Slopes are dq/du so a zone can match the joint velocity on both sides.
 double zoneBlend(double u, double q0, double q1, double slope0, double slope1);
 // `maxDistance` keeps pairs at least this deep. 1e-4 treats a touch as a hit. A negative value

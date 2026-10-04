@@ -4,6 +4,7 @@
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/StepImporter.hpp"
 #include "sim/motion/Motion.hpp"
+#include "sim/motion/WeldPlan.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -405,6 +406,11 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
     const sim::MotionPlan plan = sim::planRobotPath(scene, *resource, *path);
     std::cerr << "cycle seconds " << plan.seconds << " samples " << plan.samples.size() << " collisions "
               << plan.collisions.size() << " sweep " << plan.sweepHit << "\n";
+    double longestSegment = 0;
+    for (double span : plan.segmentSeconds) {
+        longestSegment = std::max(longestSegment, span);
+    }
+    std::cerr << "cycle longest segment " << longestSegment << "\n";
     for (const std::string& warning : plan.warnings) {
         std::cerr << "plan warning " << warning << "\n";
     }
@@ -432,6 +438,35 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
             node->visible = true;
         }
     }
+
+    const std::vector<double> nudgeAgain{18, -12, 15, 25, -10, 20};
+    sim::setJointVector(*resource, std::vector<double>(6, 0));
+    const sim::CartesianPose homePose = sim::forwardModel(*resource);
+    sim::setJointVector(*resource, nudgeAgain);
+    const sim::CartesianPose farPose = sim::forwardModel(*resource);
+    auto spotFrom = [](const char* id, const sim::CartesianPose& pose) {
+        sim::WeldSpot spot;
+        spot.id = id;
+        spot.position = pose.position;
+        const sim::Vec3 toolZ = pose.rotation.rotate({0, 0, 1});
+        spot.normal = sim::length(toolZ) > 0.5 ? sim::Vec3{-toolZ.x, -toolZ.y, -toolZ.z} : sim::Vec3{0, 0, 1};
+        return spot;
+    };
+    scene.welds = {spotFrom("near", homePose), spotFrom("far", farPose)};
+    sim::setJointVector(*resource, std::vector<double>(6, 0));
+    const int tourPoints = sim::planExampleWeldTour(scene);
+    std::cerr << "weld tour points " << tourPoints << "\n";
+    REQUIRE(tourPoints >= 3);
+    const sim::RobotPath* tour = nullptr;
+    for (const sim::RobotPath& candidate : scene.robotPaths) {
+        if (candidate.name == "weld_tour") {
+            tour = &candidate;
+        }
+    }
+    REQUIRE(tour != nullptr);
+    const sim::MotionPlan tourPlan = sim::planRobotPath(scene, *resource, *tour);
+    std::cerr << "weld tour seconds " << tourPlan.seconds << " longest cycle segment " << longestSegment << "\n";
+    REQUIRE(tourPlan.seconds >= 2.5);
 }
 
 sim::KinematicResource redundantArm() {

@@ -43,6 +43,8 @@ struct Underlay {
 
 struct LineLayout {
     bool example = false;
+    // The operation list is one job. A cyclic line releases the next job when the first station is free.
+    bool cyclic = false;
     std::string title;
     double gridMm = 500;
     Underlay underlay;

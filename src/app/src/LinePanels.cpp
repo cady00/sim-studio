@@ -595,13 +595,39 @@ GanttView::GanttView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(sc
     auto* xlsx = new QPushButton(QStringLiteral("XLSX"), this);
     auto* measure = new QPushButton(QStringLiteral("测算节拍"), this);
     measure->setObjectName("line.measure");
+    auto* produce = new QPushButton(QStringLiteral("连续生产"), this);
+    produce->setObjectName("line.produce");
     auto* note = new QLabel(this);
     note->setObjectName("line.measureNote");
     note->setWordWrap(true);
+    auto* productionNote = new QLabel(this);
+    productionNote->setObjectName("line.productionNote");
+    productionNote->setWordWrap(true);
     QObject::connect(measure, &QPushButton::clicked, this, [this, note] {
         const MeasureResult result = measureOperationTimes(scene_, false);
         note->setText(QString::fromStdString(result.note));
         scene_.notify(ChangeKind::Structure);
+        reload();
+    });
+    QObject::connect(produce, &QPushButton::clicked, this, [this, productionNote] {
+        LineProduction production;
+        std::string error;
+        if (!production.start(scene_, error)) {
+            productionNote->setText(QString::fromStdString(error));
+            return;
+        }
+        production.step(3600.0);
+        const ProductionStats stats = production.stats();
+        QString text = QStringLiteral("产量 %1 · JPH %2").arg(stats.output).arg(stats.jobsPerHour, 0, 'f', 1);
+        for (const StationAccount& station : stats.stations) {
+            const double util = stats.time > 1e-9 ? 100.0 * station.busySeconds / stats.time : 0;
+            text += QStringLiteral(" · %1 利用率 %2% 阻塞 %3 s 饥饿 %4 s")
+                        .arg(QString::fromStdString(station.id))
+                        .arg(util, 0, 'f', 0)
+                        .arg(station.blockedSeconds, 0, 'f', 0)
+                        .arg(station.starvedSeconds, 0, 'f', 0);
+        }
+        productionNote->setText(text);
         reload();
     });
     QObject::connect(csv, &QPushButton::clicked, this, [this] {
@@ -621,10 +647,12 @@ GanttView::GanttView(Scene& scene, QWidget* parent) : QWidget(parent), scene_(sc
         exportScheduleXlsx(scheduleOperations(scene_.operations, scene_.layout), path.toStdString(), error);
     });
     row->addWidget(measure);
+    row->addWidget(produce);
     row->addWidget(csv);
     row->addWidget(xlsx);
     row->addWidget(note, 1);
     layout->addLayout(row);
+    layout->addWidget(productionNote);
     canvas_ = new GanttCanvas(scene_, this);
     layout->addWidget(canvas_, 1);
 }
@@ -641,6 +669,9 @@ void GanttView::setZh(bool zh) {
     }
     if (auto* button = findChild<QPushButton*>("line.measure")) {
         button->setText(zh ? QStringLiteral("测算节拍") : QStringLiteral("Measure cycle"));
+    }
+    if (auto* button = findChild<QPushButton*>("line.produce")) {
+        button->setText(zh ? QStringLiteral("连续生产") : QStringLiteral("Run production"));
     }
 }
 

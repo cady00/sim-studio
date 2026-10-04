@@ -77,6 +77,32 @@ Box boxOf(const SceneNode& node) {
     return box;
 }
 
+Box worldBox(const Scene& scene, const SceneNode& node) {
+    Box box = boxOf(node);
+    if (node.meshId.empty() || (node.mech.shape != CollisionShape::Mesh && node.mech.shape != CollisionShape::ConvexHull &&
+                                node.mech.shape != CollisionShape::Extrusion)) {
+        return box;
+    }
+    const auto mesh = scene.mesh(node.meshId);
+    if (!mesh || !mesh->bounds.valid) {
+        return box;
+    }
+    const Mat4 world = node.worldMatrix();
+    const Vec3 corners[2] = {mesh->bounds.min, mesh->bounds.max};
+    Vec3 low = transformPoint(world, corners[0]);
+    Vec3 high = low;
+    for (int i = 1; i < 8; ++i) {
+        const Vec3 local{(i & 1) ? corners[1].x : corners[0].x, (i & 2) ? corners[1].y : corners[0].y,
+                         (i & 4) ? corners[1].z : corners[0].z};
+        const Vec3 point = transformPoint(world, local);
+        low = {std::min(low.x, point.x), std::min(low.y, point.y), std::min(low.z, point.z)};
+        high = {std::max(high.x, point.x), std::max(high.y, point.y), std::max(high.z, point.z)};
+    }
+    box.center = (low + high) * 0.5;
+    box.half = (high - low) * 0.5;
+    return box;
+}
+
 bool separated(const Box& a, const Box& b, Vec3& normal, double& depth) {
     const Vec3 delta = b.center - a.center;
     const double px = a.half.x + b.half.x - std::abs(delta.x);
@@ -1039,6 +1065,15 @@ private:
                     auto obstacle = scene_->find(other.id);
                     if (!obstacle) {
                         continue;
+                    }
+                    const Box movingBox = worldBox(*scene_, *node);
+                    const Box obstacleBox = worldBox(*scene_, *obstacle);
+                    if (movingBox.half.x > 1e-3 && obstacleBox.half.x > 1e-3) {
+                        Vec3 overlapNormal;
+                        double overlap = 0;
+                        if (!separated(movingBox, obstacleBox, overlapNormal, overlap)) {
+                            continue;
+                        }
                     }
                     const std::vector<Probe> probes = narrowProbes(*node, *obstacle);
                     if (probes.empty()) {

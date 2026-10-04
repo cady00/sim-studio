@@ -208,6 +208,8 @@ struct LogicBlock {
     std::vector<std::string> outputs;
     std::vector<LogicParam> parameters;
     std::vector<LogicStep> steps;
+    // When set, finishing the last step starts the block again on the next tick.
+    bool repeat = false;
     // Stored with the block. The runner does not execute it; the script dock does,
     // and that script still only sees the signal table.
     std::string python;

@@ -665,51 +665,48 @@ int planExampleWeldTour(Scene& scene) {
         return 0;
     }
     const std::vector<int> localOrder = orderWeldSpots(positions);
+    const std::vector<double> home = jointVector(*robot);
+    const CartesianPose homePose = forwardModel(*robot);
     RobotPath tour;
     tour.name = "weld_tour";
     tour.resource = robot->name;
-    RrtOptions options;
-    options.iterations = 250;
-    options.stepDeg = 10;
-    for (std::size_t leg = 0; leg + 1 < localOrder.size(); ++leg) {
-        const std::vector<double>& start = reach[static_cast<std::size_t>(reachable[static_cast<std::size_t>(localOrder[leg])])].joints;
-        const std::vector<double>& goal = reach[static_cast<std::size_t>(reachable[static_cast<std::size_t>(localOrder[leg + 1])])].joints;
-        std::vector<double> mid(start.size());
-        for (std::size_t joint = 0; joint < mid.size(); ++joint) {
-            const double left = joint < start.size() ? start[joint] : 0;
-            const double right = joint < goal.size() ? goal[joint] : 0;
-            mid[joint] = 0.5 * (left + right);
-        }
-        const auto blocked = [mid](const std::vector<double>& q) {
-            if (q.size() < 2 || mid.size() < 2) {
-                return false;
-            }
-            return std::abs(q[0] - mid[0]) < 5.0 && std::abs(q[1] - mid[1]) < 5.0;
-        };
-        RrtResult planned = planRrtConnect(*robot, start, goal, blocked, options);
-        std::vector<std::vector<double>> joints = planned.ok ? smoothJointPath(planned.joints, blocked, 4) : std::vector<std::vector<double>>{start, goal};
-        if (joints.size() > 8) {
-            std::vector<std::vector<double>> reduced{joints.front()};
-            const int stride = std::max(1, static_cast<int>(joints.size()) / 6);
-            for (int index = stride; index + 1 < static_cast<int>(joints.size()); index += stride) {
-                reduced.push_back(joints[static_cast<std::size_t>(index)]);
-            }
-            reduced.push_back(joints.back());
-            joints.swap(reduced);
-        }
-        for (std::size_t index = (leg == 0 ? 0 : 1); index < joints.size(); ++index) {
-            setJointVector(*robot, joints[index]);
-            const CartesianPose pose = forwardModel(*robot);
-            PathPoint point;
-            point.name = "P" + std::to_string(tour.points.size() + 1);
-            point.move = PathMove::Ptp;
-            point.joints = joints[index];
-            point.position = pose.position;
-            point.orientation = pose.rotation;
-            point.speed = 40;
-            tour.points.push_back(std::move(point));
-        }
+    // 200 mm/s matches the KR420 demonstration return. A joint-only jog between
+    // nearby seeds under-reports that segment (about 3.5 s on the real arm).
+    constexpr double kWeldLinMmPerS = 200.0;
+    auto addLin = [&](const std::vector<double>& joints) {
+        setJointVector(*robot, joints);
+        const CartesianPose pose = forwardModel(*robot);
+        PathPoint point;
+        point.name = "P" + std::to_string(tour.points.size() + 1);
+        point.move = PathMove::Lin;
+        point.cartesian = true;
+        point.joints = joints;
+        point.position = pose.position;
+        point.orientation = pose.rotation;
+        point.speed = kWeldLinMmPerS;
+        tour.points.push_back(std::move(point));
+    };
+    PathPoint start;
+    start.name = "home";
+    start.move = PathMove::Ptp;
+    start.joints = home;
+    start.position = homePose.position;
+    start.orientation = homePose.rotation;
+    start.speed = kWeldLinMmPerS;
+    tour.points.push_back(std::move(start));
+    for (int local : localOrder) {
+        const int spot = reachable[static_cast<std::size_t>(local)];
+        addLin(reach[static_cast<std::size_t>(spot)].joints);
     }
+    PathPoint back;
+    back.name = "return";
+    back.move = PathMove::Lin;
+    back.cartesian = true;
+    back.position = homePose.position;
+    back.orientation = homePose.rotation;
+    back.speed = kWeldLinMmPerS;
+    tour.points.push_back(std::move(back));
+    setJointVector(*robot, home);
     scene.robotPaths.erase(std::remove_if(scene.robotPaths.begin(), scene.robotPaths.end(),
                                           [](const RobotPath& path) { return path.name == "weld_tour"; }),
                            scene.robotPaths.end());

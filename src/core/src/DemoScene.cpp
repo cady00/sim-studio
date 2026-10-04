@@ -520,6 +520,29 @@ EOF
     inspectStep.actions.push_back(seen);
     inspect.steps.push_back(std::move(inspectStep));
     scene.logicBlocks.push_back(std::move(inspect));
+    for (LogicBlock& block : scene.logicBlocks) {
+        block.repeat = true;
+    }
+    scene.layout.cyclic = true;
+
+    Mech blank;
+    blank.kind = MechKind::Collision;
+    blank.motion = BodyMotion::Anchored;
+    blank.halfExtents = {40, 40, 40};
+    addBox(scene, "Blank", blank.halfExtents, {0, 400, 80}, {0.72, 0.55, 0.28}, blank, false);
+    Mech feeder;
+    feeder.kind = MechKind::Source;
+    feeder.motion = BodyMotion::Anchored;
+    feeder.interval = 8;
+    feeder.prototype = "Blank";
+    feeder.halfExtents = {30, 30, 30};
+    addBox(scene, "Feeder", feeder.halfExtents, {0, 0, 200}, {0.20, 0.45, 0.75}, feeder);
+    Mech sink;
+    sink.kind = MechKind::Sink;
+    sink.motion = BodyMotion::Anchored;
+    sink.valueSignal = "shipped";
+    sink.halfExtents = {80, 80, 40};
+    addBox(scene, "Ship", sink.halfExtents, {7500, 0, 40}, {0.35, 0.35, 0.38}, sink);
     scene.markClean();
 }
 

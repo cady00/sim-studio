@@ -321,8 +321,8 @@ int main(int argc, char* argv[]) {
                  window.findChild<QLabel*>("line.measureNote") == nullptr
                      ? ""
                      : window.findChild<QLabel*>("line.measureNote")->text().toUtf8().constData());
-    if (!(seconds > 0.05) || !(report.makespan > 0.05)) {
-        return fail("cycle time stayed at zero", &window);
+    if (!(seconds >= 2.5) || !(report.makespan >= 2.5)) {
+        return fail("weld cycle is shorter than one KR420 linear segment", &window);
     }
     ganttDock->raise();
     QTest::qWait(100);

@@ -359,6 +359,7 @@ nlohmann::json logicBlockToJson(const LogicBlock& block) {
     json["inputs"] = block.inputs;
     json["outputs"] = block.outputs;
     json["python"] = block.python;
+    json["repeat"] = block.repeat;
     json["parameters"] = nlohmann::json::array();
     for (const LogicParam& param : block.parameters) {
         json["parameters"].push_back({{"name", param.name},
@@ -403,6 +404,7 @@ bool logicBlockFromJson(const nlohmann::json& json, LogicBlock& block, std::stri
     block.resource = json.value("resource", std::string{});
     block.runSignal = json.value("runSignal", std::string{});
     block.python = json.value("python", std::string{});
+    block.repeat = json.value("repeat", false);
     if (json.contains("inputs")) {
         for (const auto& item : json.at("inputs")) {
             block.inputs.push_back(item.get<std::string>());

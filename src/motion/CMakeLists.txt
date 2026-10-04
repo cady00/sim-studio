@@ -8,6 +8,7 @@ add_library(sim_motion
     src/LinkSuggest.cpp
     src/External.cpp
     src/CycleTime.cpp
+    src/Production.cpp
     src/WeldPlan.cpp
     src/Envelope.cpp
     src/Olp.cpp
