@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <sstream>
 
 namespace sim {
 namespace {
@@ -360,6 +362,10 @@ nlohmann::json logicBlockToJson(const LogicBlock& block) {
     json["outputs"] = block.outputs;
     json["python"] = block.python;
     json["repeat"] = block.repeat;
+    json["pins"] = nlohmann::json::array();
+    for (const auto& pin : block.pins) {
+        json["pins"].push_back({{"key", pin.first}, {"x", pin.second.first}, {"y", pin.second.second}});
+    }
     json["parameters"] = nlohmann::json::array();
     for (const LogicParam& param : block.parameters) {
         json["parameters"].push_back({{"name", param.name},
@@ -405,6 +411,14 @@ bool logicBlockFromJson(const nlohmann::json& json, LogicBlock& block, std::stri
     block.runSignal = json.value("runSignal", std::string{});
     block.python = json.value("python", std::string{});
     block.repeat = json.value("repeat", false);
+    if (json.contains("pins")) {
+        for (const auto& item : json.at("pins")) {
+            const std::string key = item.value("key", std::string{});
+            if (!key.empty()) {
+                block.pins.emplace_back(key, std::make_pair(item.value("x", 0.0), item.value("y", 0.0)));
+            }
+        }
+    }
     if (json.contains("inputs")) {
         for (const auto& item : json.at("inputs")) {
             block.inputs.push_back(item.get<std::string>());
@@ -460,6 +474,194 @@ bool logicBlockFromJson(const nlohmann::json& json, LogicBlock& block, std::stri
         }
     }
     error.clear();
+    return true;
+}
+
+namespace {
+
+std::string trimCopy(const std::string& value) {
+    std::size_t begin = 0;
+    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) {
+        ++begin;
+    }
+    std::size_t end = value.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
+std::vector<std::string> splitWords(const std::string& line) {
+    std::vector<std::string> words;
+    std::istringstream in(line);
+    std::string word;
+    while (in >> word) {
+        words.push_back(word);
+    }
+    return words;
+}
+
+}  // namespace
+
+std::string logicToText(const LogicBlock& block) {
+    std::ostringstream out;
+    out << "name " << block.name << "\n";
+    out << "in";
+    for (const std::string& name : block.inputs) {
+        out << " " << name;
+    }
+    out << "\nout";
+    for (const std::string& name : block.outputs) {
+        out << " " << name;
+    }
+    out << "\nrun " << block.runSignal << "\n";
+    for (const LogicParam& param : block.parameters) {
+        out << "param " << param.name << " " << param.type << " " << param.real << "\n";
+    }
+    out << "python:\n" << block.python;
+    if (!block.python.empty() && block.python.back() != '\n') {
+        out << "\n";
+    }
+    out << "---\n";
+    for (const LogicStep& step : block.steps) {
+        for (const LogicCondition& condition : step.when) {
+            out << "when " << condition.signal << " " << condition.op << " " << condition.number << "\n";
+        }
+        for (const LogicAction& action : step.actions) {
+            out << action.kind;
+            if (action.kind == "wait" || action.kind == "jog") {
+                out << " " << action.seconds;
+                if (action.kind == "jog") {
+                    out << " " << action.joint;
+                }
+            } else if (action.kind == "set_value") {
+                out << " " << action.signal << " " << action.speed;
+            } else if (action.kind == "move_pose") {
+                out << " " << action.pose;
+            } else if (!action.signal.empty()) {
+                out << " " << action.signal;
+            }
+            out << "\n";
+        }
+        out << "step\n";
+    }
+    return out.str();
+}
+
+bool logicFromText(const std::string& text, LogicBlock& block, std::string& error) {
+    LogicBlock parsed;
+    parsed.pins = block.pins;
+    parsed.repeat = block.repeat;
+    parsed.resource = block.resource;
+    std::string python;
+    bool inPython = false;
+    LogicStep step;
+    bool wroteStep = false;
+    std::istringstream lines(text);
+    std::string line;
+    try {
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (inPython) {
+            if (trimCopy(line) == "---") {
+                inPython = false;
+                continue;
+            }
+            python += line;
+            python.push_back('\n');
+            continue;
+        }
+        const std::string trimmed = trimCopy(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        if (trimmed == "python:") {
+            inPython = false;
+            inPython = true;
+            continue;
+        }
+        const std::vector<std::string> words = splitWords(trimmed);
+        if (words[0] == "name" && words.size() >= 2) {
+            parsed.name = words[1];
+        } else if (words[0] == "in") {
+            parsed.inputs.assign(words.begin() + 1, words.end());
+        } else if (words[0] == "out") {
+            parsed.outputs.assign(words.begin() + 1, words.end());
+        } else if (words[0] == "run") {
+            parsed.runSignal = words.size() >= 2 ? words[1] : std::string{};
+        } else if (words[0] == "param" && words.size() >= 2) {
+            LogicParam param;
+            param.name = words[1];
+            param.type = words.size() >= 3 ? words[2] : "real";
+            param.real = words.size() >= 4 ? std::stod(words[3]) : 0;
+            parsed.parameters.push_back(std::move(param));
+        } else if (words[0] == "when" && words.size() >= 2) {
+            LogicCondition condition;
+            condition.signal = words[1];
+            condition.op = words.size() >= 3 ? words[2] : "==";
+            condition.asBool = false;
+            condition.number = words.size() >= 4 ? std::stod(words[3]) : 0;
+            step.when.push_back(std::move(condition));
+        } else if (words[0] == "step") {
+            parsed.steps.push_back(std::move(step));
+            step = {};
+            wroteStep = true;
+        } else {
+            LogicAction action;
+            action.kind = words[0];
+            if (action.kind == "wait") {
+                action.seconds = words.size() >= 2 ? std::stod(words[1]) : 0;
+            } else if (action.kind == "jog") {
+                action.seconds = words.size() >= 2 ? std::stod(words[1]) : 0;
+                action.joint = words.size() >= 3 ? words[2] : std::string{};
+            } else if (action.kind == "set_value") {
+                action.signal = words.size() >= 2 ? words[1] : std::string{};
+                action.speed = words.size() >= 3 ? std::stod(words[2]) : 0;
+            } else if (action.kind == "move_pose") {
+                action.pose = words.size() >= 2 ? words[1] : std::string{};
+            } else if (words.size() >= 2) {
+                action.signal = words[1];
+            }
+            step.actions.push_back(std::move(action));
+        }
+    }
+    } catch (const std::exception&) {
+        error = "logic text has a bad number";
+        return false;
+    }
+    if (!step.actions.empty() || !step.when.empty()) {
+        parsed.steps.push_back(std::move(step));
+        wroteStep = true;
+    }
+    if (parsed.name.empty()) {
+        error = "logic text is missing a name";
+        return false;
+    }
+    if (!wroteStep) {
+        error = "logic text has no step";
+        return false;
+    }
+    parsed.python = python;
+    block = std::move(parsed);
+    error.clear();
+    return true;
+}
+
+bool wireLogicBlocks(LogicBlock& from, LogicBlock& to, std::string& signal) {
+    if (&from == &to) {
+        return false;
+    }
+    if (!from.outputs.empty()) {
+        signal = from.outputs.front();
+    } else {
+        signal = from.name + "_out";
+        from.outputs.push_back(signal);
+    }
+    if (std::find(to.inputs.begin(), to.inputs.end(), signal) == to.inputs.end()) {
+        to.inputs.push_back(signal);
+    }
     return true;
 }
 

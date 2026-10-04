@@ -114,6 +114,15 @@ bool LogicMachine::finished(const std::string& blockName) const {
     return false;
 }
 
+int LogicMachine::activeStep(const std::string& blockName) const {
+    for (const auto& [name, run] : runs_) {
+        if (name == blockName && run.active && !run.finished) {
+            return static_cast<int>(run.step);
+        }
+    }
+    return -1;
+}
+
 void LogicMachine::step(Scene& scene, double dt) {
     dt = std::max(dt, 0.0);
     for (LogicBlock& block : scene.logicBlocks) {

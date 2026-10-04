@@ -213,7 +213,15 @@ struct LogicBlock {
     // Stored with the block. The runner does not execute it; the script dock does,
     // and that script still only sees the signal table.
     std::string python;
+    // Canvas positions, keyed "in", "out", or "s0". Optional in older projects.
+    std::vector<std::pair<std::string, std::pair<double, double>>> pins;
 };
+
+// Text form shared by the canvas and the logic page. Python follows a `python:` line until `---`.
+std::string logicToText(const LogicBlock& block);
+bool logicFromText(const std::string& text, LogicBlock& block, std::string& error);
+// One shared signal name on the source outputs and the destination inputs.
+bool wireLogicBlocks(LogicBlock& from, LogicBlock& to, std::string& signal);
 
 const char* jointMotionName(JointMotion motion);
 bool jointMotionFromName(const std::string& name, JointMotion& out);

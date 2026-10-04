@@ -487,6 +487,7 @@ void MotionPanel::buildUi() {
         action.profile = profileCombo_->currentText().toStdString();
         block->steps.back().actions.push_back(action);
         actionList_->addItem(QString::fromStdString(action.kind + " " + action.pose));
+        scene_.notify(ChangeKind::Structure);
         refresh();
     });
     connect(runLogic, &QPushButton::clicked, this, [this] {
@@ -952,12 +953,54 @@ void MotionPanel::refresh() {
     if (index >= 0) {
         resourceCombo_->setCurrentIndex(index);
     }
+    const QString previousBlock = blockCombo_->currentText();
     blockCombo_->clear();
     for (const LogicBlock& block : scene_.logicBlocks) {
         blockCombo_->addItem(QString::fromStdString(block.name));
     }
-    if (blockCombo_->count() > 0 && python_->toPlainText().isEmpty()) {
-        python_->setPlainText(QString::fromStdString(scene_.logicBlocks.front().python));
+    const int blockIndex = blockCombo_->findText(previousBlock);
+    if (blockIndex >= 0) {
+        blockCombo_->setCurrentIndex(blockIndex);
+    }
+    const LogicBlock* shown = nullptr;
+    const std::string selectedName = blockCombo_->currentText().toStdString();
+    for (const LogicBlock& block : scene_.logicBlocks) {
+        if (shown == nullptr || block.name == selectedName) {
+            shown = &block;
+            if (block.name == selectedName) {
+                break;
+            }
+        }
+    }
+    if (shown != nullptr) {
+        blockName_->setText(QString::fromStdString(shown->name));
+        runSignal_->setText(QString::fromStdString(shown->runSignal));
+        QString inputs;
+        for (const std::string& name : shown->inputs) {
+            if (!inputs.isEmpty()) {
+                inputs += ", ";
+            }
+            inputs += QString::fromStdString(name);
+        }
+        QString outputs;
+        for (const std::string& name : shown->outputs) {
+            if (!outputs.isEmpty()) {
+                outputs += ", ";
+            }
+            outputs += QString::fromStdString(name);
+        }
+        inputs_->setText(inputs);
+        outputs_->setText(outputs);
+        if (!python_->hasFocus()) {
+            python_->setPlainText(QString::fromStdString(shown->python));
+        }
+        actionList_->clear();
+        for (const LogicStep& step : shown->steps) {
+            for (const LogicAction& action : step.actions) {
+                const std::string extra = !action.signal.empty() ? action.signal : (!action.pose.empty() ? action.pose : action.joint);
+                actionList_->addItem(QString::fromStdString(action.kind + " " + extra));
+            }
+        }
     }
     fillCombos();
     fillSolids();

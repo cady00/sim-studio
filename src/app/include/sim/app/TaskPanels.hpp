@@ -10,6 +10,7 @@
 class QGraphicsScene;
 class QGraphicsView;
 class QLabel;
+class QPlainTextEdit;
 
 namespace sim {
 class Scene;
@@ -33,6 +34,10 @@ public:
     void setDark(bool dark);
     void remember(const std::string& key, const QPointF& position);
     void refreshEdges();
+    void finishWire(const std::string& fromKey, const QPointF& scenePos);
+    void editKey(const std::string& key);
+    // keys look like "0/s1". hotSignals are bool signals that are currently true.
+    void setLive(const std::vector<std::string>& stepKeys, const std::vector<std::string>& hotSignals);
     bool arranging() const { return arranging_; }
 
 private:
@@ -41,14 +46,20 @@ private:
     void addStep();
     void addOutput();
     void renameSelected();
+    void applyText();
+    void showText();
+    void restyle();
 
     Scene& scene_;
     QGraphicsView* view_ = nullptr;
     QGraphicsScene* graph_ = nullptr;
+    QPlainTextEdit* source_ = nullptr;
     int selected_ = 0;
     bool arranging_ = false;
     bool dark_ = true;
     std::map<std::string, QPointF> pins_;
+    std::vector<std::string> liveKeys_;
+    std::vector<std::string> hotSignals_;
 };
 
 // Planner cycle time and joint samples for the first robot path.

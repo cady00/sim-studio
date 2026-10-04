@@ -737,6 +737,9 @@ void MainWindow::bindScene() {
             if (gantt_ != nullptr) {
                 gantt_->reload();
             }
+            if (logicCanvas_ != nullptr) {
+                logicCanvas_->reload();
+            }
             if (weld_ != nullptr) {
                 weld_->reload();
             }
@@ -1707,7 +1710,28 @@ void MainWindow::onSimTick() {
                                       .arg(QString::fromLatin1(physics_->backendName())));
     }
     if (logicCanvas_ != nullptr) {
-        logicCanvas_->update();
+        std::vector<std::string> steps;
+        std::vector<std::string> hot;
+        for (int index = 0; index < static_cast<int>(scene_.logicBlocks.size()); ++index) {
+            const LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+            const int step = logic_.activeStep(block.name);
+            if (step >= 0) {
+                steps.push_back(std::to_string(index) + "/s" + std::to_string(step));
+            }
+            for (const std::string& name : block.inputs) {
+                const Signal* signal = scene_.findSignal(name);
+                if (signal != nullptr && signal->flag) {
+                    hot.push_back(name);
+                }
+            }
+            for (const std::string& name : block.outputs) {
+                const Signal* signal = scene_.findSignal(name);
+                if (signal != nullptr && signal->flag) {
+                    hot.push_back(name);
+                }
+            }
+        }
+        logicCanvas_->setLive(steps, hot);
     }
     if (pathTimeline_ != nullptr) {
         pathTimeline_->update();

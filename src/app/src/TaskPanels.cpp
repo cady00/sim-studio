@@ -9,11 +9,13 @@
 #include <QGraphicsItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
+#include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
-#include <QLineEdit>
-#include <QHBoxLayout>
 #include <QInputDialog>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPaintEvent>
 #include <QPainter>
@@ -47,8 +49,37 @@ public:
     }
 
     const std::string& key() const { return key_; }
+    void setHot(bool hot) { setPen(QPen(hot ? QColor(214, 148, 48) : QColor(44, 110, 206), hot ? 3.0 : 1.5)); }
 
 protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton && event->pos().x() > rect().width() - 18) {
+            wiring_ = true;
+            event->accept();
+            return;
+        }
+        QGraphicsRectItem::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override {
+        if (wiring_) {
+            wiring_ = false;
+            if (canvas_ != nullptr) {
+                canvas_->finishWire(key_, event->scenePos());
+            }
+            event->accept();
+            return;
+        }
+        QGraphicsRectItem::mouseReleaseEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event) override {
+        if (canvas_ != nullptr) {
+            canvas_->editKey(key_);
+        }
+        QGraphicsRectItem::mouseDoubleClickEvent(event);
+    }
+
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override {
         const QVariant result = QGraphicsRectItem::itemChange(change, value);
         if (change == ItemPositionHasChanged && canvas_ != nullptr && !canvas_->arranging()) {
@@ -61,6 +92,7 @@ protected:
 private:
     LogicCanvas* canvas_ = nullptr;
     std::string key_;
+    bool wiring_ = false;
 };
 
 QString stepTitle(const LogicStep& step) {
@@ -99,8 +131,13 @@ LogicCanvas::LogicCanvas(Scene& scene, QWidget* parent) : QWidget(parent), scene
     add("添加步骤", [this] { addStep(); });
     add("添加输出", [this] { addOutput(); });
     add("重命名", [this] { renameSelected(); });
+    add("应用文本", [this] { applyText(); });
     tools->addStretch(1);
     layout->addLayout(tools);
+    source_ = new QPlainTextEdit(this);
+    source_->setPlaceholderText("name block\nin go\nout done\npython:\ndef on_step(dt):\n    pass\n---\nwait 0.1\nstep");
+    source_->setMaximumHeight(120);
+    layout->addWidget(source_);
     graph_ = new QGraphicsScene(this);
     view_ = new QGraphicsView(graph_, this);
     view_->setRenderHint(QPainter::Antialiasing);
@@ -117,6 +154,7 @@ LogicCanvas::LogicCanvas(Scene& scene, QWidget* parent) : QWidget(parent), scene
             const auto slash = key.find('/');
             if (slash != std::string::npos) {
                 selected_ = std::atoi(key.substr(0, slash).c_str());
+                showText();
             }
         }
     });
@@ -131,7 +169,26 @@ void LogicCanvas::setDark(bool dark) {
     reload();
 }
 
-void LogicCanvas::remember(const std::string& key, const QPointF& position) { pins_[key] = position; }
+void LogicCanvas::remember(const std::string& key, const QPointF& position) {
+    pins_[key] = position;
+    const auto slash = key.find('/');
+    if (slash == std::string::npos) {
+        return;
+    }
+    const int index = std::atoi(key.substr(0, slash).c_str());
+    if (index < 0 || index >= static_cast<int>(scene_.logicBlocks.size())) {
+        return;
+    }
+    LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+    const std::string suffix = key.substr(slash + 1);
+    for (auto& pin : block.pins) {
+        if (pin.first == suffix) {
+            pin.second = {position.x(), position.y()};
+            return;
+        }
+    }
+    block.pins.emplace_back(suffix, std::make_pair(position.x(), position.y()));
+}
 
 void LogicCanvas::refreshEdges() {
     const auto existing = graph_->items();
@@ -196,6 +253,7 @@ void LogicCanvas::reload() {
         auto* note = graph_->addText("还没有逻辑块。块与块之间只通过信号交换。");
         note->setDefaultTextColor(dark_ ? QColor(166, 172, 203) : QColor(76, 83, 115));
         note->setPos(16, 16);
+        arranging_ = false;
         return;
     }
     for (int index = 0; index < static_cast<int>(scene_.logicBlocks.size()); ++index) {
@@ -208,9 +266,21 @@ void LogicCanvas::reload() {
             const std::string key = std::to_string(index) + "/" + suffix;
             auto* node = new LogicNodeItem(this, key, title, subtitle, fill, dark_);
             const auto found = pins_.find(key);
+            bool placed = false;
             if (found != pins_.end()) {
                 node->setPos(found->second);
+                placed = true;
             } else {
+                for (const auto& pin : block.pins) {
+                    if (pin.first == suffix) {
+                        node->setPos(pin.second.first, pin.second.second);
+                        pins_[key] = node->pos();
+                        placed = true;
+                        break;
+                    }
+                }
+            }
+            if (!placed) {
                 node->setPos(24 + static_cast<int>(row.size()) * 210, 36 + index * 140);
                 pins_[key] = node->pos();
             }
@@ -243,6 +313,8 @@ void LogicCanvas::reload() {
     }
     arranging_ = false;
     refreshEdges();
+    restyle();
+    showText();
 }
 
 void LogicCanvas::addBlock() {
@@ -316,6 +388,160 @@ void LogicCanvas::renameSelected() {
     block.name = name.trimmed().toStdString();
     scene_.notify(ChangeKind::Structure);
     reload();
+}
+
+void LogicCanvas::showText() {
+    if (source_ == nullptr || source_->hasFocus()) {
+        return;
+    }
+    if (scene_.logicBlocks.empty()) {
+        source_->clear();
+        return;
+    }
+    selected_ = std::clamp(selected_, 0, static_cast<int>(scene_.logicBlocks.size()) - 1);
+    source_->setPlainText(QString::fromStdString(logicToText(scene_.logicBlocks[static_cast<std::size_t>(selected_)])));
+}
+
+void LogicCanvas::applyText() {
+    if (source_ == nullptr || scene_.logicBlocks.empty()) {
+        return;
+    }
+    selected_ = std::clamp(selected_, 0, static_cast<int>(scene_.logicBlocks.size()) - 1);
+    LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(selected_)];
+    LogicBlock parsed = block;
+    std::string error;
+    if (!logicFromText(source_->toPlainText().toStdString(), parsed, error)) {
+        source_->setPlaceholderText(QString::fromStdString(error));
+        return;
+    }
+    parsed.pins = block.pins;
+    parsed.resource = block.resource;
+    parsed.repeat = block.repeat;
+    block = std::move(parsed);
+    scene_.notify(ChangeKind::Structure);
+    reload();
+}
+
+void LogicCanvas::finishWire(const std::string& fromKey, const QPointF& scenePos) {
+    if (graph_ == nullptr) {
+        return;
+    }
+    const auto slash = fromKey.find('/');
+    if (slash == std::string::npos || fromKey.substr(slash + 1) != "out") {
+        return;
+    }
+    const int fromIndex = std::atoi(fromKey.substr(0, slash).c_str());
+    for (QGraphicsItem* item : graph_->items(scenePos)) {
+        auto* node = dynamic_cast<LogicNodeItem*>(item);
+        if (node == nullptr) {
+            continue;
+        }
+        const auto toSlash = node->key().find('/');
+        if (toSlash == std::string::npos || node->key().substr(toSlash + 1) != "in") {
+            continue;
+        }
+        const int toIndex = std::atoi(node->key().substr(0, toSlash).c_str());
+        if (toIndex == fromIndex || toIndex < 0 || fromIndex < 0 ||
+            toIndex >= static_cast<int>(scene_.logicBlocks.size()) ||
+            fromIndex >= static_cast<int>(scene_.logicBlocks.size())) {
+            return;
+        }
+        std::string signal;
+        if (!wireLogicBlocks(scene_.logicBlocks[static_cast<std::size_t>(fromIndex)],
+                             scene_.logicBlocks[static_cast<std::size_t>(toIndex)], signal)) {
+            return;
+        }
+        scene_.notify(ChangeKind::Structure);
+        reload();
+        return;
+    }
+}
+
+void LogicCanvas::editKey(const std::string& key) {
+    const auto slash = key.find('/');
+    if (slash == std::string::npos) {
+        return;
+    }
+    const int index = std::atoi(key.substr(0, slash).c_str());
+    const std::string suffix = key.substr(slash + 1);
+    if (index < 0 || index >= static_cast<int>(scene_.logicBlocks.size()) || suffix.size() < 2 || suffix[0] != 's') {
+        return;
+    }
+    const int stepIndex = std::atoi(suffix.substr(1).c_str());
+    LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+    if (stepIndex < 0 || stepIndex >= static_cast<int>(block.steps.size())) {
+        return;
+    }
+    QString current = "wait 0.1";
+    const LogicStep& step = block.steps[static_cast<std::size_t>(stepIndex)];
+    if (!step.actions.empty()) {
+        const LogicAction& action = step.actions.front();
+        if (action.kind == "wait" || action.kind == "jog") {
+            current = QString::fromStdString(action.kind + " " + std::to_string(action.seconds));
+        } else if (action.kind == "move_pose") {
+            current = QString::fromStdString("move_pose " + action.pose);
+        } else if (!action.signal.empty()) {
+            current = QString::fromStdString(action.kind + " " + action.signal);
+        } else {
+            current = QString::fromStdString(action.kind);
+        }
+    }
+    bool ok = false;
+    const QString line = QInputDialog::getText(this, "步骤", "kind signal 或 wait 秒", QLineEdit::Normal, current, &ok);
+    if (!ok || line.trimmed().isEmpty()) {
+        return;
+    }
+    const std::string text = "name holder\npython:\n---\n" + line.trimmed().toStdString() + "\nstep\n";
+    LogicBlock parsed;
+    std::string error;
+    if (!logicFromText(text, parsed, error) || parsed.steps.empty()) {
+        return;
+    }
+    block.steps[static_cast<std::size_t>(stepIndex)] = parsed.steps.front();
+    scene_.notify(ChangeKind::Structure);
+    reload();
+}
+
+void LogicCanvas::setLive(const std::vector<std::string>& stepKeys, const std::vector<std::string>& hotSignals) {
+    liveKeys_ = stepKeys;
+    hotSignals_ = hotSignals;
+    restyle();
+}
+
+void LogicCanvas::restyle() {
+    if (graph_ == nullptr) {
+        return;
+    }
+    for (QGraphicsItem* item : graph_->items()) {
+        auto* node = dynamic_cast<LogicNodeItem*>(item);
+        if (node == nullptr) {
+            continue;
+        }
+        bool hot = std::find(liveKeys_.begin(), liveKeys_.end(), node->key()) != liveKeys_.end();
+        if (!hot) {
+            const auto slash = node->key().find('/');
+            if (slash != std::string::npos) {
+                const int index = std::atoi(node->key().substr(0, slash).c_str());
+                if (index >= 0 && index < static_cast<int>(scene_.logicBlocks.size())) {
+                    const LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+                    for (const std::string& name : block.inputs) {
+                        if (std::find(hotSignals_.begin(), hotSignals_.end(), name) != hotSignals_.end()) {
+                            hot = node->key().substr(slash + 1) == "in";
+                        }
+                    }
+                    for (const std::string& name : block.outputs) {
+                        const Signal* signal = scene_.findSignal(name);
+                        if (signal != nullptr && signal->flag &&
+                            std::find(hotSignals_.begin(), hotSignals_.end(), name) != hotSignals_.end() &&
+                            node->key().substr(slash + 1) == "out") {
+                            hot = true;
+                        }
+                    }
+                }
+            }
+        }
+        node->setHot(hot);
+    }
 }
 
 PathTimeline::PathTimeline(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {

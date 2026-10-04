@@ -958,3 +958,53 @@ TEST_CASE("zone blend keeps joint velocity continuous and inside the limits") {
         REQUIRE(sample[0] >= -40.0 - 1e-3);
     }
 }
+
+TEST_CASE("logic text, wires, and the running step stay in sync") {
+    const char* text = R"(name load
+in go
+out done
+param dwell real 0.2
+python:
+def on_step(dt):
+    sim.set_bool("go", True)
+---
+wait 0.2
+set_output done
+step
+)";
+    sim::LogicBlock block;
+    std::string error;
+    REQUIRE(sim::logicFromText(text, block, error));
+    REQUIRE(block.name == "load");
+    REQUIRE(block.inputs.size() == 1);
+    REQUIRE(block.outputs.size() == 1);
+    REQUIRE(block.parameters.size() == 1);
+    REQUIRE(block.parameters[0].real == Catch::Approx(0.2));
+    REQUIRE(block.python.find("set_bool") != std::string::npos);
+    REQUIRE(block.steps.size() == 1);
+    REQUIRE(block.steps[0].actions.size() == 2);
+    REQUIRE(block.steps[0].actions[1].signal == "done");
+    const std::string written = sim::logicToText(block);
+    sim::LogicBlock again;
+    REQUIRE(sim::logicFromText(written, again, error));
+    REQUIRE(again.python == block.python);
+    REQUIRE(again.steps[0].actions[0].seconds == Catch::Approx(0.2));
+
+    sim::LogicBlock next;
+    next.name = "weld";
+    std::string signal;
+    REQUIRE(sim::wireLogicBlocks(block, next, signal));
+    REQUIRE(signal == "done");
+    REQUIRE(std::find(next.inputs.begin(), next.inputs.end(), "done") != next.inputs.end());
+
+    sim::Scene scene;
+    scene.logicBlocks = {block, next};
+    sim::LogicMachine machine;
+    REQUIRE(machine.start(scene, "load", error));
+    REQUIRE(machine.activeStep("load") == 0);
+    machine.step(scene, 0.05);
+    REQUIRE(machine.activeStep("load") == 0);
+    machine.step(scene, 0.2);
+    REQUIRE(scene.findSignal("done") != nullptr);
+    REQUIRE(scene.findSignal("done")->flag);
+}

@@ -126,6 +126,8 @@ public:
     bool start(Scene& scene, const std::string& blockName, std::string& error);
     void step(Scene& scene, double dt);
     bool finished(const std::string& blockName) const;
+    // Step index while the block is running, or -1 when it is idle.
+    int activeStep(const std::string& blockName) const;
     const std::string& lastError() const { return lastError_; }
 
 private:
