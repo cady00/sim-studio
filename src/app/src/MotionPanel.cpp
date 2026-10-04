@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -97,6 +98,13 @@ void MotionPanel::retranslate() {
         const QString key = button->property("i18n").toString();
         if (!key.isEmpty()) {
             button->setText(trk(key.toLatin1().constData()));
+        }
+    }
+    const auto labels = findChildren<QLabel*>();
+    for (QLabel* label : labels) {
+        const QString key = label->property("i18n").toString();
+        if (!key.isEmpty()) {
+            label->setText(trk(key.toLatin1().constData()));
         }
     }
 }
@@ -216,6 +224,21 @@ void MotionPanel::buildUi() {
     kinForm->addRow(trk("motion.weightManip"), weightManip_);
     kinForm->addRow(poseName_);
     kinForm->addRow(poseCombo_);
+    poseList_ = new QListWidget;
+    poseList_->setObjectName("motion.poseList");
+    poseList_->setMaximumHeight(88);
+    auto* poseLabel = new QLabel(trk("motion.poses"));
+    tag(poseLabel, "motion.poses");
+    kinForm->addRow(poseLabel, poseList_);
+    connect(poseList_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current, QListWidgetItem*) {
+        if (refreshing_ || current == nullptr || poseCombo_ == nullptr) {
+            return;
+        }
+        const int index = poseCombo_->findText(current->data(Qt::UserRole).toString());
+        if (index >= 0) {
+            poseCombo_->setCurrentIndex(index);
+        }
+    });
     kinForm->addRow(profileCombo_);
     kinForm->addRow(pickLabel_);
     kinLayout->addLayout(kinForm);
@@ -355,7 +378,36 @@ void MotionPanel::buildUi() {
     plus->setText(trk("motion.jogPlus"));
     connect(minus, &QPushButton::clicked, this, [this] { jog(-5); });
     connect(plus, &QPushButton::clicked, this, [this] { jog(5); });
+    auto* sliderLabel = new QLabel(trk("motion.jointSlider"));
+    tag(sliderLabel, "motion.jointSlider");
+    jointSlider_ = new QSlider(Qt::Horizontal);
+    jointSlider_->setObjectName("motion.jointSlider");
+    jointSlider_->setRange(0, 1000);
+    jointSlider_->setEnabled(false);
+    connect(jointSlider_, &QSlider::valueChanged, this, [this](int value) {
+        if (refreshing_) {
+            return;
+        }
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString());
+        if (joint == nullptr || !joint->coupledTo.empty()) {
+            return;
+        }
+        const double span = joint->upper - joint->lower;
+        joint->position = joint->lower + (static_cast<double>(value) / 1000.0) * span;
+        applyResource(scene_, *current);
+        refreshLive();
+        if (viewport_ != nullptr) {
+            viewport_->update();
+        }
+    });
+    connect(jointCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { syncJointSlider(); });
     jogRow->addWidget(minus);
+    jogRow->addWidget(sliderLabel);
+    jogRow->addWidget(jointSlider_, 1);
     jogRow->addWidget(plus);
     auto* couple = new QPushButton;
     tag(couple, "motion.applyCouple");
@@ -803,12 +855,99 @@ void MotionPanel::jog(double delta) {
     }
     applyResource(scene_, *current);
     refreshLive();
+    syncJointSlider();
     if (viewport_ != nullptr) {
         viewport_->update();
     }
 }
 
+void MotionPanel::syncJointSlider() {
+    if (jointSlider_ == nullptr) {
+        return;
+    }
+    KinematicResource* current = resource();
+    KinJoint* joint = current == nullptr || jointCombo_ == nullptr ? nullptr : findJoint(*current, jointCombo_->currentText().toStdString());
+    const QSignalBlocker blocker(jointSlider_);
+    if (joint == nullptr || !joint->coupledTo.empty()) {
+        jointSlider_->setEnabled(false);
+        jointSlider_->setValue(0);
+        return;
+    }
+    jointSlider_->setEnabled(true);
+    const double span = joint->upper - joint->lower;
+    int value = 0;
+    if (std::abs(span) > 1e-9) {
+        const double fraction = (joint->position - joint->lower) / span;
+        const double clamped = std::max(0.0, std::min(1.0, fraction));
+        value = static_cast<int>(std::lround(clamped * 1000.0));
+    }
+    jointSlider_->setValue(value);
+}
+
+std::string MotionPanel::selectPickedLink(const std::string& nodeId) {
+    if (nodeId.empty() || resourceCombo_ == nullptr) {
+        return {};
+    }
+    int bestDepth = -1;
+    std::string bestResource;
+    std::string bestLink;
+    std::string bestJoint;
+    for (const KinematicResource& item : scene_.resources) {
+        for (const KinLink& link : item.links) {
+            if (link.nodeId.empty()) {
+                continue;
+            }
+            auto node = scene_.find(nodeId);
+            int depth = 0;
+            bool hit = false;
+            while (node) {
+                if (node->id == link.nodeId) {
+                    hit = true;
+                    break;
+                }
+                node = node->parent.lock();
+                ++depth;
+            }
+            if (!hit || (bestDepth >= 0 && depth >= bestDepth)) {
+                continue;
+            }
+            bestDepth = depth;
+            bestResource = item.name;
+            bestLink = link.name;
+            bestJoint.clear();
+            for (const KinJoint& joint : item.joints) {
+                if (joint.childLink == link.name) {
+                    bestJoint = joint.name;
+                    break;
+                }
+            }
+        }
+    }
+    if (bestResource.empty()) {
+        return {};
+    }
+    const int resourceIndex = resourceCombo_->findText(QString::fromStdString(bestResource));
+    if (resourceIndex >= 0 && resourceCombo_->currentIndex() != resourceIndex) {
+        resourceCombo_->setCurrentIndex(resourceIndex);
+    }
+    if (childCombo_ != nullptr) {
+        const int childIndex = childCombo_->findText(QString::fromStdString(bestLink));
+        if (childIndex >= 0) {
+            childCombo_->setCurrentIndex(childIndex);
+        }
+    }
+    if (jointCombo_ != nullptr && !bestJoint.empty()) {
+        const int jointIndex = jointCombo_->findText(QString::fromStdString(bestJoint));
+        if (jointIndex >= 0) {
+            jointCombo_->setCurrentIndex(jointIndex);
+        }
+    }
+    syncJointSlider();
+    return bestResource + " / " + bestLink;
+}
+
 void MotionPanel::notePick(Vec3 point, Vec3 normal, const std::string& nodeId) {
+    const std::string picked = selectPickedLink(nodeId);
     if (faceAxisButton_ != nullptr && faceAxisButton_->isChecked() && !nodeId.empty()) {
         Vec3 origin;
         Vec3 direction;
@@ -845,13 +984,17 @@ void MotionPanel::notePick(Vec3 point, Vec3 normal, const std::string& nodeId) {
         picks_[0] = picks_[1];
         picks_[1] = point;
     }
-    pickLabel_->setText(QStringLiteral("A %1 %2 %3   B %4 %5 %6")
-                            .arg(picks_[0].x, 0, 'f', 1)
-                            .arg(picks_[0].y, 0, 'f', 1)
-                            .arg(picks_[0].z, 0, 'f', 1)
-                            .arg(pickCount_ > 1 ? picks_[1].x : 0, 0, 'f', 1)
-                            .arg(pickCount_ > 1 ? picks_[1].y : 0, 0, 'f', 1)
-                            .arg(pickCount_ > 1 ? picks_[1].z : 0, 0, 'f', 1));
+    QString text = QStringLiteral("A %1 %2 %3   B %4 %5 %6")
+                       .arg(picks_[0].x, 0, 'f', 1)
+                       .arg(picks_[0].y, 0, 'f', 1)
+                       .arg(picks_[0].z, 0, 'f', 1)
+                       .arg(pickCount_ > 1 ? picks_[1].x : 0, 0, 'f', 1)
+                       .arg(pickCount_ > 1 ? picks_[1].y : 0, 0, 'f', 1)
+                       .arg(pickCount_ > 1 ? picks_[1].z : 0, 0, 'f', 1);
+    if (!picked.empty()) {
+        text += QStringLiteral("   ") + QString::fromStdString(picked);
+    }
+    pickLabel_->setText(text);
 }
 
 void MotionPanel::fillSolids() {
@@ -920,8 +1063,25 @@ void MotionPanel::fillCombos() {
         jointCombo_->addItem(QString::fromStdString(joint.name));
         coupleCombo_->addItem(QString::fromStdString(joint.name));
     }
+    if (poseList_ != nullptr) {
+        poseList_->blockSignals(true);
+        poseList_->clear();
+    }
     for (const KinPose& pose : current->poses) {
         poseCombo_->addItem(QString::fromStdString(pose.name));
+        if (poseList_ == nullptr) {
+            continue;
+        }
+        QString detail = QString::fromStdString(pose.name);
+        for (const auto& [name, value] : pose.joints) {
+            detail += QStringLiteral("  ") + QString::fromStdString(name) + QStringLiteral("=") + QString::number(value, 'f', 1);
+        }
+        auto* item = new QListWidgetItem(detail);
+        item->setData(Qt::UserRole, QString::fromStdString(pose.name));
+        poseList_->addItem(item);
+    }
+    if (poseList_ != nullptr) {
+        poseList_->blockSignals(false);
     }
     const QString ik = QString::fromStdString(current->ik);
     const int ikIndex = ikCombo_->findText(ik);
@@ -1027,6 +1187,7 @@ void MotionPanel::refreshLive() {
         text += QString::fromStdString(suggestNote_);
     }
     liveLabel_->setText(text);
+    syncJointSlider();
 }
 
 }  // namespace sim

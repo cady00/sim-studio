@@ -184,6 +184,8 @@
   "motion.applyCouple": "设置耦合",
   "motion.jogMinus": "点动 −",
   "motion.jogPlus": "点动 +",
+  "motion.jointSlider": "关节",
+  "motion.poses": "姿态库",
   "motion.capturePose": "记录姿态",
   "motion.movePose": "运动到姿态",
   "motion.block": "逻辑块",

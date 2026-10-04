@@ -248,6 +248,8 @@ bool saveLibrary(const Scene& scene, const std::string& resourceName, const std:
 bool loadLibrary(Scene& scene, const std::string& path, std::string& error);
 
 void buildTurntableLiftDemo(Scene& scene);
+// Three mechanisms assembled only with ensureResource, addLink, adoptParts, addJoint, and capturePose.
+void buildEditorDevices(Scene& scene);
 void buildScaraDemo(Scene& scene);
 void buildCollisionDemo(Scene& scene);
 

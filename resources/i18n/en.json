@@ -184,6 +184,8 @@
   "motion.applyCouple": "Set coupling",
   "motion.jogMinus": "Jog −",
   "motion.jogPlus": "Jog +",
+  "motion.jointSlider": "Joint",
+  "motion.poses": "Poses",
   "motion.capturePose": "Record pose",
   "motion.movePose": "Move to pose",
   "motion.block": "Logic block",

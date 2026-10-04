@@ -15,6 +15,7 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QSlider;
 class QTabWidget;
 class QTimer;
 
@@ -46,6 +47,8 @@ private:
     void fillSolids();
     void jog(double delta);
     void ensureMoveTimer();
+    void syncJointSlider();
+    std::string selectPickedLink(const std::string& nodeId);
 
     Scene& scene_;
     I18nCatalog& i18n_;
@@ -67,6 +70,8 @@ private:
     QComboBox* childCombo_ = nullptr;
     QComboBox* motionCombo_ = nullptr;
     QComboBox* jointCombo_ = nullptr;
+    QSlider* jointSlider_ = nullptr;
+    QListWidget* poseList_ = nullptr;
     QDoubleSpinBox* axisSpin_[3] = {};
     QDoubleSpinBox* anchorSpin_[3] = {};
     QDoubleSpinBox* lowerSpin_ = nullptr;

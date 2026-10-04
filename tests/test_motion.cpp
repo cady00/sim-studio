@@ -1008,3 +1008,72 @@ step
     REQUIRE(scene.findSignal("done") != nullptr);
     REQUIRE(scene.findSignal("done")->flag);
 }
+
+TEST_CASE("editor devices are built from links joints and poses") {
+    sim::Scene scene;
+    sim::buildEditorDevices(scene);
+    REQUIRE(scene.resources.size() == 3);
+
+    auto* turntable = sim::findResource(scene.resources, "turntable");
+    auto* bed = sim::findResource(scene.resources, "rollerbed");
+    auto* hoist = sim::findResource(scene.resources, "hoist");
+    REQUIRE(turntable != nullptr);
+    REQUIRE(bed != nullptr);
+    REQUIRE(hoist != nullptr);
+
+    const sim::KinJoint* spin = sim::findJoint(*turntable, "spin");
+    REQUIRE(spin != nullptr);
+    REQUIRE(spin->motion == sim::JointMotion::Revolute);
+    REQUIRE(sim::findPose(*turntable, "home") != nullptr);
+    REQUIRE(sim::findPose(*turntable, "quarter") != nullptr);
+    REQUIRE(sim::findPose(*turntable, "quarter")->joints.at(0).second == Catch::Approx(90));
+
+    const sim::KinJoint* travel = sim::findJoint(*bed, "travel");
+    const sim::KinJoint* roll = sim::findJoint(*bed, "roll");
+    REQUIRE(travel != nullptr);
+    REQUIRE(roll != nullptr);
+    REQUIRE(travel->motion == sim::JointMotion::Prismatic);
+    REQUIRE(travel->upper == Catch::Approx(800));
+    REQUIRE(roll->motion == sim::JointMotion::Revolute);
+    REQUIRE(roll->coupledTo == "travel");
+    REQUIRE(roll->coupleRatio == Catch::Approx(0.02));
+    REQUIRE(sim::findPose(*bed, "mid") != nullptr);
+    REQUIRE(sim::findPose(*bed, "mid")->joints.at(0).second == Catch::Approx(400));
+
+    sim::KinJoint* rise = sim::findJoint(*hoist, "rise");
+    REQUIRE(rise != nullptr);
+    REQUIRE(rise->motion == sim::JointMotion::Prismatic);
+    REQUIRE(rise->upper == Catch::Approx(400));
+    REQUIRE(sim::findPose(*hoist, "down") != nullptr);
+    REQUIRE(sim::findPose(*hoist, "up") != nullptr);
+    REQUIRE(sim::findPose(*hoist, "up")->joints.at(0).second == Catch::Approx(300));
+
+    auto carriage = scene.findByName("HoistCarriage");
+    REQUIRE(carriage);
+    REQUIRE(carriage->parent.lock());
+    REQUIRE(carriage->parent.lock()->name == "carriage");
+    const double z0 = carriage->worldMatrix()(3, 2);
+    rise->position = 300;
+    sim::applyResource(scene, *hoist);
+    REQUIRE(carriage->worldMatrix()(3, 2) == Catch::Approx(z0 + 300));
+
+    auto belt = scene.findByName("BedBelt");
+    REQUIRE(belt);
+    const double x0 = belt->worldMatrix()(3, 0);
+    sim::findJoint(*bed, "travel")->position = 400;
+    sim::applyResource(scene, *bed);
+    REQUIRE(belt->worldMatrix()(3, 0) == Catch::Approx(x0 + 400));
+    REQUIRE(sim::jointCommand(*bed, *roll) == Catch::Approx(8));
+
+    auto platen = scene.find(sim::findLink(*turntable, "platen")->nodeId);
+    REQUIRE(platen);
+    sim::findJoint(*turntable, "spin")->position = 90;
+    sim::applyResource(scene, *turntable);
+    const sim::Quat turned = platen->local.rotation.normalized();
+    REQUIRE(std::abs(turned.z) > 0.6);
+    REQUIRE(std::abs(turned.w) > 0.6);
+
+    std::string error;
+    REQUIRE(sim::jogJoint(*hoist, "rise", 50, error));
+    REQUIRE(sim::findJoint(*hoist, "rise")->position == Catch::Approx(350));
+}

@@ -2154,6 +2154,11 @@ void MainWindow::loadDemo(const QString& name) {
         } else {
             applyTaskMode(0);
         }
+    } else if (name == QStringLiteral("devices")) {
+        buildEditorDevices(scene_);
+        demoPath_.clear();
+        viewport_->setCallout(QStringLiteral("转台 spin · 滚床 travel / roll · 升降机 rise"));
+        applyTaskMode(1);
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
