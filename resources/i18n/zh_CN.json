@@ -169,5 +169,17 @@
   "motion.addPoint": "加入路径点",
   "motion.attach": "吸附选中为工具",
   "motion.detach": "松开选中工具",
-  "file.filter.library": "机构库 (*.simlib)"
+  "file.filter.library": "机构库 (*.simlib)",
+  "dock.collision": "碰撞 / 近距",
+  "collision.clearance": "近距阈值",
+  "collision.setA": "碰撞集 A",
+  "collision.setB": "碰撞集 B",
+  "collision.objectsA": "A 的对象，逗号分隔",
+  "collision.objectsB": "B 的对象，逗号分隔",
+  "collision.save": "保存碰撞集",
+  "collision.run": "检查",
+  "collision.overlap": "碰撞",
+  "collision.near": "近距",
+  "collision.estimated": "体积为估计",
+  "collision.summary": "重叠 %1，近距 %2"
 }

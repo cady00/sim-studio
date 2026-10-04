@@ -51,6 +51,7 @@ message(STATUS "Sim Studio OCCT libraries: ${SIM_OCCT_LINK}")
 file(TO_CMAKE_PATH "${OpenCASCADE_RESOURCE_DIR}" SIM_OCCT_RESOURCE_PATH)
 
 add_subdirectory(src/core)
+add_subdirectory(src/collision)
 add_subdirectory(src/io)
 add_subdirectory(src/physics)
 add_subdirectory(src/scripting)

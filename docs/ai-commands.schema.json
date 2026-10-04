@@ -14,6 +14,7 @@
         "spawn", "delete", "list_nodes", "sim_play", "sim_pause", "sim_stop", "sim_state",
         "kin_list", "kin_set_joint", "kin_fk", "kin_ik", "kin_move_pose",
         "logic_start", "logic_step", "robot_plan", "attach_tool", "detach_tool",
+        "collision_query", "min_distance", "sweep_check",
         "nl_to_logic", "layout_suggest", "cycle_optimize", "explain_anomaly"
       ]
     },
@@ -34,7 +35,15 @@
     "qz": { "type": "number" },
     "dt": { "type": "number" },
     "steps": { "type": "integer" },
-    "apply": { "type": "boolean" }
+    "apply": { "type": "boolean" },
+    "other": { "type": "string" },
+    "clearance": { "type": "number" },
+    "x0": { "type": "number" },
+    "y0": { "type": "number" },
+    "z0": { "type": "number" },
+    "x1": { "type": "number" },
+    "y1": { "type": "number" },
+    "z1": { "type": "number" }
   },
   "additionalProperties": false
 }

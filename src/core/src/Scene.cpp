@@ -101,6 +101,8 @@ void Scene::clear() {
     resources.clear();
     logicBlocks.clear();
     robotPaths.clear();
+    proximity = {};
+    convexCache.clear();
     dirty_ = false;
     ++structureRevision_;
     if (!mute_ && onChanged) {
@@ -131,6 +133,8 @@ void Scene::steal(Scene& other) {
     resources = std::move(other.resources);
     logicBlocks = std::move(other.logicBlocks);
     robotPaths = std::move(other.robotPaths);
+    proximity = std::move(other.proximity);
+    convexCache = std::move(other.convexCache);
     selected_.clear();
     other.root_.reset();
     other.meshes_.clear();
@@ -141,6 +145,8 @@ void Scene::steal(Scene& other) {
     other.resources.clear();
     other.logicBlocks.clear();
     other.robotPaths.clear();
+    other.proximity = {};
+    other.convexCache.clear();
     if (!root_) {
         clear();
         return;
@@ -427,6 +433,8 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     resources.clear();
     logicBlocks.clear();
     robotPaths.clear();
+    proximity = {};
+    convexCache.clear();
     selected_.clear();
     adoptIds();
     dirty_ = false;

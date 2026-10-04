@@ -2,8 +2,10 @@ qt_add_executable(simstudio
     src/main.cpp
     src/MainWindow.cpp
     src/MotionPanel.cpp
+    src/CollisionPanel.cpp
     include/sim/app/MainWindow.hpp
     include/sim/app/MotionPanel.hpp
+    include/sim/app/CollisionPanel.hpp
     ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 set_target_properties(simstudio PROPERTIES AUTORCC ON AUTOMOC ON)

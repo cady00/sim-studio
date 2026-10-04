@@ -1,5 +1,6 @@
 #include "sim/app/MainWindow.hpp"
 
+#include "sim/app/CollisionPanel.hpp"
 #include "sim/app/MotionPanel.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ObjImporter.hpp"
@@ -239,6 +240,13 @@ void MainWindow::buildUi() {
     scriptDock->setWidget(scriptHost);
     addDockWidget(Qt::BottomDockWidgetArea, scriptDock);
     splitDockWidget(signalDock, scriptDock, Qt::Horizontal);
+
+    collision_ = new CollisionPanel(scene_, i18n_, this);
+    collision_->setViewport(viewport_);
+    auto* collisionDock = new QDockWidget(this);
+    collisionDock->setObjectName("dock.collision");
+    collisionDock->setWidget(collision_);
+    addDockWidget(Qt::BottomDockWidgetArea, collisionDock);
 
     motion_ = new MotionPanel(scene_, i18n_, logic_, *robot_, this);
     motion_->setViewport(viewport_);
@@ -551,6 +559,12 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.motion")) {
         dock->setWindowTitle(trk("dock.motion"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.collision")) {
+        dock->setWindowTitle(trk("dock.collision"));
+    }
+    if (collision_ != nullptr) {
+        collision_->retranslate();
     }
     if (motion_ != nullptr) {
         motion_->retranslate();
@@ -1336,15 +1350,22 @@ void MainWindow::onSpeedChanged(double speed) {
 void MainWindow::runScriptSnippet() {}
 
 void MainWindow::loadDemo(const QString& name) {
+    collisionDemo_ = name == QStringLiteral("collision");
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
         demoPath_ = "pick_place";
+    } else if (collisionDemo_) {
+        buildCollisionDemo(scene_);
+        demoPath_.clear();
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
     }
     if (motion_ != nullptr) {
         motion_->refresh();
+    }
+    if (collision_ != nullptr && collisionDemo_) {
+        collision_->reload();
     }
     rebuildTree();
     viewport_->fitAll();
@@ -1360,6 +1381,18 @@ void MainWindow::beginHeadlessPlayback() {
         }
         viewport_->setStandardView(StandardView::Iso);
         viewport_->fitAll();
+        if (collisionDemo_ && collision_ != nullptr) {
+            if (auto* dock = findChild<QDockWidget*>("dock.collision")) {
+                if (auto* signals = findChild<QDockWidget*>("dock.signals")) {
+                    tabifyDockWidget(signals, dock);
+                }
+                dock->show();
+                dock->raise();
+                resizeDocks({dock}, {280}, Qt::Vertical);
+            }
+            collision_->reload();
+            viewport_->fitAll();
+        }
         if (const auto pusher = scene_.findByName("Pusher")) {
             scene_.setSelected(pusher->id);
         }

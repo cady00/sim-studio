@@ -205,4 +205,30 @@ void buildScaraDemo(Scene& scene) {
     applyResource(scene, resource);
 }
 
+void buildCollisionDemo(Scene& scene) {
+    scene.clear();
+    scene.name = "Collision sets";
+    auto block = [&](const std::string& name, Vec3 half, Vec3 color, Vec3 at) {
+        auto node = scene.makeNode(NodeKind::Part, name);
+        node->meshId = scene.addMesh(makeBoxMesh(half));
+        node->color = color;
+        node->local.translation = at;
+        scene.addChild(scene.root(), node);
+    };
+    const Vec3 gray{0.62, 0.64, 0.68};
+    block("OverlapA", {30, 30, 30}, gray, {0, 0, 30});
+    block("OverlapB", {30, 30, 30}, gray, {50, 0, 30});
+    block("ClearA", {30, 30, 30}, gray, {0, 160, 30});
+    block("ClearB", {30, 30, 30}, gray, {68, 160, 30});
+    scene.proximity.clearanceMm = 15;
+    CollisionSet movers;
+    movers.name = "movers";
+    movers.objects = {"OverlapA", "ClearA"};
+    CollisionSet fixtures;
+    fixtures.name = "fixtures";
+    fixtures.objects = {"OverlapB", "ClearB"};
+    scene.proximity.sets = {std::move(movers), std::move(fixtures)};
+    scene.proximity.pairs.emplace_back("movers", "fixtures");
+}
+
 }  // namespace sim

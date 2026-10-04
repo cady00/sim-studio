@@ -201,6 +201,8 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     for (const RobotPath& path : scene.robotPaths) {
         json["paths"].push_back(robotPathToJson(path));
     }
+    json["proximity"] = proximityToJson(scene.proximity);
+    json["convexCache"] = convexCacheToJson(scene.convexCache);
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
         json["signals"].push_back(signalToJson(signal));
@@ -361,6 +363,12 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
             }
             scene.robotPaths.push_back(std::move(path));
         }
+    }
+    if (json.contains("proximity")) {
+        proximityFromJson(json.at("proximity"), scene.proximity);
+    }
+    if (json.contains("convexCache")) {
+        convexCacheFromJson(json.at("convexCache"), scene.convexCache);
     }
     result.ok = true;
     result.message.clear();

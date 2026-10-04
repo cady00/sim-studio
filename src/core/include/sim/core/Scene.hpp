@@ -2,6 +2,7 @@
 
 #include "sim/core/Kinematics.hpp"
 #include "sim/core/Mech.hpp"
+#include "sim/core/Proximity.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Transform.hpp"
 
@@ -89,6 +90,8 @@ public:
     std::vector<KinematicResource> resources;
     std::vector<LogicBlock> logicBlocks;
     std::vector<RobotPath> robotPaths;
+    ProximitySetup proximity;
+    std::vector<ConvexCacheEntry> convexCache;
 
     bool dirty() const { return dirty_; }
     void markClean() { dirty_ = false; }

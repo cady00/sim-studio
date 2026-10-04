@@ -169,5 +169,17 @@
   "motion.addPoint": "Add path point",
   "motion.attach": "Attach selection as tool",
   "motion.detach": "Detach selection",
-  "file.filter.library": "Resource library (*.simlib)"
+  "file.filter.library": "Resource library (*.simlib)",
+  "dock.collision": "Collision / clearance",
+  "collision.clearance": "Clearance",
+  "collision.setA": "Collision set A",
+  "collision.setB": "Collision set B",
+  "collision.objectsA": "Objects in A, comma separated",
+  "collision.objectsB": "Objects in B, comma separated",
+  "collision.save": "Save collision sets",
+  "collision.run": "Check",
+  "collision.overlap": "Collision",
+  "collision.near": "Near miss",
+  "collision.estimated": "volume is estimated",
+  "collision.summary": "Overlaps %1, near misses %2"
 }

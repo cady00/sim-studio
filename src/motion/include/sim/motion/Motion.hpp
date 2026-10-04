@@ -45,6 +45,19 @@ struct MotionPlan {
     std::vector<std::vector<double>> samples;
     std::vector<std::string> warnings;
     std::vector<std::pair<std::string, std::string>> collisions;
+    // First contact of the continuous sweep. `sweepTime` is seconds along the samples.
+    bool sweepHit = false;
+    double sweepTime = 0;
+    std::string sweepA;
+    std::string sweepB;
+};
+
+struct PathSweepHit {
+    bool hit = false;
+    double time = 0;
+    std::string a;
+    std::string b;
+    Vec3 point{0, 0, 0};
 };
 
 double profileDuration(ProfileKind kind, double q0, double q1, double vmax, double amax);
@@ -106,6 +119,8 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
 std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource);
 void highlightCollisions(Scene& scene, const KinematicResource& resource,
                          const std::vector<std::pair<std::string, std::string>>& pairs);
+// Continuous check along joint-space samples. The bound is the summed joint travel of every point.
+PathSweepHit sweepPlannedSamples(Scene& scene, KinematicResource& resource, const std::vector<std::vector<double>>& samples);
 
 bool attachTool(Scene& scene, KinematicResource& resource, const std::string& nodeId, std::string& error);
 bool detachTool(Scene& scene, const std::string& nodeId, std::string& error);
@@ -115,6 +130,7 @@ bool loadLibrary(Scene& scene, const std::string& path, std::string& error);
 
 void buildTurntableLiftDemo(Scene& scene);
 void buildScaraDemo(Scene& scene);
+void buildCollisionDemo(Scene& scene);
 
 // In-house planner. IRcsAdapter is the unimplemented vendor seam.
 class IRcsAdapter {

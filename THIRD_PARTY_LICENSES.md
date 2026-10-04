@@ -16,6 +16,8 @@ Sim Studio 本体是专有软件，见 `LICENSE.txt`。下面的组件保留各�
 
 没有链接 NVIDIA PhysX、Bullet、bgfx 或 Diligent Engine。渲染是仓库内的 `IRenderer`，当前后端是 OpenGL。bgfx（BSD-2-Clause）和 Diligent（Apache-2.0）只在 `docs/ARCHITECTURE.md` 里做过选型，没有编译进程序。
 
+近距查询（宽相 BVH、GJK 距离、支撑平面穿透、体素凸分解、窄带符号距离、路径扫掠）是仓库内的 `src/collision`，没有引入 CoACD、V-HACD、libccd 或其他碰撞库。Jolt 仍只做刚体，不作为 `ICollisionQuery` 的后端。
+
 Qt 动态链接义务：随二进制提供 Qt 许可证文本与对应动态库，并允许接收者替换这些库。Open CASCADE 例外允许专有程序使用 OCCT 库，前提是不把 OCCT 源码改动藏进专有模块；我们没有修改 OCCT 源码。
 
 获取许可证全文：

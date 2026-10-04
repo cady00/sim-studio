@@ -1,9 +1,12 @@
 #include "sim/motion/Motion.hpp"
 
+#include "sim/collision/Query.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <set>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace sim {
 
@@ -14,84 +17,6 @@ namespace {
 struct Chunk {
     std::vector<std::vector<double>> frames;
 };
-
-bool aabbOverlap(const Aabb& a, const Aabb& b) {
-    if (!a.valid || !b.valid) {
-        return false;
-    }
-    return a.min.x <= b.max.x && a.max.x >= b.min.x && a.min.y <= b.max.y && a.max.y >= b.min.y && a.min.z <= b.max.z &&
-           a.max.z >= b.min.z;
-}
-
-void expandMesh(Aabb& box, const Scene& scene, const SceneNode& node) {
-    if (node.meshId.empty()) {
-        return;
-    }
-    const auto mesh = scene.mesh(node.meshId);
-    if (!mesh || !mesh->bounds.valid) {
-        return;
-    }
-    const Mat4 world = node.worldMatrix();
-    const Vec3 corners[8] = {
-        {mesh->bounds.min.x, mesh->bounds.min.y, mesh->bounds.min.z},
-        {mesh->bounds.max.x, mesh->bounds.min.y, mesh->bounds.min.z},
-        {mesh->bounds.min.x, mesh->bounds.max.y, mesh->bounds.min.z},
-        {mesh->bounds.max.x, mesh->bounds.max.y, mesh->bounds.min.z},
-        {mesh->bounds.min.x, mesh->bounds.min.y, mesh->bounds.max.z},
-        {mesh->bounds.max.x, mesh->bounds.min.y, mesh->bounds.max.z},
-        {mesh->bounds.min.x, mesh->bounds.max.y, mesh->bounds.max.z},
-        {mesh->bounds.max.x, mesh->bounds.max.y, mesh->bounds.max.z},
-    };
-    for (const Vec3& corner : corners) {
-        box.expand(transformPoint(world, corner));
-    }
-}
-
-Aabb linkBounds(const Scene& scene, const KinematicResource& resource, const KinLink& link) {
-    std::unordered_set<std::string> stops;
-    for (const KinLink& other : resource.links) {
-        if (other.nodeId != link.nodeId) {
-            stops.insert(other.nodeId);
-        }
-    }
-    Aabb box;
-    const auto root = scene.find(link.nodeId);
-    std::vector<std::pair<std::shared_ptr<SceneNode>, bool>> stack;
-    if (root) {
-        stack.push_back({root, true});
-    }
-    while (!stack.empty()) {
-        auto [node, isRoot] = stack.back();
-        stack.pop_back();
-        if (!node) {
-            continue;
-        }
-        if (!isRoot && stops.count(node->id) != 0) {
-            continue;
-        }
-        expandMesh(box, scene, *node);
-        for (const auto& child : node->children) {
-            stack.push_back({child, false});
-        }
-    }
-    return box;
-}
-
-bool underResource(const SceneNode& node, const KinematicResource& resource) {
-    for (auto cursor = node.parent.lock(); cursor; cursor = cursor->parent.lock()) {
-        for (const KinLink& link : resource.links) {
-            if (cursor->id == link.nodeId || node.id == link.nodeId) {
-                return true;
-            }
-        }
-    }
-    for (const KinLink& link : resource.links) {
-        if (node.id == link.nodeId) {
-            return true;
-        }
-    }
-    return false;
-}
 
 bool adjacentLinks(const KinematicResource& resource, const std::string& a, const std::string& b) {
     for (const KinJoint& joint : resource.joints) {
@@ -185,6 +110,157 @@ bool circleThrough(Vec3 a, Vec3 b, Vec3 c, Vec3& center, Vec3& axis, double& swe
     return std::abs(sweep) > 1e-6;
 }
 
+std::string ownerLink(const Scene& scene, const KinematicResource& resource, const std::string& partName) {
+    auto node = scene.findByName(partName);
+    while (node) {
+        for (const KinLink& link : resource.links) {
+            if (link.nodeId == node->id) {
+                return link.name;
+            }
+        }
+        node = node->parent.lock();
+    }
+    return {};
+}
+
+bool relevantPair(const Scene& scene, const KinematicResource& resource, const std::string& a, const std::string& b) {
+    if (!scene.proximity.pairs.empty()) {
+        return true;
+    }
+    const std::string left = ownerLink(scene, resource, a);
+    const std::string right = ownerLink(scene, resource, b);
+    if (left.empty() && right.empty()) {
+        return false;
+    }
+    if (left == right) {
+        return false;
+    }
+    if (!left.empty() && !right.empty() && adjacentLinks(resource, left, right)) {
+        return false;
+    }
+    return true;
+}
+
+void meshCorners(const Scene& scene, const SceneNode& node, std::vector<Vec3>& corners) {
+    if (!node.meshId.empty()) {
+        if (const auto mesh = scene.mesh(node.meshId); mesh && mesh->bounds.valid) {
+            const Mat4 world = node.worldMatrix();
+            const Vec3 lo = mesh->bounds.min;
+            const Vec3 hi = mesh->bounds.max;
+            const Vec3 local[8] = {{lo.x, lo.y, lo.z}, {hi.x, lo.y, lo.z}, {hi.x, hi.y, lo.z}, {lo.x, hi.y, lo.z},
+                                   {lo.x, lo.y, hi.z}, {hi.x, lo.y, hi.z}, {hi.x, hi.y, hi.z}, {lo.x, hi.y, hi.z}};
+            for (const Vec3& point : local) {
+                corners.push_back(transformPoint(world, point));
+            }
+        }
+    }
+    for (const auto& child : node.children) {
+        if (child) {
+            meshCorners(scene, *child, corners);
+        }
+    }
+}
+
+double pointAxisDistance(Vec3 point, Vec3 origin, Vec3 axis) {
+    const Vec3 delta = point - origin;
+    return length(delta - axis * dot(delta, axis));
+}
+
+double jointReach(const Scene& scene, const KinematicResource& resource, const KinJoint& joint) {
+    const KinLink* child = nullptr;
+    const KinLink* parent = nullptr;
+    for (const KinLink& link : resource.links) {
+        if (link.name == joint.childLink) {
+            child = &link;
+        }
+        if (link.name == joint.parentLink) {
+            parent = &link;
+        }
+    }
+    if (child == nullptr) {
+        return 0;
+    }
+    auto childNode = scene.find(child->nodeId);
+    if (!childNode) {
+        return 0;
+    }
+    Mat4 parentWorld = Mat4::identity();
+    if (parent != nullptr) {
+        if (auto parentNode = scene.find(parent->nodeId)) {
+            parentWorld = parentNode->worldMatrix();
+        }
+    } else if (auto parentNode = childNode->parent.lock()) {
+        parentWorld = parentNode->worldMatrix();
+    }
+    const Vec3 origin = transformPoint(parentWorld, joint.anchor);
+    const Vec3 axis = normalize(transformVector(parentWorld, joint.axis));
+    if (length(axis) < 1e-12) {
+        return 0;
+    }
+    std::vector<Vec3> corners;
+    meshCorners(scene, *childNode, corners);
+    double reach = 0;
+    for (const Vec3& corner : corners) {
+        reach = std::max(reach, pointAxisDistance(corner, origin, axis));
+    }
+    return reach;
+}
+
+double motionBound(const Scene& scene, const KinematicResource& resource, const std::vector<double>& q0,
+                   const std::vector<double>& q1) {
+    std::unordered_map<std::string, double> memo;
+    std::function<double(const std::string&)> slack = [&](const std::string& link) {
+        const auto existing = memo.find(link);
+        if (existing != memo.end()) {
+            return existing->second;
+        }
+        memo[link] = 0;
+        double bound = 0;
+        for (std::size_t i = 0; i < resource.joints.size(); ++i) {
+            const KinJoint& joint = resource.joints[i];
+            if (joint.parentLink != link) {
+                continue;
+            }
+            const double before = i < q0.size() ? q0[i] : 0;
+            const double after = i < q1.size() ? q1[i] : 0;
+            const double delta = std::abs(after - before);
+            const double child = slack(joint.childLink);
+            if (joint.motion == JointMotion::Prismatic) {
+                bound = std::max(bound, delta + child);
+            } else {
+                const double theta = deg2rad(delta);
+                const double reach = jointReach(scene, resource, joint);
+                bound = std::max(bound, theta * (reach + child) + child);
+            }
+        }
+        memo[link] = bound;
+        return bound;
+    };
+    double bound = 0;
+    for (const KinLink& link : resource.links) {
+        bool root = true;
+        for (const KinJoint& joint : resource.joints) {
+            if (joint.childLink == link.name) {
+                root = false;
+            }
+        }
+        if (root) {
+            bound = std::max(bound, slack(link.name));
+        }
+    }
+    return bound;
+}
+
+std::vector<double> mixSamples(const std::vector<double>& a, const std::vector<double>& b, double u) {
+    std::vector<double> out(std::max(a.size(), b.size()));
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const double left = i < a.size() ? a[i] : 0;
+        const double right = i < b.size() ? b[i] : 0;
+        out[i] = (1.0 - u) * left + u * right;
+    }
+    return out;
+}
+
 }  // namespace
 
 // slerp is file-local in Solve.cpp. Duplicate a small one here.
@@ -208,52 +284,88 @@ Quat slerpPublic(Quat a, Quat b, double t) {
 }
 
 std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource) {
-    std::vector<Aabb> boxes;
-    boxes.reserve(resource.links.size());
-    for (const KinLink& link : resource.links) {
-        boxes.push_back(linkBounds(scene, resource, link));
-    }
+    auto query = createCollisionQuery();
+    query->rebuild(scene);
     std::set<std::pair<std::string, std::string>> hits;
-    for (std::size_t i = 0; i < resource.links.size(); ++i) {
-        for (std::size_t j = i + 1; j < resource.links.size(); ++j) {
-            if (adjacentLinks(resource, resource.links[i].name, resource.links[j].name)) {
-                continue;
-            }
-            if (aabbOverlap(boxes[i], boxes[j])) {
-                hits.emplace(resource.links[i].name, resource.links[j].name);
-            }
+    for (const ContactHit& hit : query->query(scene, 0)) {
+        if (hit.distance > 1e-4 || !relevantPair(scene, resource, hit.a, hit.b)) {
+            continue;
         }
-    }
-    if (scene.root()) {
-        std::vector<std::shared_ptr<SceneNode>> stack{scene.root()};
-        while (!stack.empty()) {
-            auto node = stack.back();
-            stack.pop_back();
-            if (!node) {
-                continue;
-            }
-            for (const auto& child : node->children) {
-                stack.push_back(child);
-            }
-            if (node->meshId.empty() || underResource(*node, resource)) {
-                continue;
-            }
-            Aabb box;
-            expandMesh(box, scene, *node);
-            for (std::size_t i = 0; i < resource.links.size(); ++i) {
-                if (aabbOverlap(boxes[i], box)) {
-                    const std::string left = resource.links[i].name;
-                    const std::string right = node->name;
-                    if (left < right) {
-                        hits.emplace(left, right);
-                    } else {
-                        hits.emplace(right, left);
-                    }
-                }
-            }
+        if (hit.a < hit.b) {
+            hits.emplace(hit.a, hit.b);
+        } else {
+            hits.emplace(hit.b, hit.a);
         }
     }
     return {hits.begin(), hits.end()};
+}
+
+PathSweepHit sweepPlannedSamples(Scene& scene, KinematicResource& resource, const std::vector<std::vector<double>>& samples) {
+    PathSweepHit sweep;
+    if (samples.empty()) {
+        return sweep;
+    }
+    setJointVector(resource, samples.front());
+    applyResource(scene, resource);
+    auto query = createCollisionQuery();
+    query->rebuild(scene);
+    if (samples.size() == 1) {
+        for (const ContactHit& hit : query->query(scene, 0)) {
+            if (hit.distance <= 1e-4 && relevantPair(scene, resource, hit.a, hit.b)) {
+                sweep.hit = true;
+                sweep.a = hit.a;
+                sweep.b = hit.b;
+                sweep.point = hit.pointA;
+                return sweep;
+            }
+        }
+        return sweep;
+    }
+    for (std::size_t segment = 0; segment + 1 < samples.size(); ++segment) {
+        double u = 0;
+        for (int iter = 0; iter < 24; ++iter) {
+            const std::vector<double> pose = mixSamples(samples[segment], samples[segment + 1], u);
+            setJointVector(resource, pose);
+            applyResource(scene, resource);
+            const double bound = std::max(motionBound(scene, resource, pose, samples[segment + 1]), 0.0);
+            const double gapLimit = std::max(bound, 0.05);
+            double distance = gapLimit + 1;
+            ContactHit chosen;
+            bool found = false;
+            for (const ContactHit& hit : query->query(scene, gapLimit)) {
+                if (!relevantPair(scene, resource, hit.a, hit.b)) {
+                    continue;
+                }
+                if (!found || hit.distance < distance) {
+                    found = true;
+                    distance = hit.distance;
+                    chosen = hit;
+                }
+            }
+            const double time = (static_cast<double>(segment) + u) * (1.0 / 60.0);
+            if (found && distance <= 0.05) {
+                sweep.hit = true;
+                sweep.time = time;
+                sweep.a = chosen.a;
+                sweep.b = chosen.b;
+                sweep.point = chosen.pointA;
+                return sweep;
+            }
+            if (!found || distance > bound) {
+                break;
+            }
+            const double remain = 1.0 - u;
+            const double alpha = std::clamp(0.9 * distance / std::max(bound, 1e-9), 0.05, 1.0);
+            if (alpha >= 0.999) {
+                break;
+            }
+            u += alpha * remain;
+            if (u >= 1.0 - 1e-4) {
+                break;
+            }
+        }
+    }
+    return sweep;
 }
 
 void highlightCollisions(Scene& scene, const KinematicResource& resource,
@@ -393,6 +505,18 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
         applyResource(scene, resource);
         for (const auto& hit : collidingPairs(scene, resource)) {
             collisions.insert(hit);
+        }
+    }
+    const PathSweepHit swept = sweepPlannedSamples(scene, resource, plan.samples);
+    plan.sweepHit = swept.hit;
+    plan.sweepTime = swept.time;
+    plan.sweepA = swept.a;
+    plan.sweepB = swept.b;
+    if (swept.hit) {
+        if (swept.a < swept.b) {
+            collisions.emplace(swept.a, swept.b);
+        } else {
+            collisions.emplace(swept.b, swept.a);
         }
     }
     plan.collisions.assign(collisions.begin(), collisions.end());

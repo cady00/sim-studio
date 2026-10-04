@@ -1,5 +1,7 @@
 #include "sim/scripting/ScriptHost.hpp"
 
+#include "sim/collision/Query.hpp"
+
 #include <pybind11/embed.h>
 
 #include <utility>
@@ -106,6 +108,54 @@ PYBIND11_EMBEDDED_MODULE(simstudio, module) {
         }
         scene->removeNode(id);
     });
+    module.def("collision_query", [](double clearance) {
+        auto query = createCollisionQuery();
+        Scene* scene = sceneOrThrow();
+        query->rebuild(*scene);
+        py::list hits;
+        for (const ContactHit& hit : query->query(*scene, clearance)) {
+            py::dict item;
+            item["a"] = hit.a;
+            item["b"] = hit.b;
+            item["kind"] = hit.kind == HitKind::Overlap ? "overlap" : "clearance";
+            item["distance"] = hit.distance;
+            item["penetration"] = hit.penetration;
+            item["volume"] = hit.volume;
+            item["volumeEstimated"] = hit.volumeEstimated;
+            hits.append(item);
+        }
+        query->commitCache(*scene);
+        return hits;
+    });
+    module.def("min_distance", [](const std::string& a, const std::string& b) {
+        auto query = createCollisionQuery();
+        Scene* scene = sceneOrThrow();
+        query->rebuild(*scene);
+        const DistanceResult distance = query->minDistance(*scene, a, b);
+        if (!distance.ok) {
+            throw std::runtime_error(distance.error.empty() ? "distance failed" : distance.error);
+        }
+        py::dict item;
+        item["distance"] = distance.distance;
+        item["gradient_from_sdf"] = distance.gradientFromSdf;
+        item["normal"] = py::make_tuple(distance.normal.x, distance.normal.y, distance.normal.z);
+        item["gradient"] = py::make_tuple(distance.gradient.x, distance.gradient.y, distance.gradient.z);
+        return item;
+    });
+    module.def("sweep_check", [](const std::string& name, double x0, double y0, double z0, double x1, double y1, double z1) {
+        auto query = createCollisionQuery();
+        Scene* scene = sceneOrThrow();
+        const SweepHit hit = query->sweep(*scene, name, {x0, y0, z0}, {x1, y1, z1});
+        if (!hit.error.empty()) {
+            throw std::runtime_error(hit.error);
+        }
+        py::dict item;
+        item["hit"] = hit.hit;
+        item["time"] = hit.time;
+        item["a"] = hit.a;
+        item["b"] = hit.b;
+        return item;
+    });
 }
 
 class PythonScriptHost final : public IScriptHost {
@@ -189,6 +239,7 @@ private:
         py::exec(R"py(
 import sys
 import simstudio as sim
+simstudio = sim
 class _Stream:
     def write(self, text):
         sim._log(str(text))

@@ -3,10 +3,12 @@
 Sim Studio 按库拆开。后续阶段只替换或填充已有接口，不把物理、机器人、PLC 或模型服务写进界面类。
 
 ```
-src/core        场景图、变换、单位、网格、拾取、文案目录、机构字段
+src/core        场景图、变换、单位、网格、拾取、文案目录、机构字段、碰撞集
+src/collision   ICollisionQuery。现在是 CPU；GPU 宽相与学习距离场只有空接口
 src/io          STEP / OBJ、.simproj
 src/render      IRenderer；当前后端是 OpenGL 3.3
-src/physics     IPhysicsEngine；当前后端是 Jolt。IRobotSolver 只留接口
+src/physics     IPhysicsEngine；当前后端是 Jolt。刚体求解不用来做近距查询
+src/motion      用户运动学、路径规划、沿路径的连续碰撞
 src/scripting   IScriptHost，嵌入的 CPython + pybind11
 src/ai          命令目录与 AI 提供者接口。默认关闭，本版本不联网
 src/app         Qt 主窗口、导入线程、命令行
@@ -71,7 +73,7 @@ Jolt 5.5（vcpkg 端口 `joltphysics`；Linux 用同一 git 标签 FetchContent 
 
 没有转台、滑台、辊床、升降机、堆垛机的预制组件。用户在「运动学」页把选中零件收成连杆，加转动副或移动副，用数字或视口上的两个拾取点定轴，设限位、速度、加速度和耦合比，再记录命名姿态。转台加升降、或行走/升降/货叉三轴，都是同一套关节，不是单独的设备类。
 
-- 运动学资源、逻辑块和机器人路径写在项目 JSON 里（格式版本 3），连杆节点仍在场景图里。`Mech` 继续只描述刚体关节。
+- 运动学资源、逻辑块、机器人路径和碰撞集写在项目 JSON 里（格式版本 4），连杆节点仍在场景图里。`Mech` 继续只描述刚体关节。
 - 逻辑块有输入、输出、参数、动作（到姿态、点动、置位/复位、等待）和条件。条件读信号或本块参数。块与块之间只走信号。块上的 Python 文本会保存，但块运行器不执行它；要跑就放进现有脚本编辑器，脚本也只看见信号表。
 - 到姿态的时间按各关节梯形或 S 曲线里最慢的一轴拉齐。S 曲线是五次多项式，端点速度和加速度为零。
 
@@ -79,7 +81,7 @@ Jolt 5.5（vcpkg 端口 `joltphysics`；Linux 用同一 git 标签 FetchContent 
 
 SCARA（转动、转动、Z 向移动、转动）和球腕六轴有解析逆解。球腕零位是臂沿 +X、工具接近方向为法兰 +Z。解析失败时用阻尼最小二乘，并在结果里标成近似。通用链只有数值逆解。
 
-路径点是 PTP、LIN 或 CIRC。节拍是各段梯形时间之和。`zone` 大于 0 时在关节空间里重叠一段，这是拐角的近似，不是工艺圆弧过渡。播放时按轴对齐包围盒报告连杆之间、以及连杆和资源以外零件的重叠，并把涉及的节点着成红色。这不是网格级碰撞。
+路径点是 PTP、LIN 或 CIRC。节拍是各段梯形时间之和。`zone` 大于 0 时在关节空间里重叠一段，这是拐角的近似，不是工艺圆弧过渡。重叠和近距走 `ICollisionQuery`，不走轴对齐包围盒，也不走 Jolt。细节、空接口和测得的耗时在 `docs/COLLISION.md`。相邻连杆不互相报告。沿采样路径还有一次带关节行程上界的扫掠，用来抓住两个采样之间的薄障碍。
 
 吸附/松开把选中节点重新挂到法兰或世界，保持世界位姿。
 
@@ -89,7 +91,7 @@ KR 6 R600 Z200 X 的 STEP 在本机 `testdata/local/`，不进仓库。演示用
 
 `PythonScriptHost` 进程内初始化一次解释器。模块名 `simstudio`。回调是 `on_start()`、`on_step(dt)`、`on_stop()`。
 
-`src/ai` 的 `CommandExecutor` 用 JSON 对象调用同一组操作：`{"op":"set_bool","name":"go","value":true}`。目录由 `CommandExecutor::catalog()` 给出，字段说明在 `docs/ai-commands.schema.json`。已实现的操作覆盖信号、关节目标、位姿、生成、删除、列出节点、仿真播放，以及运动学正解/逆解、到姿态、逻辑块步进、路径规划和工具吸附。自然语言生成逻辑、布局建议、节拍优化、异常解释在目录里，调用时返回未实现，不改场景。
+`src/ai` 的 `CommandExecutor` 用 JSON 对象调用同一组操作：`{"op":"set_bool","name":"go","value":true}`。目录由 `CommandExecutor::catalog()` 给出，字段说明在 `docs/ai-commands.schema.json`。已实现的操作覆盖信号、关节目标、位姿、生成、删除、列出节点、仿真播放，以及运动学正解/逆解、到姿态、逻辑块步进、路径规划、工具吸附、`collision_query`、`min_distance`、`sweep_check`。Python 模块 `simstudio` 提供同名三个函数。自然语言生成逻辑、布局建议、节拍优化、异常解释在目录里，调用时返回未实现，不改场景。
 
 ## AI 提供者
 
@@ -130,10 +132,11 @@ OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的�
 | --- | --- | --- |
 | 渲染 | `IRenderer`，OpenGL 3.3 | Vulkan / Direct3D 12，同一提交接口 |
 | 刚体 | `IPhysicsEngine`，Jolt | 多体或 GPU 刚体，场景 API 不动 |
+| 近距 | `ICollisionQuery`，CPU BVH + 支撑映射 + 窄带 SDF | GPU LBVH 写同一套 SoA（`IGpuBroadphase` 空接口）；学习距离场是 `ILearnedDistanceField` 空接口 |
 | 机器人运动 | `BuiltinRobotSolver`，RRS/RCS 只有 `IRcsAdapter` 空接口 | 厂商 RCS 适配器接到同一规划结果 |
 | PLC | 信号表 | OPC UA 为主；PLCSIM Advanced API 是另一个适配器 |
 | 计算 | 本机进程 | 非实时逻辑可远程跑信号表；物理、执行器和 PLC 同步留在本机 |
 
 逻辑块和脚本之间仍然只通过信号交换，这样远程逻辑后端不用拆块的内部。
 
-**自己掌握、不外包的部分。** 运动学与逻辑块引擎、自有运动规划和节拍模型、信号与虚拟调试运行时、确定性仿真核、AI 命令层以及在上面积累的产线数据。Jolt、OpenGL、OCCT、Qt、某个本地模型都是可替换的实现。RRS/RCS 和 PLCSIM Advanced 是要对接的外部接口，不是要变成产品核心的库。
+**自己掌握、不外包的部分。** 运动学与逻辑块引擎、自有运动规划和节拍模型、近距查询（宽相、凸分解、符号距离和扫掠）、信号与虚拟调试运行时、确定性仿真核、AI 命令层以及在上面积累的产线数据。Jolt、OpenGL、OCCT、Qt、某个本地模型都是可替换的实现。RRS/RCS 和 PLCSIM Advanced 是要对接的外部接口，不是要变成产品核心的库。CoACD、V-HACD 和 libccd 没有链进来。

@@ -1,5 +1,7 @@
 #include "sim/ai/Commands.hpp"
 
+#include "sim/collision/Query.hpp"
+
 #include "sim/motion/Motion.hpp"
 
 #include <vector>
@@ -67,6 +69,10 @@ nlohmann::json CommandExecutor::catalog() {
         op("robot_plan", "Plan a PTP/LIN/CIRC path and return cycle time, warnings, and collision pairs.", {"path"}, true),
         op("attach_tool", "Parent a named node under the resource flange, keeping its world pose.", {"resource", "name"}, true),
         op("detach_tool", "Parent a named node back under the world, keeping its world pose.", {"name"}, true),
+        op("collision_query", "Overlap and near-miss pairs. Clearance defaults to the scene value, millimeters.", {"clearance"}, true),
+        op("min_distance", "Signed distance, witness points, and gradient between two named parts.", {"name", "other"}, true),
+        op("sweep_check", "Continuous sweep of a part between local translations, or of a named robot path.",
+           {"name", "path", "x0", "y0", "z0", "x1", "y1", "z1"}, true),
         op("nl_to_logic", "Future: natural language to a logic block or script.", {"text"}, false),
         op("layout_suggest", "Future: suggest a line layout. Does not edit the scene.", {"text"}, false),
         op("cycle_optimize", "Future: suggest cycle-time changes.", {"text"}, false),
@@ -362,6 +368,70 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             return fail(error);
         }
         return okValue(true);
+    }
+    if (op == "collision_query" || op == "min_distance" || op == "sweep_check") {
+        auto query = createCollisionQuery();
+        query->rebuild(scene_);
+        if (op == "min_distance") {
+            const DistanceResult distance = query->minDistance(scene_, command.value("name", ""), command.value("other", ""));
+            if (!distance.ok) {
+                return fail(distance.error.empty() ? "distance failed" : distance.error);
+            }
+            return okValue({{"distance", distance.distance},
+                            {"pointA", {distance.pointA.x, distance.pointA.y, distance.pointA.z}},
+                            {"pointB", {distance.pointB.x, distance.pointB.y, distance.pointB.z}},
+                            {"normal", {distance.normal.x, distance.normal.y, distance.normal.z}},
+                            {"gradient", {distance.gradient.x, distance.gradient.y, distance.gradient.z}},
+                            {"gradientFromSdf", distance.gradientFromSdf}});
+        }
+        if (op == "sweep_check" && command.contains("path")) {
+            const std::string pathName = command.value("path", "");
+            const RobotPath* path = nullptr;
+            for (const RobotPath& candidate : scene_.robotPaths) {
+                if (candidate.name == pathName) {
+                    path = &candidate;
+                }
+            }
+            if (path == nullptr) {
+                return fail("no path named " + pathName);
+            }
+            KinematicResource* resource = findResource(scene_.resources, path->resource);
+            if (resource == nullptr) {
+                return fail("no resource named " + path->resource);
+            }
+            const MotionPlan plan = planRobotPath(scene_, *resource, *path);
+            return okValue({{"hit", plan.sweepHit},
+                            {"time", plan.sweepTime},
+                            {"a", plan.sweepA},
+                            {"b", plan.sweepB}});
+        }
+        if (op == "sweep_check") {
+            const SweepHit hit = query->sweep(scene_, command.value("name", ""),
+                                              {command.value("x0", 0.0), command.value("y0", 0.0), command.value("z0", 0.0)},
+                                              {command.value("x1", 0.0), command.value("y1", 0.0), command.value("z1", 0.0)});
+            if (!hit.error.empty()) {
+                return fail(hit.error);
+            }
+            return okValue({{"hit", hit.hit},
+                            {"time", hit.time},
+                            {"a", hit.a},
+                            {"b", hit.b},
+                            {"point", {hit.point.x, hit.point.y, hit.point.z}}});
+        }
+        const double clearance = command.contains("clearance") ? command.value("clearance", scene_.proximity.clearanceMm)
+                                                               : scene_.proximity.clearanceMm;
+        nlohmann::json hits = nlohmann::json::array();
+        for (const ContactHit& hit : query->query(scene_, clearance)) {
+            hits.push_back({{"a", hit.a},
+                            {"b", hit.b},
+                            {"kind", hit.kind == HitKind::Overlap ? "overlap" : "clearance"},
+                            {"distance", hit.distance},
+                            {"penetration", hit.penetration},
+                            {"volume", hit.volume},
+                            {"volumeEstimated", hit.volumeEstimated}});
+        }
+        query->commitCache(scene_);
+        return okValue(hits);
     }
     if (op == "nl_to_logic" || op == "layout_suggest" || op == "cycle_optimize" || op == "explain_anomaly") {
         return fail(op + " is a documented hook and is not implemented");

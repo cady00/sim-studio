@@ -104,6 +104,8 @@ private:
     std::unique_ptr<BuiltinRobotSolver> robot_;
     LogicMachine logic_;
     class MotionPanel* motion_ = nullptr;
+    class CollisionPanel* collision_ = nullptr;
+    bool collisionDemo_ = false;
     std::string demoPath_;
     std::string pendingPath_;
     std::vector<double> jointRest_;
