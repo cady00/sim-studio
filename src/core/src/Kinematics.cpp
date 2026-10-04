@@ -145,7 +145,10 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
     nlohmann::json json;
     json["name"] = resource.name;
     json["ik"] = resource.ik;
-    json["wrist"] = {{"d1", resource.wrist.d1}, {"a2", resource.wrist.a2}, {"a3", resource.wrist.a3},
+    json["wrist"] = {{"d1", resource.wrist.d1},
+                     {"shoulder", resource.wrist.shoulder},
+                     {"a2", resource.wrist.a2},
+                     {"a3", resource.wrist.a3},
                      {"d6", resource.wrist.d6}, {"tcp", vec3ToJson(resource.wrist.tcp)},
                      {"tcpRotation", quatToJson(resource.wrist.tcpRotation)}};
     json["scara"] = {{"l1", resource.scara.l1}, {"l2", resource.scara.l2}, {"baseZ", resource.scara.baseZ},
@@ -199,6 +202,7 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
     if (json.contains("wrist")) {
         const auto& wrist = json.at("wrist");
         resource.wrist.d1 = wrist.value("d1", resource.wrist.d1);
+        resource.wrist.shoulder = wrist.value("shoulder", resource.wrist.shoulder);
         resource.wrist.a2 = wrist.value("a2", resource.wrist.a2);
         resource.wrist.a3 = wrist.value("a3", resource.wrist.a3);
         resource.wrist.d6 = wrist.value("d6", resource.wrist.d6);

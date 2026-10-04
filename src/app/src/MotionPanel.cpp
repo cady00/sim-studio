@@ -3,6 +3,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFrame>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -10,10 +11,12 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 
 namespace sim {
@@ -56,6 +59,9 @@ void MotionPanel::retranslate() {
         tabs_->setTabText(1, trk("motion.tab.logic"));
         tabs_->setTabText(2, trk("motion.tab.robot"));
     }
+    if (solidLabel_ != nullptr) {
+        solidLabel_->setText(trk("motion.solids"));
+    }
     const auto buttons = findChildren<QPushButton*>();
     for (QPushButton* button : buttons) {
         const QString key = button->property("i18n").toString();
@@ -83,6 +89,27 @@ void MotionPanel::buildUi() {
 
     auto* kin = new QWidget;
     auto* kinLayout = new QVBoxLayout(kin);
+    solidLabel_ = new QLabel(trk("motion.solids"));
+    solidList_ = new QListWidget;
+    solidList_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    solidList_->setMaximumHeight(140);
+    kinLayout->addWidget(solidLabel_);
+    kinLayout->addWidget(solidList_);
+    connect(solidList_, &QListWidget::itemSelectionChanged, this, [this] {
+        if (refreshing_ || solidList_ == nullptr) {
+            return;
+        }
+        std::vector<std::string> ids;
+        const auto selected = solidList_->selectedItems();
+        ids.reserve(static_cast<std::size_t>(selected.size()));
+        for (QListWidgetItem* item : selected) {
+            ids.push_back(item->data(Qt::UserRole).toString().toStdString());
+        }
+        scene_.setSelection(ids);
+        if (viewport_ != nullptr) {
+            viewport_->update();
+        }
+    });
     auto* kinForm = new QFormLayout;
     resourceCombo_ = new QComboBox;
     resourceName_ = new QLineEdit;
@@ -152,9 +179,27 @@ void MotionPanel::buildUi() {
         ensureResource(scene_, name.toStdString());
         refresh();
     });
+    addButton("motion.suggest", [this] {
+        const SuggestResult suggestion = suggestLinkGroups(scene_);
+        suggestNote_ = suggestion.note;
+        const QString name = resourceName_->text().trimmed().isEmpty() ? QStringLiteral("robot") : resourceName_->text().trimmed();
+        std::string error;
+        const std::vector<RevoluteLimit> limits(std::max<std::size_t>(suggestion.links.size(), 1), RevoluteLimit{});
+        if (!applyLinkSuggestions(scene_, name.toStdString(), suggestion, limits, error)) {
+            liveLabel_->setText(QString::fromStdString(error.empty() ? suggestion.note : error));
+            return;
+        }
+        refresh();
+        const int index = resourceCombo_->findText(name);
+        if (index >= 0) {
+            resourceCombo_->setCurrentIndex(index);
+            fillCombos();
+        }
+        refreshLive();
+    });
     addButton("motion.group", [this] {
         KinematicResource* current = resource();
-        if (current == nullptr || scene_.selectedId().empty()) {
+        if (current == nullptr || scene_.selection().empty()) {
             return;
         }
         const std::string link = linkName_->text().trimmed().isEmpty() ? std::string("link") : linkName_->text().trimmed().toStdString();
@@ -163,7 +208,9 @@ void MotionPanel::buildUi() {
             addLink(scene_, *current, link, parent == link ? std::string{} : parent, {});
         }
         std::string error;
-        adoptParts(scene_, *current, link, {scene_.selectedId()}, error);
+        if (!adoptParts(scene_, *current, link, scene_.selection(), error)) {
+            liveLabel_->setText(QString::fromStdString(error));
+        }
         refresh();
     });
     addButton("motion.addJoint", [this] {
@@ -211,6 +258,11 @@ void MotionPanel::buildUi() {
             viewport_->update();
         }
     });
+    faceAxisButton_ = new QPushButton;
+    faceAxisButton_->setCheckable(true);
+    tag(faceAxisButton_, "motion.faceAxis");
+    faceAxisButton_->setText(trk("motion.faceAxis"));
+    kinButtons->addWidget(faceAxisButton_);
     kinLayout->addLayout(kinButtons);
     auto* jogRow = new QHBoxLayout;
     auto* minus = new QPushButton;
@@ -272,7 +324,11 @@ void MotionPanel::buildUi() {
     poseRow->addWidget(capture);
     poseRow->addWidget(goPose);
     kinLayout->addLayout(poseRow);
-    tabs_->addTab(kin, trk("motion.tab.kin"));
+    auto* kinScroll = new QScrollArea;
+    kinScroll->setWidgetResizable(true);
+    kinScroll->setFrameShape(QFrame::NoFrame);
+    kinScroll->setWidget(kin);
+    tabs_->addTab(kinScroll, trk("motion.tab.kin"));
 
     auto* logicPage = new QWidget;
     auto* logicLayout = new QVBoxLayout(logicPage);
@@ -599,7 +655,37 @@ void MotionPanel::jog(double delta) {
     }
 }
 
-void MotionPanel::notePick(Vec3 point) {
+void MotionPanel::notePick(Vec3 point, Vec3 normal, const std::string& nodeId) {
+    if (faceAxisButton_ != nullptr && faceAxisButton_->isChecked() && !nodeId.empty()) {
+        Vec3 origin;
+        Vec3 direction;
+        double radius = 0;
+        if (axisFromCylindricalFace(scene_, nodeId, point, normal, origin, direction, radius)) {
+            axisSpin_[0]->setValue(direction.x);
+            axisSpin_[1]->setValue(direction.y);
+            axisSpin_[2]->setValue(direction.z);
+            anchorSpin_[0]->setValue(origin.x);
+            anchorSpin_[1]->setValue(origin.y);
+            anchorSpin_[2]->setValue(origin.z);
+            if (KinematicResource* current = resource()) {
+                if (KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString())) {
+                    joint->axis = normalize(direction);
+                    joint->anchor = origin;
+                    applyResource(scene_, *current);
+                    if (viewport_ != nullptr) {
+                        viewport_->update();
+                    }
+                }
+            }
+            pickLabel_->setText(trk("motion.faceAxis") +
+                                QStringLiteral("  r %1  (%2, %3, %4)")
+                                    .arg(radius, 0, 'f', 1)
+                                    .arg(origin.x, 0, 'f', 1)
+                                    .arg(origin.y, 0, 'f', 1)
+                                    .arg(origin.z, 0, 'f', 1));
+            return;
+        }
+    }
     if (pickCount_ < 2) {
         picks_[pickCount_++] = point;
     } else {
@@ -613,6 +699,53 @@ void MotionPanel::notePick(Vec3 point) {
                             .arg(pickCount_ > 1 ? picks_[1].x : 0, 0, 'f', 1)
                             .arg(pickCount_ > 1 ? picks_[1].y : 0, 0, 'f', 1)
                             .arg(pickCount_ > 1 ? picks_[1].z : 0, 0, 'f', 1));
+}
+
+void MotionPanel::fillSolids() {
+    if (solidList_ == nullptr || scene_.root() == nullptr) {
+        return;
+    }
+    solidList_->blockSignals(true);
+    solidList_->clear();
+    std::vector<std::shared_ptr<SceneNode>> parts;
+    std::vector<std::shared_ptr<SceneNode>> stack{scene_.root()};
+    while (!stack.empty()) {
+        auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+        if (node->kind == NodeKind::Part && !node->meshId.empty()) {
+            parts.push_back(node);
+        }
+    }
+    std::sort(parts.begin(), parts.end(), [](const std::shared_ptr<SceneNode>& a, const std::shared_ptr<SceneNode>& b) {
+        return a->name < b->name;
+    });
+    for (const auto& part : parts) {
+        auto* item = new QListWidgetItem(QString::fromStdString(part->name));
+        item->setData(Qt::UserRole, QString::fromStdString(part->id));
+        solidList_->addItem(item);
+    }
+    solidList_->blockSignals(false);
+    syncSelection();
+}
+
+void MotionPanel::syncSelection() {
+    if (solidList_ == nullptr) {
+        return;
+    }
+    const auto& ids = scene_.selection();
+    solidList_->blockSignals(true);
+    for (int i = 0; i < solidList_->count(); ++i) {
+        QListWidgetItem* item = solidList_->item(i);
+        const std::string id = item->data(Qt::UserRole).toString().toStdString();
+        item->setSelected(std::find(ids.begin(), ids.end(), id) != ids.end());
+    }
+    solidList_->blockSignals(false);
 }
 
 void MotionPanel::fillCombos() {
@@ -664,6 +797,7 @@ void MotionPanel::refresh() {
         python_->setPlainText(QString::fromStdString(scene_.logicBlocks.front().python));
     }
     fillCombos();
+    fillSolids();
     refreshing_ = false;
 }
 
@@ -679,6 +813,12 @@ void MotionPanel::refreshLive() {
             text += QStringLiteral("  ");
         }
         text += QString::fromStdString(joint.name) + QStringLiteral("=") + QString::number(jointCommand(*current, joint), 'f', 1);
+    }
+    if (!suggestNote_.empty()) {
+        if (!text.isEmpty()) {
+            text += QStringLiteral("\n");
+        }
+        text += QString::fromStdString(suggestNote_);
     }
     liveLabel_->setText(text);
 }

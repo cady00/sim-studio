@@ -24,6 +24,13 @@ struct ProjectScript {
     std::string source;
 };
 
+// Axis of a cylindrical or circular face, in the same frame as the node's mesh.
+struct FaceAxis {
+    Vec3 origin;
+    Vec3 direction{0, 0, 1};
+    double radius = 0;
+};
+
 struct SceneNode {
     std::string id;
     std::string name;
@@ -32,6 +39,8 @@ struct SceneNode {
     std::string meshId;
     Vec3 color{0.55, 0.58, 0.66};
     bool visible = true;
+    // Extracted at STEP import. Empty for boxes and meshes that were not exploded from B-rep.
+    std::vector<FaceAxis> faceAxes;
     // Runtime clones from an object source. Not written to the project file.
     bool transient = false;
     Mech mech;
@@ -48,7 +57,10 @@ public:
 
     std::shared_ptr<SceneNode> root() const { return root_; }
     const std::string& selectedId() const { return selected_; }
+    const std::vector<std::string>& selection() const { return selection_; }
     void setSelected(const std::string& id);
+    void setSelection(const std::vector<std::string>& ids);
+    void toggleSelected(const std::string& id);
 
     std::shared_ptr<SceneNode> find(const std::string& id) const;
     std::shared_ptr<SceneNode> findByName(const std::string& name) const;
@@ -109,6 +121,7 @@ private:
     std::shared_ptr<SceneNode> root_;
     std::unordered_map<std::string, std::shared_ptr<MeshData>> meshes_;
     std::string selected_;
+    std::vector<std::string> selection_;
     int nextNode_ = 1;
     int nextMesh_ = 1;
     bool dirty_ = false;

@@ -92,7 +92,13 @@ std::optional<PickHit> pickScene(const Scene& scene, const Ray& ray) {
                 continue;
             }
             if (!best || distance < best->distance) {
-                best = PickHit{node->id, distance, worldHit};
+                Vec3 normal = transformVector(world, cross(v1 - v0, v2 - v0));
+                if (length(normal) > 1e-12) {
+                    normal = normalize(normal);
+                } else {
+                    normal = {0, 0, 1};
+                }
+                best = PickHit{node->id, distance, worldHit, normal};
             }
         }
     }

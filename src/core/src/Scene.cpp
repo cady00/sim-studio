@@ -90,6 +90,7 @@ void Scene::clear() {
     root_->kind = NodeKind::Assembly;
     meshes_.clear();
     selected_.clear();
+    selection_.clear();
     nextNode_ = 1;
     nextMesh_ = 1;
     name = "Untitled";
@@ -136,6 +137,7 @@ void Scene::steal(Scene& other) {
     proximity = std::move(other.proximity);
     convexCache = std::move(other.convexCache);
     selected_.clear();
+    selection_.clear();
     other.root_.reset();
     other.meshes_.clear();
     other.sourceFiles.clear();
@@ -161,13 +163,47 @@ void Scene::steal(Scene& other) {
 }
 
 void Scene::setSelected(const std::string& id) {
-    if (selected_ == id) {
-        return;
-    }
     if (!id.empty() && !find(id)) {
         return;
     }
+    const bool same = selected_ == id && selection_.size() == (id.empty() ? 0 : 1) &&
+                      (id.empty() || selection_.front() == id);
     selected_ = id;
+    selection_.clear();
+    if (!id.empty()) {
+        selection_.push_back(id);
+    }
+    if (!same) {
+        notify(ChangeKind::Selection);
+    }
+}
+
+void Scene::setSelection(const std::vector<std::string>& ids) {
+    selection_.clear();
+    for (const std::string& id : ids) {
+        if (id.empty() || !find(id)) {
+            continue;
+        }
+        if (std::find(selection_.begin(), selection_.end(), id) == selection_.end()) {
+            selection_.push_back(id);
+        }
+    }
+    selected_ = selection_.empty() ? std::string{} : selection_.back();
+    notify(ChangeKind::Selection);
+}
+
+void Scene::toggleSelected(const std::string& id) {
+    if (id.empty() || !find(id)) {
+        return;
+    }
+    const auto found = std::find(selection_.begin(), selection_.end(), id);
+    if (found == selection_.end()) {
+        selection_.push_back(id);
+        selected_ = id;
+    } else {
+        selection_.erase(found);
+        selected_ = selection_.empty() ? std::string{} : selection_.back();
+    }
     notify(ChangeKind::Selection);
 }
 
@@ -205,6 +241,7 @@ std::shared_ptr<SceneNode> Scene::spawnClone(const std::shared_ptr<SceneNode>& p
     copy->color = prototype->color;
     copy->visible = true;
     copy->transient = true;
+    copy->faceAxes = prototype->faceAxes;
     copy->mech = prototype->mech;
     copy->mech.kind = MechKind::Rigid;
     copy->mech.kinematic = false;
@@ -436,6 +473,7 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     proximity = {};
     convexCache.clear();
     selected_.clear();
+    selection_.clear();
     adoptIds();
     dirty_ = false;
     mute_ = false;

@@ -54,6 +54,8 @@ struct NamedFrame {
 // stretched along +X, tool approach along +Z of the flange.
 struct SphericalWrist {
     double d1 = 300;
+    // Horizontal distance from A1 to the A2 axis. Zero keeps the older intersecting-axis model.
+    double shoulder = 0;
     double a2 = 400;
     double a3 = 300;
     double d6 = 80;

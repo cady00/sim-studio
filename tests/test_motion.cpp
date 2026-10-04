@@ -1,11 +1,16 @@
 #include "sim/ai/Commands.hpp"
+#include "sim/collision/Query.hpp"
+#include "sim/core/Mesh.hpp"
 #include "sim/io/ProjectStore.hpp"
+#include "sim/io/StepImporter.hpp"
 #include "sim/motion/Motion.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <iostream>
 
 namespace {
 
@@ -242,4 +247,183 @@ TEST_CASE("command layer covers kinematics logic and planning") {
     REQUIRE(commands.execute({{"op", "attach_tool"}, {"resource", "scara"}, {"name", "Gun"}}).ok);
     REQUIRE(tool->parent.lock()->name == "tool");
     REQUIRE(commands.execute({{"op", "detach_tool"}, {"name", "Gun"}}).ok);
+}
+
+TEST_CASE("flat solids can be grouped and a cylinder face supplies an axis") {
+    sim::Scene scene;
+    auto add = [&](const char* name, sim::Vec3 center, double half, sim::Vec3 axisPoint, sim::Vec3 axisDir, double radius) {
+        auto node = scene.makeNode(sim::NodeKind::Part, name);
+        node->local.translation = center;
+        node->meshId = scene.addMesh(sim::makeBoxMesh({half, half, half}));
+        if (radius > 0) {
+            for (int copy = 0; copy < 4; ++copy) {
+                sim::FaceAxis axis;
+                axis.origin = axisPoint - center;
+                axis.direction = axisDir;
+                axis.radius = radius;
+                node->faceAxes.push_back(axis);
+            }
+        }
+        scene.addChild(scene.root(), node);
+        return node;
+    };
+    auto foot = add("foot", {0, 0, 40}, 50, {}, {}, 0);
+    auto column = add("column", {0, 0, 600}, 40, {0, 0, 600}, {0, 0, 1}, 80);
+    add("shoulder", {500, 0, 1100}, 40, {500, 0, 1100}, {0, 1, 0}, 70);
+    add("elbow", {500, 0, 2400}, 40, {500, 0, 2400}, {0, 1, 0}, 60);
+    add("forearm", {1100, 0, 2400}, 40, {1100, 0, 2400}, {1, 0, 0}, 55);
+    add("wrist", {1900, 0, 2400}, 40, {1900, 0, 2400}, {0, 1, 0}, 50);
+    add("flange", {2300, 0, 2750}, 40, {2300, 0, 2750}, {1, 0, 0}, 45);
+    auto fastener = add("screw", {30, 0, 40}, 8, {}, {}, 0);
+    scene.setSelection({column->id, foot->id});
+    REQUIRE(scene.selection().size() == 2);
+    scene.toggleSelected(foot->id);
+    REQUIRE(scene.selection().size() == 1);
+    REQUIRE(scene.selectedId() == column->id);
+
+    sim::Vec3 origin;
+    sim::Vec3 direction;
+    double radius = 0;
+    REQUIRE(sim::axisFromCylindricalFace(scene, column->id, {80, 0, 600}, {1, 0, 0}, origin, direction, radius));
+    REQUIRE(std::abs(radius - 80) < 1e-6);
+    REQUIRE(std::abs(std::abs(direction.z) - 1) < 1e-6);
+    REQUIRE_FALSE(sim::axisFromCylindricalFace(scene, column->id, {80, 0, 600}, {0, 0, 1}, origin, direction, radius));
+
+    const sim::SuggestResult suggestion = sim::suggestLinkGroups(scene);
+    REQUIRE(suggestion.links.size() == 7);
+    REQUIRE(suggestion.links.front().name == "base");
+    for (int i = 1; i <= 6; ++i) {
+        REQUIRE(suggestion.links[static_cast<std::size_t>(i)].name == "A" + std::to_string(i));
+        REQUIRE(suggestion.links[static_cast<std::size_t>(i)].hasJoint);
+    }
+    REQUIRE(suggestion.a1ToA2Mm > 400);
+    std::string error;
+    REQUIRE(sim::applyLinkSuggestions(scene, "arm", suggestion, sim::kr420DatasheetLimits(), error));
+    REQUIRE(error.empty());
+    sim::KinematicResource* resource = sim::findResource(scene.resources, "arm");
+    REQUIRE(resource != nullptr);
+    REQUIRE(resource->ik == "numerical");
+    REQUIRE(resource->joints.size() == 6);
+    REQUIRE(resource->joints[0].lower == -185);
+    REQUIRE(resource->joints[1].upper == 20);
+    REQUIRE(resource->joints[5].maxSpeed == 130);
+    REQUIRE(std::abs(resource->joints[0].maxAccel - 180) < 1e-6);
+    const bool footInBase = std::find(suggestion.links[0].partIds.begin(), suggestion.links[0].partIds.end(), foot->id) !=
+                            suggestion.links[0].partIds.end();
+    const bool screwFollows = std::find(suggestion.links[0].partIds.begin(), suggestion.links[0].partIds.end(), fastener->id) !=
+                              suggestion.links[0].partIds.end();
+    REQUIRE(footInBase);
+    REQUIRE(screwFollows);
+
+    const std::vector<double> nudge{18, -12, 15, 25, -10, 20};
+    sim::setJointVector(*resource, nudge);
+    const sim::CartesianPose away = sim::forwardModel(*resource);
+    std::vector<double> seed = nudge;
+    for (double& value : seed) {
+        value *= 0.5;
+    }
+    const sim::IkResult numeric = sim::inverseModel(*resource, away, seed);
+    REQUIRE(numeric.ok);
+    REQUIRE(numeric.approximated);
+    sim::setJointVector(*resource, numeric.joints);
+    REQUIRE(sim::length(sim::forwardModel(*resource).position - away.position) < 2.0);
+
+    sim::KinematicResource analytic = *resource;
+    analytic.ik = "spherical_wrist";
+    const std::vector<double> modest{20, -15, 25, 30, -20, 40};
+    sim::setJointVector(analytic, modest);
+    const sim::CartesianPose analyticPose = sim::forwardModel(analytic);
+    const sim::IkResult analyticIk = sim::inverseModel(analytic, analyticPose, modest);
+    REQUIRE(analyticIk.ok);
+    REQUIRE_FALSE(analyticIk.approximated);
+    sim::setJointVector(analytic, analyticIk.joints);
+    REQUIRE(sim::length(sim::forwardModel(analytic).position - analyticPose.position) < 1e-2);
+}
+
+TEST_CASE("kr420 flat step becomes a six axis chain") {
+    const std::filesystem::path step = std::filesystem::path(SIM_SOURCE_DIR) / "testdata/local/KR420_R3080_KR280_R3080.stp";
+    if (!std::filesystem::exists(step)) {
+        SKIP("local KR 420 STEP is not in the tree");
+    }
+    sim::Scene scene;
+    sim::StepImporter importer;
+    const sim::ImportResult imported = importer.importFile(step.string(), scene);
+    REQUIRE(imported.ok);
+    const sim::SuggestResult suggestion = sim::suggestLinkGroups(scene);
+    std::cerr << "kr420 note: " << suggestion.note << "\n";
+    std::cerr << "fitted d1 " << suggestion.fitted.d1 << " shoulder " << suggestion.fitted.shoulder << " a2 "
+              << suggestion.fitted.a2 << " a3 " << suggestion.fitted.a3 << " d6 " << suggestion.fitted.d6
+              << " a1ToA2 " << suggestion.a1ToA2Mm << "\n";
+    for (const sim::LinkSuggestion& link : suggestion.links) {
+        std::cerr << link.name << " parts " << link.partIds.size() << " cylinders " << link.axisCount << " r "
+                  << link.axisRadius << " origin " << link.jointOrigin.x << " " << link.jointOrigin.y << " "
+                  << link.jointOrigin.z << " axis " << link.jointAxis.x << " " << link.jointAxis.y << " "
+                  << link.jointAxis.z << "\n";
+    }
+    REQUIRE(suggestion.links.size() == 7);
+    std::string error;
+    REQUIRE(sim::applyLinkSuggestions(scene, "kr420", suggestion, sim::kr420DatasheetLimits(), error));
+    sim::KinematicResource* resource = sim::findResource(scene.resources, "kr420");
+    REQUIRE(resource != nullptr);
+    REQUIRE(resource->joints.size() == 6);
+    const std::vector<double> nudge{18, -12, 15, 25, -10, 20};
+    sim::setJointVector(*resource, nudge);
+    const sim::CartesianPose away = sim::forwardModel(*resource);
+    std::vector<double> seed = nudge;
+    for (double& value : seed) {
+        value *= 0.5;
+    }
+    const sim::IkResult numeric = sim::inverseModel(*resource, away, seed);
+    std::cerr << "numerical ok " << numeric.ok << " warning " << numeric.warning << "\n";
+    REQUIRE(numeric.ok);
+    sim::setJointVector(*resource, numeric.joints);
+    const double numericGap = sim::length(sim::forwardModel(*resource).position - away.position);
+    std::cerr << "numerical gap mm " << numericGap << "\n";
+    REQUIRE(numericGap < 5.0);
+    sim::setJointVector(*resource, std::vector<double>(6, 0));
+
+    sim::KinematicResource analytic = *resource;
+    analytic.ik = "spherical_wrist";
+    const std::vector<double> modest{20, -15, 25, 30, -20, 40};
+    sim::setJointVector(analytic, modest);
+    const sim::CartesianPose analyticPose = sim::forwardModel(analytic);
+    const sim::IkResult analyticIk = sim::inverseModel(analytic, analyticPose, modest);
+    std::cerr << "analytic ok " << analyticIk.ok << " warning " << analyticIk.warning << "\n";
+    REQUIRE(analyticIk.ok);
+    REQUIRE_FALSE(analyticIk.approximated);
+
+    sim::addKr420Demonstration(scene);
+    sim::RobotPath* path = nullptr;
+    for (sim::RobotPath& candidate : scene.robotPaths) {
+        if (candidate.name == "cycle") {
+            path = &candidate;
+        }
+    }
+    REQUIRE(path != nullptr);
+    const auto hidden = sim::hidePartsOutsideProximity(scene);
+    const sim::MotionPlan plan = sim::planRobotPath(scene, *resource, *path);
+    std::cerr << "cycle seconds " << plan.seconds << " samples " << plan.samples.size() << " collisions "
+              << plan.collisions.size() << " sweep " << plan.sweepHit << "\n";
+    for (const std::string& warning : plan.warnings) {
+        std::cerr << "plan warning " << warning << "\n";
+    }
+    REQUIRE(plan.seconds > 0);
+    auto query = sim::createCollisionQuery();
+    query->rebuild(scene);
+    bool near = false;
+    double gap = 1e9;
+    for (const sim::ContactHit& hit : query->query(scene, scene.proximity.clearanceMm)) {
+        if (hit.a == "Fixture" || hit.b == "Fixture") {
+            near = true;
+            gap = std::min(gap, hit.distance);
+        }
+    }
+    std::cerr << "home clearance mm " << gap << " near " << near << "\n";
+    REQUIRE(near);
+    REQUIRE(gap < scene.proximity.clearanceMm + 1e-6);
+    for (const auto& node : hidden) {
+        if (node) {
+            node->visible = true;
+        }
+    }
 }

@@ -499,6 +499,11 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
         }
     }
 
+    {
+        auto warm = createCollisionQuery();
+        warm->rebuild(scene);
+        warm->commitCache(scene);
+    }
     std::set<std::pair<std::string, std::string>> collisions;
     for (const std::vector<double>& sample : plan.samples) {
         setJointVector(resource, sample);
@@ -596,7 +601,16 @@ void BuiltinRobotSolver::step(double dtSeconds) {
     }
     setJointVector(*resource, plan_.samples[static_cast<std::size_t>(index)]);
     applyResource(*scene_, *resource);
+    // Collision sets already name the parts that matter. Hiding the rest keeps a
+    // 100-solid robot from being voxelized on every tick; visibility is restored
+    // before the viewport draws.
+    const auto hidden = hidePartsOutsideProximity(*scene_);
     const auto hits = collidingPairs(*scene_, *resource);
+    for (const auto& node : hidden) {
+        if (node) {
+            node->visible = true;
+        }
+    }
     if (!hits.empty()) {
         highlightCollisions(*scene_, *resource, hits);
     }

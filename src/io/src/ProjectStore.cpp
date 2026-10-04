@@ -110,6 +110,15 @@ nlohmann::json writeNode(const SceneNode& node) {
     if (!node.meshId.empty()) {
         json["mesh"] = node.meshId;
     }
+    if (!node.faceAxes.empty()) {
+        nlohmann::json axes = nlohmann::json::array();
+        for (const FaceAxis& axis : node.faceAxes) {
+            axes.push_back({{"origin", {axis.origin.x, axis.origin.y, axis.origin.z}},
+                            {"direction", {axis.direction.x, axis.direction.y, axis.direction.z}},
+                            {"radius", axis.radius}});
+        }
+        json["faceAxes"] = std::move(axes);
+    }
     if (node.mech.kind != MechKind::None) {
         json["mech"] = mechToJson(node.mech);
     }
@@ -155,6 +164,26 @@ std::shared_ptr<SceneNode> readNode(const nlohmann::json& json, std::string& err
     }
     if (json.contains("mesh")) {
         node->meshId = json.at("mesh").get<std::string>();
+    }
+    if (json.contains("faceAxes") && json.at("faceAxes").is_array()) {
+        for (const auto& axisJson : json.at("faceAxes")) {
+            if (!axisJson.is_object()) {
+                continue;
+            }
+            FaceAxis axis;
+            if (axisJson.contains("origin") && axisJson.at("origin").is_array() && axisJson.at("origin").size() >= 3) {
+                axis.origin = {axisJson.at("origin")[0].get<double>(), axisJson.at("origin")[1].get<double>(),
+                               axisJson.at("origin")[2].get<double>()};
+            }
+            if (axisJson.contains("direction") && axisJson.at("direction").is_array() && axisJson.at("direction").size() >= 3) {
+                axis.direction = {axisJson.at("direction")[0].get<double>(), axisJson.at("direction")[1].get<double>(),
+                                  axisJson.at("direction")[2].get<double>()};
+            }
+            axis.radius = axisJson.value("radius", 0.0);
+            if (axis.radius > 0) {
+                node->faceAxes.push_back(axis);
+            }
+        }
     }
     if (json.contains("mech")) {
         mechFromJson(json.at("mech"), node->mech);

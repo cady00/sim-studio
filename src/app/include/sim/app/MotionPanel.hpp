@@ -14,6 +14,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
+class QPushButton;
 class QTabWidget;
 class QTimer;
 
@@ -28,7 +29,8 @@ public:
     void retranslate();
     void refresh();
     void refreshLive();
-    void notePick(Vec3 point);
+    void syncSelection();
+    void notePick(Vec3 point, Vec3 normal = {}, const std::string& nodeId = {});
     void setViewport(QWidget* viewport) { viewport_ = viewport; }
     void setPlayRequest(std::function<void(const std::string& path)> play) { play_ = std::move(play); }
 
@@ -41,6 +43,7 @@ private:
     void tag(QWidget* widget, const char* key);
     KinematicResource* resource();
     void fillCombos();
+    void fillSolids();
     void jog(double delta);
     void ensureMoveTimer();
 
@@ -77,6 +80,10 @@ private:
     QComboBox* profileCombo_ = nullptr;
     QLabel* pickLabel_ = nullptr;
     QLabel* liveLabel_ = nullptr;
+    QLabel* solidLabel_ = nullptr;
+    QListWidget* solidList_ = nullptr;
+    QPushButton* faceAxisButton_ = nullptr;
+    std::string suggestNote_;
 
     QLineEdit* blockName_ = nullptr;
     QLineEdit* runSignal_ = nullptr;

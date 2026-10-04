@@ -407,11 +407,12 @@ void MainWindow::buildUi() {
     connect(cancelButton_, &QPushButton::clicked, this, &MainWindow::cancelImport);
     connect(tree_, &QTreeWidget::currentItemChanged, this, &MainWindow::onTreeCurrentChanged);
     connect(viewport_, &ViewportWidget::selectionChanged, this, &MainWindow::onViewportSelection);
-    connect(viewport_, &ViewportWidget::pointPicked, this, [this](double x, double y, double z) {
-        if (motion_ != nullptr) {
-            motion_->notePick({x, y, z});
-        }
-    });
+    connect(viewport_, &ViewportWidget::pointPicked, this,
+            [this](double x, double y, double z, double nx, double ny, double nz, const QString& nodeId) {
+                if (motion_ != nullptr) {
+                    motion_->notePick({x, y, z}, {nx, ny, nz}, nodeId.toStdString());
+                }
+            });
     connect(viewport_, &ViewportWidget::transformEdited, this, &MainWindow::onTransformEdited);
     connect(viewport_, &ViewportWidget::glError, this, [this](const QString& message) { statusLabel_->setText(message); });
     connect(nameEdit_, &QLineEdit::editingFinished, this, &MainWindow::applyProperties);
@@ -496,6 +497,9 @@ void MainWindow::bindScene() {
             }
         } else if (kind == ChangeKind::Selection) {
             refreshProperties();
+            if (motion_ != nullptr) {
+                motion_->syncSelection();
+            }
             if (tree_->currentItem() == nullptr ||
                 tree_->currentItem()->data(0, Qt::UserRole).toString().toStdString() != scene_.selectedId()) {
                 selectNode(QString::fromStdString(scene_.selectedId()), false);
@@ -669,7 +673,7 @@ void MainWindow::selectNode(const QString& id, bool fromTree) {
         tree_->setCurrentItem(match);
         tree_->blockSignals(false);
     }
-    if (scene_.selectedId() != id.toStdString()) {
+    if (fromTree && scene_.selectedId() != id.toStdString()) {
         scene_.setSelected(id.toStdString());
     }
     refreshProperties();
@@ -1298,9 +1302,15 @@ void MainWindow::playSimulation() {
     robot_->build(scene_, robotError);
     const std::string path = !pendingPath_.empty() ? pendingPath_ : demoPath_;
     pendingPath_.clear();
+    const auto hidden = kr420Demo_ ? hidePartsOutsideProximity(scene_) : std::vector<std::shared_ptr<SceneNode>>{};
     if (!path.empty()) {
         if (!robot_->arm(path, robotError) && !robotError.empty()) {
             statusLabel_->setText(QString::fromStdString(robotError));
+        }
+    }
+    for (const auto& node : hidden) {
+        if (node) {
+            node->visible = true;
         }
     }
     simulation_->play();
@@ -1351,12 +1361,36 @@ void MainWindow::runScriptSnippet() {}
 
 void MainWindow::loadDemo(const QString& name) {
     collisionDemo_ = name == QStringLiteral("collision");
+    kr420Demo_ = name == QStringLiteral("kr420");
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
         demoPath_ = "pick_place";
     } else if (collisionDemo_) {
         buildCollisionDemo(scene_);
         demoPath_.clear();
+    } else if (kr420Demo_) {
+        scene_.clear();
+        demoPath_.clear();
+        const QString stepPath = QString::fromUtf8(SIM_SOURCE_DIR "/testdata/local/KR420_R3080_KR280_R3080.stp");
+        if (!QFile::exists(stepPath)) {
+            statusLabel_->setText(trk("motion.kr420Missing"));
+        } else {
+            StepImporter importer;
+            const ImportResult imported = importer.importFile(stepPath.toStdString(), scene_);
+            if (!imported.ok) {
+                statusLabel_->setText(QString::fromStdString(imported.message));
+            } else {
+                const SuggestResult suggestion = suggestLinkGroups(scene_);
+                std::string error;
+                if (!applyLinkSuggestions(scene_, "kr420", suggestion, kr420DatasheetLimits(), error)) {
+                    statusLabel_->setText(QString::fromStdString(error.empty() ? suggestion.note : error));
+                } else {
+                    addKr420Demonstration(scene_);
+                    demoPath_ = "cycle";
+                    statusLabel_->setText(QString::fromStdString(suggestion.note));
+                }
+            }
+        }
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();

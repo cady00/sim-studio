@@ -132,6 +132,46 @@ void buildTurntableLiftDemo(Scene& scene);
 void buildScaraDemo(Scene& scene);
 void buildCollisionDemo(Scene& scene);
 
+struct RevoluteLimit {
+    double lower = -180;
+    double upper = 180;
+    double speed = 90;
+};
+
+struct LinkSuggestion {
+    std::string name;
+    std::vector<std::string> partIds;
+    bool hasJoint = false;
+    Vec3 jointAxis{0, 0, 1};
+    Vec3 jointOrigin;
+    int axisCount = 0;
+    double axisRadius = 0;
+};
+
+struct SuggestResult {
+    std::vector<LinkSuggestion> links;
+    std::string note;
+    SphericalWrist fitted;
+    // Distance between the A1 axis and the A2 axis. The spherical model can carry it as `shoulder`.
+    double a1ToA2Mm = 0;
+};
+
+// Groups a flat solid list by large coaxial cylinders. A weak axis parallel to a stronger
+// one and closer than 220 mm is merged away. A1 is the strongest vertical axis; later axes
+// follow nearest anchors outward. Touching boxes stay one component.
+SuggestResult suggestLinkGroups(const Scene& scene);
+bool axisFromCylindricalFace(const Scene& scene, const std::string& nodeId, Vec3 point, Vec3 normal, Vec3& origin,
+                             Vec3& direction, double& radius);
+// `limits` apply in chain order. Acceleration is not taken from a datasheet; it is set to 180 deg/s^2.
+bool applyLinkSuggestions(Scene& scene, const std::string& resourceName, const SuggestResult& suggestion,
+                          const std::vector<RevoluteLimit>& limits, std::string& error);
+// Public KR 420 R3080 ranges and speeds. See docs/KR420.md. Six entries, A1 through A6.
+std::vector<RevoluteLimit> kr420DatasheetLimits();
+// Hides meshed parts whose names are outside the proximity sets. The caller shows them again.
+std::vector<std::shared_ptr<SceneNode>> hidePartsOutsideProximity(Scene& scene);
+// Obstacle, tint is already applied by applyLinkSuggestions. Adds a PTP/LIN path named "cycle".
+void addKr420Demonstration(Scene& scene);
+
 // In-house planner. IRcsAdapter is the unimplemented vendor seam.
 class IRcsAdapter {
 public:

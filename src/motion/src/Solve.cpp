@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 
 namespace sim {
 namespace {
@@ -199,7 +200,8 @@ void wristAngles(const SphericalWrist& arm, const double qDeg[6], double qRad[6]
     const double s23 = std::sin(q2 + q3);
     const double xArm = arm.a2 * c2 + arm.a3 * c23;
     const double zArm = -(arm.a2 * s2 + arm.a3 * s23);
-    const Vec3 wrist{c1 * xArm, s1 * xArm, arm.d1 + zArm};
+    const double radial = arm.shoulder + xArm;
+    const Vec3 wrist{c1 * radial, s1 * radial, arm.d1 + zArm};
     const Quat rotation = Quat::fromAxisAngle({0, 0, 1}, q1) * Quat::fromAxisAngle({0, 1, 0}, q2 + q3) *
                           Quat::fromAxisAngle({1, 0, 0}, qRad[3]) * Quat::fromAxisAngle({0, 1, 0}, qRad[4]) *
                           Quat::fromAxisAngle({0, 0, 1}, qRad[5]);
@@ -250,7 +252,7 @@ IkResult inverseWrist(const KinematicResource& resource, const CartesianPose& ta
     best.warning = "unreachable";
     double bestScore = std::numeric_limits<double>::infinity();
     for (int shoulder = 0; shoulder < 2; ++shoulder) {
-        const double xArm = radials[shoulder];
+        const double xArm = radials[shoulder] - arm.shoulder;
         const double zArm = arm.d1 - wrist.z;
         const double reach2 = xArm * xArm + zArm * zArm;
         double cosine = (reach2 - arm.a2 * arm.a2 - arm.a3 * arm.a3) / (2.0 * arm.a2 * arm.a3);
@@ -400,6 +402,102 @@ IkResult inverseScara(const KinematicResource& resource, const CartesianPose& ta
     return result;
 }
 
+Quat rotationOf(const Mat4& m) {
+    const double trace = m(0, 0) + m(1, 1) + m(2, 2);
+    Quat q;
+    if (trace > 0) {
+        const double s = std::sqrt(trace + 1.0) * 2.0;
+        q.w = 0.25 * s;
+        q.x = (m(1, 2) - m(2, 1)) / s;
+        q.y = (m(2, 0) - m(0, 2)) / s;
+        q.z = (m(0, 1) - m(1, 0)) / s;
+    } else if (m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2)) {
+        const double s = std::sqrt(1.0 + m(0, 0) - m(1, 1) - m(2, 2)) * 2.0;
+        q.w = (m(1, 2) - m(2, 1)) / s;
+        q.x = 0.25 * s;
+        q.y = (m(1, 0) + m(0, 1)) / s;
+        q.z = (m(2, 0) + m(0, 2)) / s;
+    } else if (m(1, 1) > m(2, 2)) {
+        const double s = std::sqrt(1.0 + m(1, 1) - m(0, 0) - m(2, 2)) * 2.0;
+        q.w = (m(2, 0) - m(0, 2)) / s;
+        q.x = (m(1, 0) + m(0, 1)) / s;
+        q.y = 0.25 * s;
+        q.z = (m(2, 1) + m(1, 2)) / s;
+    } else {
+        const double s = std::sqrt(1.0 + m(2, 2) - m(0, 0) - m(1, 1)) * 2.0;
+        q.w = (m(0, 1) - m(1, 0)) / s;
+        q.x = (m(2, 0) + m(0, 2)) / s;
+        q.y = (m(2, 1) + m(1, 2)) / s;
+        q.z = 0.25 * s;
+    }
+    return q.normalized();
+}
+
+CartesianPose forwardChain(const KinematicResource& resource) {
+    std::unordered_map<std::string, Mat4> world;
+    std::unordered_map<std::string, int> childOf;
+    for (int i = 0; i < static_cast<int>(resource.joints.size()); ++i) {
+        childOf[resource.joints[static_cast<std::size_t>(i)].childLink] = i;
+    }
+    for (const KinLink& link : resource.links) {
+        if (!childOf.count(link.name)) {
+            world[link.name] = Mat4::identity();
+        }
+    }
+    bool moved = true;
+    for (int guard = 0; guard < static_cast<int>(resource.joints.size()) + 2 && moved; ++guard) {
+        moved = false;
+        for (const KinJoint& joint : resource.joints) {
+            if (world.count(joint.childLink) != 0 || world.count(joint.parentLink) == 0) {
+                continue;
+            }
+            const double position = jointCommand(resource, joint);
+            Transform local = joint.restLocal;
+            const Vec3 axis = normalize(joint.axis);
+            if (joint.motion == JointMotion::Prismatic) {
+                local.translation = joint.restLocal.translation + axis * position;
+            } else {
+                const Quat delta = Quat::fromAxisAngle(axis, deg2rad(position));
+                local.rotation = (delta * joint.restLocal.rotation).normalized();
+                const Vec3 offset = joint.restLocal.translation - joint.anchor;
+                local.translation = joint.anchor + delta.rotate(offset);
+            }
+            world[joint.childLink] = mul(world.at(joint.parentLink), local.matrix());
+            moved = true;
+        }
+    }
+    std::string tip;
+    int depth = -1;
+    for (const KinLink& link : resource.links) {
+        int hops = 0;
+        std::string cursor = link.name;
+        for (int i = 0; i < 16 && childOf.count(cursor) != 0; ++i) {
+            cursor = resource.joints[static_cast<std::size_t>(childOf[cursor])].parentLink;
+            ++hops;
+        }
+        if (hops > depth) {
+            depth = hops;
+            tip = link.name;
+        }
+    }
+    CartesianPose pose;
+    if (tip.empty() || world.count(tip) == 0) {
+        return pose;
+    }
+    const NamedFrame* frame = nullptr;
+    for (const NamedFrame& candidate : resource.frames) {
+        if (candidate.name == "tcp") {
+            frame = &candidate;
+            break;
+        }
+    }
+    const Vec3 localPoint = frame != nullptr ? frame->origin : Vec3{};
+    const Quat localRotation = frame != nullptr ? frame->rotation : Quat::identity();
+    pose.position = transformPoint(world.at(tip), localPoint);
+    pose.rotation = (rotationOf(world.at(tip)) * localRotation).normalized();
+    return pose;
+}
+
 }  // namespace
 
 double jointCommand(const KinematicResource& resource, const KinJoint& joint, int depth);
@@ -442,6 +540,9 @@ CartesianPose forwardModel(const KinematicResource& resource) {
         pose.position = pose.position + rotation.rotate(resource.scara.tcp);
         return pose;
     }
+    if (resource.ik == "numerical") {
+        return forwardChain(resource);
+    }
     CartesianPose pose;
     return pose;
 }
@@ -449,6 +550,11 @@ CartesianPose forwardModel(const KinematicResource& resource) {
 IkResult inverseModel(const KinematicResource& resource, const CartesianPose& target, const std::vector<double>& seed) {
     if (resource.ik == "spherical_wrist") {
         return inverseWrist(resource, target, seed);
+    }
+    if (resource.ik == "numerical") {
+        IkResult numeric = numericalSolve(resource, target, seed, static_cast<int>(resource.joints.size()));
+        numeric.approximated = true;
+        return numeric;
     }
     if (resource.ik == "scara") {
         return inverseScara(resource, target, seed);

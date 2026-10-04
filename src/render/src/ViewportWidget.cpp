@@ -15,16 +15,20 @@
 namespace sim {
 namespace {
 
-bool selectedBranch(const SceneNode& node, const std::string& selected) {
-    if (selected.empty()) {
+bool selectedBranch(const SceneNode& node, const Scene& scene) {
+    const auto& ids = scene.selection();
+    if (ids.empty()) {
         return false;
     }
-    if (node.id == selected) {
+    const auto listed = [&ids](const std::string& id) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+    };
+    if (listed(node.id)) {
         return true;
     }
     auto parent = node.parent.lock();
     while (parent) {
-        if (parent->id == selected) {
+        if (listed(parent->id)) {
             return true;
         }
         parent = parent->parent.lock();
@@ -266,7 +270,7 @@ void ViewportWidget::paintGL() {
             instance.meshKey = node->meshId;
             instance.world = node->worldMatrix();
             instance.material.color = node->color;
-            instance.material.highlight = selectedBranch(*node, scene_->selectedId()) ? 1.0f : 0.0f;
+            instance.material.highlight = selectedBranch(*node, *scene_) ? 1.0f : 0.0f;
             instance.worldBounds = mesh ? transformedBounds(mesh->bounds, instance.world) : Aabb{};
             instance.distanceMm = static_cast<float>(length(instance.worldBounds.center() - frame.eye));
             instance.lodLevels = 1;
@@ -380,10 +384,15 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
     const Ray ray = camera_.rayFromPixel(event->position().x(), event->position().y(), width(), height());
     const auto hit = renderer_ ? renderer_->pick(*scene_, ray) : pickScene(*scene_, ray);
     const QString id = hit ? QString::fromStdString(hit->nodeId) : QString();
-    scene_->setSelected(hit ? hit->nodeId : std::string{});
+    const bool extend = event->modifiers().testFlag(Qt::ControlModifier);
+    if (extend && hit) {
+        scene_->toggleSelected(hit->nodeId);
+    } else if (!extend) {
+        scene_->setSelected(hit ? hit->nodeId : std::string{});
+    }
     emit selectionChanged(id);
     if (hit) {
-        emit pointPicked(hit->point.x, hit->point.y, hit->point.z);
+        emit pointPicked(hit->point.x, hit->point.y, hit->point.z, hit->normal.x, hit->normal.y, hit->normal.z, id);
     }
     update();
 }

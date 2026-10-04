@@ -2,9 +2,13 @@
 
 #include "sim/io/OcctEnvironment.hpp"
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <GeomAbs_SurfaceType.hxx>
 #include <Bnd_Box.hxx>
 #include <BinXCAFDrivers.hxx>
 #include <IFSelect_ReturnStatus.hxx>
@@ -31,6 +35,7 @@
 #include <XCAFDoc_ShapeTool.hxx>
 #include <gp_Quaternion.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
 
 #include <Poly_Triangle.hxx>
 #include <Poly_Triangulation.hxx>
@@ -38,6 +43,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <mutex>
 #include <unordered_map>
@@ -126,7 +132,7 @@ double lengthUnitToMillimeters(const Handle(TDocStd_Document)& document) {
     return 1.0;
 }
 
-std::shared_ptr<MeshData> tessellate(const TopoDS_Shape& input, double toMillimeters) {
+std::shared_ptr<MeshData> tessellate(const TopoDS_Shape& input, double toMillimeters, const gp_Trsf& placement) {
     TopoDS_Shape shape = input;
     shape.Location(TopLoc_Location());
     if (shape.IsNull()) {
@@ -143,7 +149,8 @@ std::shared_ptr<MeshData> tessellate(const TopoDS_Shape& input, double toMillime
         const double dy = ymax - ymin;
         const double dz = zmax - zmin;
         const double diagonalMm = std::sqrt(dx * dx + dy * dy + dz * dz) * toMillimeters;
-        const double targetMm = std::clamp(diagonalMm * 0.002, 0.35, 3.0);
+        const double cap = diagonalMm > 800.0 ? 8.0 : 3.0;
+        const double targetMm = std::clamp(diagonalMm * 0.0025, 0.35, cap);
         deflection = targetMm / std::max(toMillimeters, 1e-9);
     }
 
@@ -163,9 +170,9 @@ std::shared_ptr<MeshData> tessellate(const TopoDS_Shape& input, double toMillime
         for (int triangleIndex = 1; triangleIndex <= triangulation->NbTriangles(); ++triangleIndex) {
             int n1 = 0, n2 = 0, n3 = 0;
             triangulation->Triangle(triangleIndex).Get(n1, n2, n3);
-            gp_Pnt a = triangulation->Node(n1).Transformed(trsf);
-            gp_Pnt b = triangulation->Node(n2).Transformed(trsf);
-            gp_Pnt c = triangulation->Node(n3).Transformed(trsf);
+            gp_Pnt a = triangulation->Node(n1).Transformed(trsf).Transformed(placement);
+            gp_Pnt b = triangulation->Node(n2).Transformed(trsf).Transformed(placement);
+            gp_Pnt c = triangulation->Node(n3).Transformed(trsf).Transformed(placement);
             Vec3 p0{a.X() * toMillimeters, a.Y() * toMillimeters, a.Z() * toMillimeters};
             Vec3 p1{b.X() * toMillimeters, b.Y() * toMillimeters, b.Z() * toMillimeters};
             Vec3 p2{c.X() * toMillimeters, c.Y() * toMillimeters, c.Z() * toMillimeters};
@@ -198,6 +205,81 @@ std::shared_ptr<MeshData> tessellate(const TopoDS_Shape& input, double toMillime
     }
     mesh->recomputeBounds();
     return mesh;
+}
+
+Vec3 placedPoint(const gp_Pnt& point, const gp_Trsf& placement, double toMillimeters) {
+    const gp_Pnt moved = point.Transformed(placement);
+    return {moved.X() * toMillimeters, moved.Y() * toMillimeters, moved.Z() * toMillimeters};
+}
+
+Vec3 placedVector(const gp_Dir& direction, const gp_Trsf& placement) {
+    gp_Vec vector(direction);
+    vector.Transform(placement);
+    const Vec3 out{vector.X(), vector.Y(), vector.Z()};
+    return length(out) > 1e-12 ? normalize(out) : Vec3{0, 0, 1};
+}
+
+void rememberAxis(std::vector<FaceAxis>& axes, FaceAxis axis) {
+    if (axis.radius < 8.0 || length(axis.direction) < 0.5) {
+        return;
+    }
+    axis.direction = normalize(axis.direction);
+    for (const FaceAxis& existing : axes) {
+        if (std::abs(existing.radius - axis.radius) > std::max(2.0, 0.08 * axis.radius)) {
+            continue;
+        }
+        if (std::abs(dot(existing.direction, axis.direction)) < 0.985) {
+            continue;
+        }
+        const Vec3 delta = axis.origin - existing.origin;
+        const Vec3 radial = delta - existing.direction * dot(delta, existing.direction);
+        if (length(radial) < 4.0) {
+            return;
+        }
+    }
+    axes.push_back(axis);
+}
+
+std::vector<FaceAxis> collectFaceAxes(const TopoDS_Shape& input, double toMillimeters, const gp_Trsf& placement) {
+    TopoDS_Shape shape = input;
+    shape.Location(TopLoc_Location());
+    std::vector<FaceAxis> axes;
+    if (shape.IsNull()) {
+        return axes;
+    }
+    for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+        const TopoDS_Face face = TopoDS::Face(faces.Current());
+        BRepAdaptor_Surface surface(face);
+        if (surface.GetType() == GeomAbs_Cylinder) {
+            const gp_Cylinder cylinder = surface.Cylinder();
+            FaceAxis axis;
+            axis.origin = placedPoint(cylinder.Location(), placement, toMillimeters);
+            axis.direction = placedVector(cylinder.Axis().Direction(), placement);
+            axis.radius = cylinder.Radius() * toMillimeters;
+            rememberAxis(axes, axis);
+            continue;
+        }
+        if (surface.GetType() != GeomAbs_Plane) {
+            continue;
+        }
+        for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
+            BRepAdaptor_Curve curve(TopoDS::Edge(edges.Current()));
+            if (curve.GetType() != GeomAbs_Circle) {
+                continue;
+            }
+            const gp_Circ circle = curve.Circle();
+            FaceAxis axis;
+            axis.origin = placedPoint(circle.Location(), placement, toMillimeters);
+            axis.direction = placedVector(circle.Axis().Direction(), placement);
+            axis.radius = circle.Radius() * toMillimeters;
+            rememberAxis(axes, axis);
+        }
+    }
+    std::sort(axes.begin(), axes.end(), [](const FaceAxis& a, const FaceAxis& b) { return a.radius > b.radius; });
+    if (axes.size() > 16) {
+        axes.resize(16);
+    }
+    return axes;
 }
 
 struct ImportContext {
@@ -234,7 +316,7 @@ std::string meshFor(ImportContext& context, const TDF_Label& geometryLabel) {
         return cached->second;
     }
     TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(geometryLabel);
-    auto mesh = tessellate(shape, context.toMillimeters);
+    auto mesh = tessellate(shape, context.toMillimeters, gp_Trsf());
     ++context.tessellated;
     const int percent = 55 + (40 * context.tessellated) / std::max(context.partBudget, 1);
     report(context, std::min(percent, 95), "progress.tessellate", context.tessellated, context.partBudget);
@@ -294,10 +376,49 @@ int importLabel(ImportContext& context, const TDF_Label& label, const std::share
         return count;
     }
 
-    node->meshId = meshFor(context, defined);
+    TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(defined);
+    std::vector<TopoDS_Shape> solids;
+    for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
+        solids.push_back(explorer.Current());
+    }
+    if (solids.size() <= 1) {
+        node->meshId = meshFor(context, defined);
+        if (!shape.IsNull()) {
+            node->faceAxes = collectFaceAxes(shape, context.toMillimeters, gp_Trsf());
+        }
+        context.scene.addChild(parent, node);
+        ++context.created;
+        return 1;
+    }
+
+    node->kind = NodeKind::Assembly;
     context.scene.addChild(parent, node);
     ++context.created;
-    return 1;
+    int count = 1;
+    int index = 1;
+    for (const TopoDS_Shape& solid : solids) {
+        if (cancelled(context)) {
+            break;
+        }
+        char suffix[32];
+        std::snprintf(suffix, sizeof(suffix), "Solid %03d", index++);
+        auto child = context.scene.makeNode(NodeKind::Part, suffix);
+        const gp_Trsf placement = solid.Location().Transformation();
+        child->meshId = [&] {
+            auto mesh = tessellate(solid, context.toMillimeters, placement);
+            ++context.tessellated;
+            if (!mesh) {
+                return std::string{};
+            }
+            return context.scene.addMesh(std::move(mesh));
+        }();
+        child->faceAxes = collectFaceAxes(solid, context.toMillimeters, placement);
+        child->color = node->color;
+        context.scene.addChild(node, child);
+        ++context.created;
+        ++count;
+    }
+    return count;
 }
 
 int countPartLabels(const Handle(XCAFDoc_ShapeTool)& shapes, const TDF_Label& label, int depth) {
