@@ -4,6 +4,7 @@ add_library(sim_core
     src/Units.cpp
     src/Mesh.cpp
     src/Mech.cpp
+    src/Kinematics.cpp
     src/Scene.cpp
     src/DemoScene.cpp
     src/Pick.cpp

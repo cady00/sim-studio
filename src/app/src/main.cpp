@@ -95,17 +95,21 @@ int main(int argc, char* argv[]) {
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
     QCommandLineOption play("play", "Start the simulation after opening a project.");
     QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
+    QCommandLineOption demo("demo", "Built-in demo: turntable or scara.", "name");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
     parser.addOption(language);
     parser.addOption(play);
     parser.addOption(simSeconds);
+    parser.addOption(demo);
     parser.process(application);
 
     sim::MainWindow window(parser.value(language));
     window.show();
-    if (parser.isSet(openProject)) {
+    if (parser.isSet(demo)) {
+        window.loadDemo(parser.value(demo));
+    } else if (parser.isSet(openProject)) {
         window.openProject(parser.value(openProject));
     }
     if (parser.isSet(screenshot)) {

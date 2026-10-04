@@ -189,6 +189,18 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     json["upAxis"] = "Z";
     json["sources"] = scene.sourceFiles;
     json["activeScript"] = scene.activeScript;
+    json["kinematics"] = nlohmann::json::array();
+    for (const KinematicResource& resource : scene.resources) {
+        json["kinematics"].push_back(kinematicsToJson(resource));
+    }
+    json["logic"] = nlohmann::json::array();
+    for (const LogicBlock& block : scene.logicBlocks) {
+        json["logic"].push_back(logicBlockToJson(block));
+    }
+    json["paths"] = nlohmann::json::array();
+    for (const RobotPath& path : scene.robotPaths) {
+        json["paths"].push_back(robotPathToJson(path));
+    }
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
         json["signals"].push_back(signalToJson(signal));
@@ -318,6 +330,36 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
             if (!script.name.empty()) {
                 scene.scripts.push_back(std::move(script));
             }
+        }
+    }
+    if (json.contains("kinematics") && json.at("kinematics").is_array()) {
+        for (const auto& item : json.at("kinematics")) {
+            KinematicResource resource;
+            if (!kinematicsFromJson(item, resource, error)) {
+                result.message = error;
+                return result;
+            }
+            scene.resources.push_back(std::move(resource));
+        }
+    }
+    if (json.contains("logic") && json.at("logic").is_array()) {
+        for (const auto& item : json.at("logic")) {
+            LogicBlock block;
+            if (!logicBlockFromJson(item, block, error)) {
+                result.message = error;
+                return result;
+            }
+            scene.logicBlocks.push_back(std::move(block));
+        }
+    }
+    if (json.contains("paths") && json.at("paths").is_array()) {
+        for (const auto& item : json.at("paths")) {
+            RobotPath path;
+            if (!robotPathFromJson(item, path, error)) {
+                result.message = error;
+                return result;
+            }
+            scene.robotPaths.push_back(std::move(path));
         }
     }
     result.ok = true;

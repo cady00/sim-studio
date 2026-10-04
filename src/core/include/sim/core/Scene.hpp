@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sim/core/Kinematics.hpp"
 #include "sim/core/Mech.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Transform.hpp"
@@ -52,6 +53,8 @@ public:
     std::shared_ptr<SceneNode> findByName(const std::string& name) const;
     std::shared_ptr<SceneNode> makeNode(NodeKind kind, const std::string& name);
     void addChild(const std::shared_ptr<SceneNode>& parent, const std::shared_ptr<SceneNode>& child);
+    // Moves a node under a new parent. keepWorld recomputes the local pose.
+    bool reparent(const std::string& id, const std::string& newParentId, bool keepWorld);
     std::shared_ptr<SceneNode> spawnClone(const std::shared_ptr<SceneNode>& prototype, const Transform& worldPose);
     bool removeNode(const std::string& id);
 
@@ -83,6 +86,9 @@ public:
     std::vector<Signal> signals;
     std::vector<ProjectScript> scripts;
     std::string activeScript;
+    std::vector<KinematicResource> resources;
+    std::vector<LogicBlock> logicBlocks;
+    std::vector<RobotPath> robotPaths;
 
     bool dirty() const { return dirty_; }
     void markClean() { dirty_ = false; }

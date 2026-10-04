@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(SimStudio
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "Sim Studio — private automotive production-line simulation"
     LANGUAGES CXX)
 
@@ -54,6 +54,7 @@ add_subdirectory(src/core)
 add_subdirectory(src/io)
 add_subdirectory(src/physics)
 add_subdirectory(src/scripting)
+add_subdirectory(src/motion)
 add_subdirectory(src/ai)
 
 if(SIMSTUDIO_BUILD_APP)

@@ -1,5 +1,6 @@
 #include "sim/app/MainWindow.hpp"
 
+#include "sim/app/MotionPanel.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ObjImporter.hpp"
 #include "sim/io/ProjectStore.hpp"
@@ -70,6 +71,7 @@ MainWindow::MainWindow(QString locale) {
     physics_ = createPhysicsEngine();
     scripting_ = createScriptHost();
     simulation_ = std::make_unique<Simulation>(scene_, *physics_);
+    robot_ = std::make_unique<BuiltinRobotSolver>();
     scripting_->bind(&scene_);
     scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
                                 [this](const std::string& id) { physics_->releaseBody(id); });
@@ -238,6 +240,28 @@ void MainWindow::buildUi() {
     addDockWidget(Qt::BottomDockWidgetArea, scriptDock);
     splitDockWidget(signalDock, scriptDock, Qt::Horizontal);
 
+    motion_ = new MotionPanel(scene_, i18n_, logic_, *robot_, this);
+    motion_->setViewport(viewport_);
+    motion_->setPlayRequest([this](const std::string& path) {
+        pendingPath_ = path;
+        playSimulation();
+    });
+    connect(motion_, &MotionPanel::pythonRequested, this, [this](const QString& source) {
+        if (scene_.scripts.empty()) {
+            scene_.scripts.push_back(ProjectScript{"logic", source.toStdString()});
+        } else if (scriptIndex_ >= 0 && scriptIndex_ < static_cast<int>(scene_.scripts.size())) {
+            scene_.scripts[static_cast<std::size_t>(scriptIndex_)].source = source.toStdString();
+        } else {
+            scene_.scripts.front().source = source.toStdString();
+        }
+        loadScriptEditor(scriptIndex_);
+    });
+    auto* motionDock = new QDockWidget(this);
+    motionDock->setObjectName("dock.motion");
+    motionDock->setWidget(motion_);
+    addDockWidget(Qt::RightDockWidgetArea, motionDock);
+    splitDockWidget(propertyDock_, motionDock, Qt::Vertical);
+
     newAction_ = new QAction(this);
     openAction_ = new QAction(this);
     saveAction_ = new QAction(this);
@@ -375,6 +399,11 @@ void MainWindow::buildUi() {
     connect(cancelButton_, &QPushButton::clicked, this, &MainWindow::cancelImport);
     connect(tree_, &QTreeWidget::currentItemChanged, this, &MainWindow::onTreeCurrentChanged);
     connect(viewport_, &ViewportWidget::selectionChanged, this, &MainWindow::onViewportSelection);
+    connect(viewport_, &ViewportWidget::pointPicked, this, [this](double x, double y, double z) {
+        if (motion_ != nullptr) {
+            motion_->notePick({x, y, z});
+        }
+    });
     connect(viewport_, &ViewportWidget::transformEdited, this, &MainWindow::onTransformEdited);
     connect(viewport_, &ViewportWidget::glError, this, [this](const QString& message) { statusLabel_->setText(message); });
     connect(nameEdit_, &QLineEdit::editingFinished, this, &MainWindow::applyProperties);
@@ -439,6 +468,9 @@ void MainWindow::bindScene() {
             viewport_->update();
             refreshSignals();
             refreshProperties();
+            if (motion_ != nullptr) {
+                motion_->refreshLive();
+            }
             if (timeLabel_ != nullptr && simulation_) {
                 timeLabel_->setText(trk("status.simTime").arg(simulation_->time(), 0, 'f', 2));
             }
@@ -450,6 +482,9 @@ void MainWindow::bindScene() {
             refreshSignals();
             if (scriptCombo_ != nullptr && scriptCombo_->count() != static_cast<int>(scene_.scripts.size())) {
                 loadScriptEditor(-1);
+            }
+            if (motion_ != nullptr) {
+                motion_->refresh();
             }
         } else if (kind == ChangeKind::Selection) {
             refreshProperties();
@@ -513,6 +548,12 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.script")) {
         dock->setWindowTitle(trk("dock.script"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.motion")) {
+        dock->setWindowTitle(trk("dock.motion"));
+    }
+    if (motion_ != nullptr) {
+        motion_->retranslate();
     }
     signalTable_->setHorizontalHeaderLabels({trk("signal.name"), trk("signal.type"), trk("signal.value")});
     fillMechCombos();
@@ -1222,8 +1263,32 @@ void MainWindow::playSimulation() {
     if (!scripting_->load(source, error)) {
         scriptLog_->appendPlainText(QString::fromStdString(error));
     }
-    simulation_->setHooks([this] { scripting_->onStart(); }, [this](double dt) { scripting_->onStep(dt); },
+    if (simulation_->state() == SimState::Stopped) {
+        jointRest_.clear();
+        for (const KinematicResource& resource : scene_.resources) {
+            for (const KinJoint& joint : resource.joints) {
+                jointRest_.push_back(joint.position);
+            }
+        }
+    }
+    simulation_->setHooks([this] { scripting_->onStart(); },
+                          [this](double dt) {
+                              scripting_->onStep(dt);
+                              logic_.step(scene_, dt);
+                              if (robot_ != nullptr) {
+                                  robot_->step(dt);
+                              }
+                          },
                           [this] { scripting_->onStop(); });
+    std::string robotError;
+    robot_->build(scene_, robotError);
+    const std::string path = !pendingPath_.empty() ? pendingPath_ : demoPath_;
+    pendingPath_.clear();
+    if (!path.empty()) {
+        if (!robot_->arm(path, robotError) && !robotError.empty()) {
+            statusLabel_->setText(QString::fromStdString(robotError));
+        }
+    }
     simulation_->play();
     if (!simulation_->lastError().empty()) {
         statusLabel_->setText(QString::fromStdString(simulation_->lastError()));
@@ -1234,6 +1299,15 @@ void MainWindow::pauseSimulation() { simulation_->pause(); }
 
 void MainWindow::stopSimulation() {
     simulation_->stop();
+    std::size_t cursor = 0;
+    for (KinematicResource& resource : scene_.resources) {
+        for (KinJoint& joint : resource.joints) {
+            if (cursor < jointRest_.size()) {
+                joint.position = jointRest_[cursor++];
+            }
+        }
+    }
+    logic_.reset();
     if (timeLabel_ != nullptr) {
         timeLabel_->setText(trk("status.simTime").arg(0.0, 0, 'f', 2));
     }
@@ -1260,6 +1334,21 @@ void MainWindow::onSpeedChanged(double speed) {
 }
 
 void MainWindow::runScriptSnippet() {}
+
+void MainWindow::loadDemo(const QString& name) {
+    if (name == QStringLiteral("scara")) {
+        buildScaraDemo(scene_);
+        demoPath_ = "pick_place";
+    } else {
+        buildTurntableLiftDemo(scene_);
+        demoPath_.clear();
+    }
+    if (motion_ != nullptr) {
+        motion_->refresh();
+    }
+    rebuildTree();
+    viewport_->fitAll();
+}
 
 void MainWindow::beginHeadlessPlayback() {
     QTimer::singleShot(200, this, [this] {

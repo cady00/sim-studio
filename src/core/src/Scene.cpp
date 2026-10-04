@@ -98,6 +98,9 @@ void Scene::clear() {
     signals.clear();
     scripts.clear();
     activeScript.clear();
+    resources.clear();
+    logicBlocks.clear();
+    robotPaths.clear();
     dirty_ = false;
     ++structureRevision_;
     if (!mute_ && onChanged) {
@@ -125,6 +128,9 @@ void Scene::steal(Scene& other) {
     signals = std::move(other.signals);
     scripts = std::move(other.scripts);
     activeScript = std::move(other.activeScript);
+    resources = std::move(other.resources);
+    logicBlocks = std::move(other.logicBlocks);
+    robotPaths = std::move(other.robotPaths);
     selected_.clear();
     other.root_.reset();
     other.meshes_.clear();
@@ -132,6 +138,9 @@ void Scene::steal(Scene& other) {
     other.signals.clear();
     other.scripts.clear();
     other.activeScript.clear();
+    other.resources.clear();
+    other.logicBlocks.clear();
+    other.robotPaths.clear();
     if (!root_) {
         clear();
         return;
@@ -283,6 +292,84 @@ std::shared_ptr<SceneNode> Scene::makeNode(NodeKind kind, const std::string& nod
     return node;
 }
 
+namespace {
+
+Quat quatFromAffine(const Mat4& m) {
+    const double m00 = m(0, 0);
+    const double m01 = m(1, 0);
+    const double m02 = m(2, 0);
+    const double m10 = m(0, 1);
+    const double m11 = m(1, 1);
+    const double m12 = m(2, 1);
+    const double m20 = m(0, 2);
+    const double m21 = m(1, 2);
+    const double m22 = m(2, 2);
+    const double trace = m00 + m11 + m22;
+    Quat q;
+    if (trace > 0.0) {
+        const double s = std::sqrt(trace + 1.0) * 2.0;
+        q.w = 0.25 * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const double s = std::sqrt(1.0 + m00 - m11 - m22) * 2.0;
+        q.w = (m21 - m12) / s;
+        q.x = 0.25 * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const double s = std::sqrt(1.0 + m11 - m00 - m22) * 2.0;
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25 * s;
+        q.z = (m12 + m21) / s;
+    } else {
+        const double s = std::sqrt(1.0 + m22 - m00 - m11) * 2.0;
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25 * s;
+    }
+    return q.normalized();
+}
+
+}  // namespace
+
+bool Scene::reparent(const std::string& id, const std::string& newParentId, bool keepWorld) {
+    auto node = find(id);
+    auto parent = find(newParentId);
+    if (!node || !parent || node == root_ || node == parent) {
+        return false;
+    }
+    for (auto cursor = parent; cursor; cursor = cursor->parent.lock()) {
+        if (cursor == node) {
+            return false;
+        }
+    }
+    auto oldParent = node->parent.lock();
+    if (!oldParent) {
+        return false;
+    }
+    const Mat4 world = node->worldMatrix();
+    auto& siblings = oldParent->children;
+    const auto it = std::find(siblings.begin(), siblings.end(), node);
+    if (it == siblings.end()) {
+        return false;
+    }
+    siblings.erase(it);
+    node->parent = parent;
+    parent->children.push_back(node);
+    if (keepWorld) {
+        const Mat4 local = mul(inverseAffine(parent->worldMatrix()), world);
+        node->local.translation = {local(3, 0), local(3, 1), local(3, 2)};
+        node->local.rotation = quatFromAffine(local);
+        node->local.scale = {1, 1, 1};
+    }
+    notify(ChangeKind::Structure);
+    return true;
+}
+
 void Scene::addChild(const std::shared_ptr<SceneNode>& parent, const std::shared_ptr<SceneNode>& child) {
     if (!parent || !child) {
         return;
@@ -337,6 +424,9 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     signals.clear();
     scripts.clear();
     activeScript.clear();
+    resources.clear();
+    logicBlocks.clear();
+    robotPaths.clear();
     selected_.clear();
     adoptIds();
     dirty_ = false;

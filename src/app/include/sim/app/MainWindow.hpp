@@ -2,6 +2,7 @@
 
 #include "sim/core/I18n.hpp"
 #include "sim/core/Scene.hpp"
+#include "sim/motion/Motion.hpp"
 #include "sim/physics/PhysicsEngine.hpp"
 #include "sim/scripting/ScriptHost.hpp"
 
@@ -45,6 +46,7 @@ public:
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
+    void loadDemo(const QString& name);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -99,6 +101,12 @@ private:
     std::unique_ptr<IPhysicsEngine> physics_;
     std::unique_ptr<IScriptHost> scripting_;
     std::unique_ptr<Simulation> simulation_;
+    std::unique_ptr<BuiltinRobotSolver> robot_;
+    LogicMachine logic_;
+    class MotionPanel* motion_ = nullptr;
+    std::string demoPath_;
+    std::string pendingPath_;
+    std::vector<double> jointRest_;
     QTimer* simTimer_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
     QTreeWidget* tree_ = nullptr;

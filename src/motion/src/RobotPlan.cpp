@@ -1,0 +1,483 @@
+#include "sim/motion/Motion.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <set>
+#include <unordered_set>
+
+namespace sim {
+
+Quat slerpPublic(Quat a, Quat b, double t);
+
+namespace {
+
+struct Chunk {
+    std::vector<std::vector<double>> frames;
+};
+
+bool aabbOverlap(const Aabb& a, const Aabb& b) {
+    if (!a.valid || !b.valid) {
+        return false;
+    }
+    return a.min.x <= b.max.x && a.max.x >= b.min.x && a.min.y <= b.max.y && a.max.y >= b.min.y && a.min.z <= b.max.z &&
+           a.max.z >= b.min.z;
+}
+
+void expandMesh(Aabb& box, const Scene& scene, const SceneNode& node) {
+    if (node.meshId.empty()) {
+        return;
+    }
+    const auto mesh = scene.mesh(node.meshId);
+    if (!mesh || !mesh->bounds.valid) {
+        return;
+    }
+    const Mat4 world = node.worldMatrix();
+    const Vec3 corners[8] = {
+        {mesh->bounds.min.x, mesh->bounds.min.y, mesh->bounds.min.z},
+        {mesh->bounds.max.x, mesh->bounds.min.y, mesh->bounds.min.z},
+        {mesh->bounds.min.x, mesh->bounds.max.y, mesh->bounds.min.z},
+        {mesh->bounds.max.x, mesh->bounds.max.y, mesh->bounds.min.z},
+        {mesh->bounds.min.x, mesh->bounds.min.y, mesh->bounds.max.z},
+        {mesh->bounds.max.x, mesh->bounds.min.y, mesh->bounds.max.z},
+        {mesh->bounds.min.x, mesh->bounds.max.y, mesh->bounds.max.z},
+        {mesh->bounds.max.x, mesh->bounds.max.y, mesh->bounds.max.z},
+    };
+    for (const Vec3& corner : corners) {
+        box.expand(transformPoint(world, corner));
+    }
+}
+
+Aabb linkBounds(const Scene& scene, const KinematicResource& resource, const KinLink& link) {
+    std::unordered_set<std::string> stops;
+    for (const KinLink& other : resource.links) {
+        if (other.nodeId != link.nodeId) {
+            stops.insert(other.nodeId);
+        }
+    }
+    Aabb box;
+    const auto root = scene.find(link.nodeId);
+    std::vector<std::pair<std::shared_ptr<SceneNode>, bool>> stack;
+    if (root) {
+        stack.push_back({root, true});
+    }
+    while (!stack.empty()) {
+        auto [node, isRoot] = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        if (!isRoot && stops.count(node->id) != 0) {
+            continue;
+        }
+        expandMesh(box, scene, *node);
+        for (const auto& child : node->children) {
+            stack.push_back({child, false});
+        }
+    }
+    return box;
+}
+
+bool underResource(const SceneNode& node, const KinematicResource& resource) {
+    for (auto cursor = node.parent.lock(); cursor; cursor = cursor->parent.lock()) {
+        for (const KinLink& link : resource.links) {
+            if (cursor->id == link.nodeId || node.id == link.nodeId) {
+                return true;
+            }
+        }
+    }
+    for (const KinLink& link : resource.links) {
+        if (node.id == link.nodeId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool adjacentLinks(const KinematicResource& resource, const std::string& a, const std::string& b) {
+    for (const KinJoint& joint : resource.joints) {
+        if ((joint.parentLink == a && joint.childLink == b) || (joint.parentLink == b && joint.childLink == a)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void pushPtp(KinematicResource& resource, const std::vector<double>& target, double dt, Chunk& chunk) {
+    ActiveMove move;
+    std::string error;
+    beginJointMove(resource, target, ProfileKind::Trapezoid, move, error);
+    chunk.frames.push_back(jointVector(resource));
+    for (int guard = 0; guard < 20000 && move.active; ++guard) {
+        advanceMove(resource, move, dt);
+        chunk.frames.push_back(jointVector(resource));
+    }
+}
+
+CartesianPose poseNow(const KinematicResource& resource) { return forwardModel(resource); }
+
+std::vector<double> ikOrHold(KinematicResource& resource, const CartesianPose& pose, std::vector<std::string>& warnings) {
+    const std::vector<double> seed = jointVector(resource);
+    const IkResult solved = inverseModel(resource, pose, seed);
+    if (!solved.ok) {
+        warnings.push_back(solved.warning.empty() ? "unreachable" : solved.warning);
+        return seed;
+    }
+    if (solved.approximated && !solved.warning.empty()) {
+        warnings.push_back(solved.warning);
+    }
+    std::vector<double> next = seed;
+    for (std::size_t i = 0; i < solved.joints.size() && i < next.size(); ++i) {
+        next[i] = solved.joints[i];
+    }
+    if (next.size() < solved.joints.size()) {
+        next = solved.joints;
+    }
+    return next;
+}
+
+void pushCartesian(KinematicResource& resource, const CartesianPose& goal, double speed, double dt, Chunk& chunk,
+                   std::vector<std::string>& warnings) {
+    const CartesianPose start = poseNow(resource);
+    const double distance = std::max(length(goal.position - start.position), 1e-6);
+    const double accel = std::max(speed * 4.0, 1.0);
+    const double duration = profileDuration(ProfileKind::Trapezoid, 0, distance, std::max(speed, 1e-3), accel);
+    chunk.frames.push_back(jointVector(resource));
+    if (duration <= 1e-6) {
+        return;
+    }
+    const int steps = std::max(1, static_cast<int>(std::ceil(duration / dt)));
+    for (int i = 1; i <= steps; ++i) {
+        bool done = false;
+        const double along = profileSample(ProfileKind::Trapezoid, 0, distance, std::max(speed, 1e-3), accel, i * dt, &done);
+        const double u = std::clamp(along / distance, 0.0, 1.0);
+        CartesianPose pose;
+        pose.position = start.position + (goal.position - start.position) * u;
+        pose.rotation = slerpPublic(start.rotation, goal.rotation, u);
+        const std::vector<double> next = ikOrHold(resource, pose, warnings);
+        setJointVector(resource, next);
+        chunk.frames.push_back(jointVector(resource));
+        if (done) {
+            break;
+        }
+    }
+}
+
+Vec3 rotateAbout(Vec3 point, Vec3 center, Vec3 axis, double radians) {
+    return center + Quat::fromAxisAngle(axis, radians).rotate(point - center);
+}
+
+bool circleThrough(Vec3 a, Vec3 b, Vec3 c, Vec3& center, Vec3& axis, double& sweep) {
+    const Vec3 ab = b - a;
+    const Vec3 ac = c - a;
+    const Vec3 normal = cross(ab, ac);
+    const double denom = 2.0 * dot(normal, normal);
+    if (denom < 1e-6) {
+        return false;
+    }
+    center = a + (cross(normal, ab) * dot(ac, ac) + cross(ac, normal) * dot(ab, ab)) / denom;
+    axis = normalize(normal);
+    const Vec3 ua = a - center;
+    const Vec3 ub = b - center;
+    const Vec3 uc = c - center;
+    const double abAngle = std::atan2(dot(axis, cross(ua, ub)), dot(ua, ub));
+    const double bcAngle = std::atan2(dot(axis, cross(ub, uc)), dot(ub, uc));
+    sweep = abAngle + bcAngle;
+    return std::abs(sweep) > 1e-6;
+}
+
+}  // namespace
+
+// slerp is file-local in Solve.cpp. Duplicate a small one here.
+Quat slerpPublic(Quat a, Quat b, double t) {
+    auto dotQ = [](Quat p, Quat q) { return p.w * q.w + p.x * q.x + p.y * q.y + p.z * q.z; };
+    a = a.normalized();
+    b = b.normalized();
+    double d = dotQ(a, b);
+    if (d < 0) {
+        b = Quat{-b.w, -b.x, -b.y, -b.z};
+        d = -d;
+    }
+    if (d > 0.9995) {
+        return Quat{a.w + t * (b.w - a.w), a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z)}.normalized();
+    }
+    const double theta = std::acos(std::clamp(d, -1.0, 1.0));
+    const double s = std::sin(theta);
+    const double w0 = std::sin((1.0 - t) * theta) / s;
+    const double w1 = std::sin(t * theta) / s;
+    return Quat{w0 * a.w + w1 * b.w, w0 * a.x + w1 * b.x, w0 * a.y + w1 * b.y, w0 * a.z + w1 * b.z}.normalized();
+}
+
+std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource) {
+    std::vector<Aabb> boxes;
+    boxes.reserve(resource.links.size());
+    for (const KinLink& link : resource.links) {
+        boxes.push_back(linkBounds(scene, resource, link));
+    }
+    std::set<std::pair<std::string, std::string>> hits;
+    for (std::size_t i = 0; i < resource.links.size(); ++i) {
+        for (std::size_t j = i + 1; j < resource.links.size(); ++j) {
+            if (adjacentLinks(resource, resource.links[i].name, resource.links[j].name)) {
+                continue;
+            }
+            if (aabbOverlap(boxes[i], boxes[j])) {
+                hits.emplace(resource.links[i].name, resource.links[j].name);
+            }
+        }
+    }
+    if (scene.root()) {
+        std::vector<std::shared_ptr<SceneNode>> stack{scene.root()};
+        while (!stack.empty()) {
+            auto node = stack.back();
+            stack.pop_back();
+            if (!node) {
+                continue;
+            }
+            for (const auto& child : node->children) {
+                stack.push_back(child);
+            }
+            if (node->meshId.empty() || underResource(*node, resource)) {
+                continue;
+            }
+            Aabb box;
+            expandMesh(box, scene, *node);
+            for (std::size_t i = 0; i < resource.links.size(); ++i) {
+                if (aabbOverlap(boxes[i], box)) {
+                    const std::string left = resource.links[i].name;
+                    const std::string right = node->name;
+                    if (left < right) {
+                        hits.emplace(left, right);
+                    } else {
+                        hits.emplace(right, left);
+                    }
+                }
+            }
+        }
+    }
+    return {hits.begin(), hits.end()};
+}
+
+void highlightCollisions(Scene& scene, const KinematicResource& resource,
+                         const std::vector<std::pair<std::string, std::string>>& pairs) {
+    const Vec3 alert{0.86, 0.28, 0.22};
+    for (const auto& [a, b] : pairs) {
+        for (const std::string& name : {a, b}) {
+            const KinLink* link = nullptr;
+            for (const KinLink& candidate : resource.links) {
+                if (candidate.name == name) {
+                    link = &candidate;
+                }
+            }
+            if (link != nullptr) {
+                if (auto node = scene.find(link->nodeId)) {
+                    node->color = alert;
+                }
+            }
+            if (auto node = scene.findByName(name)) {
+                node->color = alert;
+            }
+        }
+    }
+}
+
+MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotPath& path) {
+    MotionPlan plan;
+    if (path.points.empty()) {
+        plan.warnings.push_back("path is empty");
+        return plan;
+    }
+    std::vector<double> savedPosition;
+    savedPosition.reserve(resource.joints.size());
+    for (const KinJoint& joint : resource.joints) {
+        savedPosition.push_back(joint.position);
+    }
+    std::vector<Chunk> chunks(path.points.size());
+    for (std::size_t i = 0; i < path.points.size(); ++i) {
+        const PathPoint& point = path.points[i];
+        if (point.move == PathMove::Ptp && !point.cartesian) {
+            std::vector<double> target = jointVector(resource);
+            for (std::size_t j = 0; j < point.joints.size() && j < target.size(); ++j) {
+                target[j] = point.joints[j];
+            }
+            for (std::size_t j = 0; j < target.size() && j < resource.joints.size(); ++j) {
+                const double clamped = clampJoint(resource.joints[j], target[j]);
+                if (std::abs(clamped - target[j]) > 1e-4) {
+                    plan.warnings.push_back(resource.joints[j].name + " limit");
+                }
+                target[j] = clamped;
+            }
+            pushPtp(resource, target, plan.dt, chunks[i]);
+            continue;
+        }
+        CartesianPose goal;
+        goal.position = point.position;
+        goal.rotation = point.orientation;
+        if (!point.cartesian && !point.joints.empty()) {
+            const std::vector<double> current = jointVector(resource);
+            setJointVector(resource, point.joints);
+            goal = forwardModel(resource);
+            setJointVector(resource, current);
+        }
+        if (point.move == PathMove::Circ) {
+            const CartesianPose start = forwardModel(resource);
+            Vec3 center;
+            Vec3 axis;
+            double sweep = 0;
+            if (!circleThrough(start.position, point.via, goal.position, center, axis, sweep)) {
+                plan.warnings.push_back(point.name.empty() ? "circ fell back to lin" : point.name + " fell back to lin");
+                pushCartesian(resource, goal, point.speed, plan.dt, chunks[i], plan.warnings);
+            } else {
+                const double radius = length(start.position - center);
+                const double distance = std::abs(radius * sweep);
+                const double speed = std::max(point.speed, 1e-3);
+                const double duration = profileDuration(ProfileKind::Trapezoid, 0, std::max(distance, 1e-6), speed, speed * 4.0);
+                chunks[i].frames.push_back(jointVector(resource));
+                const int steps = std::max(1, static_cast<int>(std::ceil(duration / plan.dt)));
+                for (int step = 1; step <= steps; ++step) {
+                    bool done = false;
+                    const double along =
+                        profileSample(ProfileKind::Trapezoid, 0, std::max(distance, 1e-6), speed, speed * 4.0, step * plan.dt, &done);
+                    const double u = distance <= 1e-6 ? 1.0 : std::clamp(along / distance, 0.0, 1.0);
+                    CartesianPose pose;
+                    pose.position = rotateAbout(start.position, center, axis, sweep * u);
+                    pose.rotation = slerpPublic(start.rotation, goal.rotation, u);
+                    setJointVector(resource, ikOrHold(resource, pose, plan.warnings));
+                    chunks[i].frames.push_back(jointVector(resource));
+                    if (done) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        pushCartesian(resource, goal, point.speed, plan.dt, chunks[i], plan.warnings);
+    }
+
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+        int begin = plan.samples.empty() ? 0 : 1;
+        int end = static_cast<int>(chunks[i].frames.size());
+        int drop = 0;
+        if (i + 1 < chunks.size() && path.points[i].zone > 0.0) {
+            const double blendTime = std::min(0.3 * static_cast<double>(chunks[i].frames.size()) * plan.dt,
+                                              path.points[i].zone / std::max(path.points[i].speed, 1.0));
+            drop = static_cast<int>(std::round(blendTime / plan.dt));
+            drop = std::min(drop, std::max(0, end - begin - 1));
+            drop = std::min(drop, std::max(0, static_cast<int>(chunks[i + 1].frames.size()) - 1));
+        }
+        if (drop > 0) {
+            end -= drop;
+        }
+        for (int frame = begin; frame < end; ++frame) {
+            plan.samples.push_back(chunks[i].frames[static_cast<std::size_t>(frame)]);
+        }
+        for (int k = 0; k < drop; ++k) {
+            const auto& incoming = chunks[i].frames[chunks[i].frames.size() - static_cast<std::size_t>(drop) + static_cast<std::size_t>(k)];
+            const auto& outgoing = chunks[i + 1].frames[static_cast<std::size_t>(k)];
+            const double u = static_cast<double>(k + 1) / static_cast<double>(drop + 1);
+            std::vector<double> mixed(std::max(incoming.size(), outgoing.size()));
+            for (std::size_t n = 0; n < mixed.size(); ++n) {
+                const double a = n < incoming.size() ? incoming[n] : 0;
+                const double b = n < outgoing.size() ? outgoing[n] : 0;
+                mixed[n] = (1.0 - u) * a + u * b;
+            }
+            plan.samples.push_back(std::move(mixed));
+        }
+        if (drop > 0 && i + 1 < chunks.size()) {
+            chunks[i + 1].frames.erase(chunks[i + 1].frames.begin(),
+                                       chunks[i + 1].frames.begin() + std::min(drop, static_cast<int>(chunks[i + 1].frames.size())));
+        }
+    }
+
+    std::set<std::pair<std::string, std::string>> collisions;
+    for (const std::vector<double>& sample : plan.samples) {
+        setJointVector(resource, sample);
+        applyResource(scene, resource);
+        for (const auto& hit : collidingPairs(scene, resource)) {
+            collisions.insert(hit);
+        }
+    }
+    plan.collisions.assign(collisions.begin(), collisions.end());
+    for (std::size_t i = 0; i < savedPosition.size() && i < resource.joints.size(); ++i) {
+        resource.joints[i].position = savedPosition[i];
+    }
+    applyResource(scene, resource);
+    plan.seconds = plan.samples.size() <= 1 ? 0 : (static_cast<double>(plan.samples.size()) - 1) * plan.dt;
+    plan.ok = true;
+    for (const std::string& warning : plan.warnings) {
+        if (warning.find("unreachable") != std::string::npos || warning.find("limit") != std::string::npos) {
+            plan.ok = false;
+        }
+    }
+    return plan;
+}
+
+bool BuiltinRobotSolver::build(Scene& scene, std::string& error) {
+    scene_ = &scene;
+    error.clear();
+    return true;
+}
+
+void BuiltinRobotSolver::shutdown() {
+    playing_ = false;
+    scene_ = nullptr;
+}
+
+bool BuiltinRobotSolver::arm(const std::string& pathName, std::string& error) {
+    if (scene_ == nullptr) {
+        error = "solver has no scene";
+        return false;
+    }
+    const RobotPath* path = nullptr;
+    for (const RobotPath& candidate : scene_->robotPaths) {
+        if (candidate.name == pathName) {
+            path = &candidate;
+            break;
+        }
+    }
+    if (path == nullptr) {
+        error = "no path named " + pathName;
+        return false;
+    }
+    KinematicResource* resource = findResource(scene_->resources, path->resource);
+    if (resource == nullptr) {
+        error = "no resource named " + path->resource;
+        return false;
+    }
+    plan_ = planRobotPath(*scene_, *resource, *path);
+    resourceName_ = resource->name;
+    cursor_ = 0;
+    playing_ = !plan_.samples.empty();
+    if (playing_) {
+        setJointVector(*resource, plan_.samples.front());
+        applyResource(*scene_, *resource);
+    }
+    error.clear();
+    return true;
+}
+
+void BuiltinRobotSolver::step(double dtSeconds) {
+    if (!playing_ || scene_ == nullptr || plan_.samples.empty()) {
+        return;
+    }
+    cursor_ += std::max(dtSeconds, 0.0);
+    int index = static_cast<int>(std::floor(cursor_ / plan_.dt));
+    if (index >= static_cast<int>(plan_.samples.size())) {
+        index = static_cast<int>(plan_.samples.size()) - 1;
+        playing_ = false;
+    }
+    index = std::max(index, 0);
+    KinematicResource* resource = findResource(scene_->resources, resourceName_);
+    if (resource == nullptr) {
+        playing_ = false;
+        return;
+    }
+    setJointVector(*resource, plan_.samples[static_cast<std::size_t>(index)]);
+    applyResource(*scene_, *resource);
+    const auto hits = collidingPairs(*scene_, *resource);
+    if (!hits.empty()) {
+        highlightCollisions(*scene_, *resource, hits);
+    }
+}
+
+std::unique_ptr<IRobotSolver> createRobotSolver() { return std::make_unique<BuiltinRobotSolver>(); }
+
+}  // namespace sim

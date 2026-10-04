@@ -39,6 +39,7 @@ public:
 
 signals:
     void selectionChanged(const QString& id);
+    void pointPicked(double x, double y, double z);
     void transformEdited();
     void glError(const QString& message);
 

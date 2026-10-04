@@ -382,6 +382,9 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
     const QString id = hit ? QString::fromStdString(hit->nodeId) : QString();
     scene_->setSelected(hit ? hit->nodeId : std::string{});
     emit selectionChanged(id);
+    if (hit) {
+        emit pointPicked(hit->point.x, hit->point.y, hit->point.z);
+    }
     update();
 }
 

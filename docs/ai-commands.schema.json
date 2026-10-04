@@ -12,6 +12,8 @@
         "get_bool", "set_bool", "get_int", "set_int", "get_real", "set_real",
         "set_joint_target", "set_joint_speed", "get_transform", "set_transform",
         "spawn", "delete", "list_nodes", "sim_play", "sim_pause", "sim_stop", "sim_state",
+        "kin_list", "kin_set_joint", "kin_fk", "kin_ik", "kin_move_pose",
+        "logic_start", "logic_step", "robot_plan", "attach_tool", "detach_tool",
         "nl_to_logic", "layout_suggest", "cycle_optimize", "explain_anomaly"
       ]
     },
@@ -20,7 +22,19 @@
     "x": { "type": "number" },
     "y": { "type": "number" },
     "z": { "type": "number" },
-    "text": { "type": "string", "description": "Reserved for future model-backed hooks." }
+    "text": { "type": "string", "description": "Reserved for future model-backed hooks." },
+    "resource": { "type": "string" },
+    "joint": { "type": "string" },
+    "pose": { "type": "string" },
+    "profile": { "type": "string", "enum": ["trapezoid", "scurve"] },
+    "path": { "type": "string" },
+    "qw": { "type": "number" },
+    "qx": { "type": "number" },
+    "qy": { "type": "number" },
+    "qz": { "type": "number" },
+    "dt": { "type": "number" },
+    "steps": { "type": "integer" },
+    "apply": { "type": "boolean" }
   },
   "additionalProperties": false
 }

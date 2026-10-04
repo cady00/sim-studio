@@ -2,7 +2,7 @@
 
 Sim Studio 是一套私有、可离线使用的 Windows 桌面产线仿真软件。长期目标对齐 Siemens Tecnomatix Process Simulate / Process Designer 与 NX Mechatronics Concept Designer：机器人运动、碰撞、节拍、机电物理、PLC 虚拟调试，以及类似 MELSOFT Gemini / Visual Components 的 Python 脚本。
 
-当前仓库是 **0.3**：场景图、三维视口、STEP 装配导入、Jolt 刚体与关节、信号表、嵌入的 Python 脚本，以及默认关闭的命令 / AI 接口。没有遥测，运行时不访问网络。请保持仓库私有。
+当前仓库是 **0.4**：场景图、三维视口、STEP 装配导入、Jolt 刚体与关节、信号表、嵌入的 Python 脚本、用户定义的运动学和逻辑块、SCARA / 球腕六轴路径，以及默认关闭的命令 / AI 接口。没有遥测，运行时不访问网络。请保持仓库私有。
 
 ## 现在能做什么
 
@@ -17,19 +17,21 @@ Sim Studio 是一套私有、可离线使用的 Windows 桌面产线仿真软件
   - 「移动」「旋转」操作器，或在属性面板里改 X/Y/Z（mm）和 RX/RY/RZ（度）
 - 导入 STEP（`.stp` / `.step`），装配层级进入左侧树，曲面细分后显示。
 - 导入 OBJ。
-- 保存 / 打开 `.simproj`（JSON + 显示网格缓存，格式版本 2，仍能打开版本 1）。说明见 [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md)。
+- 保存 / 打开 `.simproj`（JSON + 显示网格缓存，格式版本 3，仍能打开版本 1 和 2）。说明见 [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md)。
 - 示例装配 `samples/step/sample_fixture.step`（底板 + 两个共用网格的销）。
 - 示例产线 `samples/conveyor_line.simproj`：发生器、输送面、光栅、气动式移动副推杆、销毁器，由 Python 脚本 `pusher` 驱动。脚本副本在 `samples/scripts/`。
 - 工具栏：运行、暂停、停止、复位，速度倍率（0–16），仿真时间。复位与停止相同，恢复按下运行前的变换并删掉运行中生成的零件。
 - 装配树和属性面板可改机构类型（刚体、碰撞体、固定副、转动副、移动副、输送面、碰撞/距离传感器、光栅、发生器、销毁器）。底部是信号表和脚本编辑器。
+- 右侧「运动学 / 逻辑 / 机器人」：把选中零件收成连杆，加转动副或移动副，用数字或两次左键拾取定轴，记录姿态并按梯形或 S 曲线走过去；逻辑块只通过信号驱动这些姿态；机器人页规划 PTP / LIN / CIRC。没有预制的转台或堆垛机。
+- 内置演示（不写入仓库）：`--demo turntable` 是用户定义的转台加升降，由逻辑块驱动；`--demo scara` 是通用 SCARA 抓放路径。KUKA STEP 若在本机 `testdata/local/`，只供查看，不进 git，也不会自动拆成连杆。
 
 导入大 STEP 时，读取和细分在后台线程进行。状态栏显示阶段进度，可点「取消」。取消发生在零件之间；Open CASCADE 正在读文件或传输装配时，取消要等到该阶段结束。界面事件循环保持可响应。
 
 ## 五阶段路线
 
 1. **Phase 1** 场景、视口、STEP 装配显示、项目文件、中文界面。
-2. **当前仓库** Jolt 刚体、关节、传感器、输送线、信号表，以及嵌入的 Python。渲染走 `IRenderer`（现在是 OpenGL）。AI 提供者默认关闭，这个二进制不联网。六轴求解器和用户定义的运动学编辑器还没做，接口留在 `docs/ARCHITECTURE.md`。
-3. **Phase 3** 六轴机器人运动学与碰撞。KUKA KR 6 R600 Z200 X 的 STEP 子零件 `394.088-10.105.10`、`.104.20`、`.105.30`、`.105.40`、`.104.50`（根产品 `394.088-10.104.00`）会映射到关节连杆。当前只把它们显示成装配树，不猜测关节轴。
+2. **Phase 2** Jolt 刚体、关节、传感器、输送线、信号表，以及嵌入的 Python。渲染走 `IRenderer`（现在是 OpenGL）。AI 提供者默认关闭，这个二进制不联网。
+3. **当前仓库** 用户定义的运动学和逻辑块，SCARA 与球腕六轴的正解/逆解，PTP/LIN/CIRC 和包围盒碰撞报告。KUKA KR 6 R600 Z200 X 的 STEP 子零件 `394.088-10.105.10`、`.104.20`、`.105.30`、`.105.40`、`.104.50`（根产品 `394.088-10.104.00`）仍只显示成装配树，不自动猜关节轴。演示机械臂是通用几何，限位来源写在 `docs/ARCHITECTURE.md`。
 4. **Phase 4** 产线布局与节拍。
 5. **Phase 5** 虚拟调试：OPC UA、S7、PLCSIM Advanced。它们读写现在这张信号表。
 
@@ -55,7 +57,7 @@ ctest --preset windows-msvc-release --output-on-failure
 
 ## 在 Windows 上直接运行（不用自己编译）
 
-Windows 安装包不随每次推送自动编。在 GitHub 的 Actions 页手动运行工作流 `CI`（`workflow_dispatch`）才会编 `SimStudio-win64`，里面是 `SimStudio-0.3.0-win64.zip`。解压后运行 `SimStudio\simstudio.exe`。压缩包带有 Qt / OCCT / Jolt / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。私有仓库的 Windows 分钟按两倍计算，所以这条任务不要改回自动触发。上一版自动任务在链 OCCT 8 时找不到 `TKSTEPBase.lib`（7.8 起改为 `TKDESTEP`），配置阶段还从源码编了 Qt。现在只链接存在的 toolkit，Qt 用预编译包。拉取请求只跑 Linux 测试；只改 `docs/` 或 Markdown 不会启动任务。
+Windows 安装包不随每次推送自动编。在 GitHub 的 Actions 页手动运行工作流 `CI`（`workflow_dispatch`）才会编 `SimStudio-win64`，里面是 `SimStudio-0.4.0-win64.zip`。这次还没有生成该压缩包：请在本机 Windows 上配置 `QT_ROOT_DIR` 后用 `windows-msvc` 预设编译，或等配额允许时只手动运行一次 `workflow_dispatch`。这台 Linux 环境不能交叉编译出 MSVC 的 win64 包。解压后运行 `SimStudio\simstudio.exe`。压缩包带有 Qt / OCCT / Jolt / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。私有仓库的 Windows 分钟按两倍计算，所以这条任务不要改回自动触发。上一版自动任务在链 OCCT 8 时找不到 `TKSTEPBase.lib`（7.8 起改为 `TKDESTEP`），配置阶段还从源码编了 Qt。现在只链接存在的 toolkit，Qt 用预编译包。拉取请求只跑 Linux 测试；只改 `docs/` 或 Markdown 不会启动任务。
 
 1. 在该次 Actions 运行的 Artifacts 里下载 `SimStudio-win64` 并解压。
 2. 双击 `simstudio.exe`。
@@ -120,7 +122,7 @@ ctest --preset linux-system --output-on-failure
 
 - 物理后端是 Jolt，不是 PhysX。输送面用接触速度注入，比接触回调晚一帧，不是皮带材质。关节电机是速度电机，位置环在我们这边按最大速度和加速度积分。正方向就是作者写的轴。
 - AI 命令层可以改信号和仿真，但不能调用模型。填写本地端点也不会发请求。逻辑块之间只通过信号交换数据，远程执行还没做。
-- 没有机器人正解/逆解、节拍或 PLC。信号表已经在，Phase 5 再接到 OPC UA / S7。
+- 机器人逆解覆盖 SCARA 和球腕六轴；其它链是数值解。路径过渡和碰撞是近似（关节空间重叠、轴对齐包围盒）。PLC 仍未接。信号表已经在，Phase 5 再接到 OPC UA / S7。
 - 碰撞形状支持盒子、球、胶囊和网格凸包。没有凹多面体，也没有从 B-rep 生成的精确碰撞。
 - 导入只保留显示网格。B-rep 不写入项目；`.simproj` 记录 STEP 源路径，不内嵌原始 STEP。
 - STEP 的 `ReadFile` / `Transfer` 没有逐实体进度，这两段时间状态栏是不确定进度。取消不能打断正在进行的 OCCT 调用。
