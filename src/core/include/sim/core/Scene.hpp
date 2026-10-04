@@ -5,6 +5,7 @@
 #include "sim/core/Mech.hpp"
 #include "sim/core/PhysicsModel.hpp"
 #include "sim/core/Proximity.hpp"
+#include "sim/core/Weld.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Transform.hpp"
 
@@ -118,6 +119,7 @@ public:
     std::vector<KinematicResource> resources;
     std::vector<LogicBlock> logicBlocks;
     std::vector<RobotPath> robotPaths;
+    std::vector<WeldSpot> welds;
     ProximitySetup proximity;
     std::vector<ConvexCacheEntry> convexCache;
     PhysicsDocument physicsDoc;

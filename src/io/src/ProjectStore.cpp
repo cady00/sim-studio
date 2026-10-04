@@ -230,6 +230,7 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     for (const LogicBlock& block : scene.logicBlocks) {
         json["logic"].push_back(logicBlockToJson(block));
     }
+    json["welds"] = weldsToJson(scene.welds);
     json["paths"] = nlohmann::json::array();
     for (const RobotPath& path : scene.robotPaths) {
         json["paths"].push_back(robotPathToJson(path));
@@ -407,6 +408,9 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
             }
             scene.robotPaths.push_back(std::move(path));
         }
+    }
+    if (json.contains("welds")) {
+        weldsFromJson(json.at("welds"), scene.welds);
     }
     if (json.contains("proximity")) {
         proximityFromJson(json.at("proximity"), scene.proximity);

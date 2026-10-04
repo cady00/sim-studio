@@ -125,6 +125,8 @@ private:
     LogicMachine logic_;
     class MotionPanel* motion_ = nullptr;
     class CollisionPanel* collision_ = nullptr;
+    class WeldPanel* weld_ = nullptr;
+    QDockWidget* weldDock_ = nullptr;
     bool collisionDemo_ = false;
     bool kr420Demo_ = false;
     bool kr420TrackDemo_ = false;

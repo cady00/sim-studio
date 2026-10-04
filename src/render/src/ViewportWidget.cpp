@@ -484,6 +484,27 @@ void ViewportWidget::paintGL() {
         }
         renderer_->submitLines(gizmo);
     }
+    if (scene_ != nullptr && !scene_->welds.empty()) {
+        LineBatch welds;
+        welds.width = 2.2f;
+        welds.depthTest = false;
+        for (const WeldSpot& spot : scene_->welds) {
+            const Vec3 color = !spot.checked ? Vec3{0.35, 0.55, 0.95}
+                                             : (spot.reachable ? Vec3{0.22, 0.78, 0.38} : Vec3{0.86, 0.28, 0.22});
+            const Vec3 normal = length(spot.normal) > 0.5 ? normalize(spot.normal) : Vec3{0, 0, 1};
+            Vec3 tangent = std::abs(normal.z) < 0.9 ? cross(normal, Vec3{0, 0, 1}) : cross(normal, Vec3{1, 0, 0});
+            tangent = normalize(tangent);
+            const Vec3 bitangent = normalize(cross(normal, tangent));
+            const double mark = 28;
+            pushLine(welds, spot.position - tangent * mark, color);
+            pushLine(welds, spot.position + tangent * mark, color);
+            pushLine(welds, spot.position - bitangent * mark, color);
+            pushLine(welds, spot.position + bitangent * mark, color);
+            pushLine(welds, spot.position, color);
+            pushLine(welds, spot.position + normal * 70.0, {0.95, 0.78, 0.25});
+        }
+        renderer_->submitLines(welds);
+    }
     renderer_->endFrame();
     drawMs_ = static_cast<double>(drawTimer.nsecsElapsed()) / 1.0e6;
     paintOverlay();

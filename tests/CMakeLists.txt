@@ -14,6 +14,7 @@ add_executable(simstudio_tests
     test_line.cpp
     test_assets.cpp
     test_opcua.cpp
+    test_weld.cpp
 )
 target_link_libraries(simstudio_tests PRIVATE sim_core sim_io sim_physics sim_scripting sim_ai sim_motion sim_collision Catch2::Catch2WithMain)
 target_include_directories(simstudio_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/render/include)

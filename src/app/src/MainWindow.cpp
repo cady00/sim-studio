@@ -11,6 +11,8 @@
 #include "sim/app/SceneTree.hpp"
 #include "sim/app/MotionPanel.hpp"
 #include "sim/app/TaskPanels.hpp"
+#include "sim/app/WeldPanel.hpp"
+#include "sim/motion/WeldPlan.hpp"
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ObjImporter.hpp"
@@ -316,6 +318,12 @@ void MainWindow::buildUi() {
     pathDock_->setObjectName("dock.path");
     pathDock_->setWidget(pathTimeline_);
     addDockWidget(Qt::BottomDockWidgetArea, pathDock_);
+
+    weld_ = new WeldPanel(scene_, i18n_, this);
+    weldDock_ = new QDockWidget(this);
+    weldDock_->setObjectName("dock.weld");
+    weldDock_->setWidget(weld_);
+    addDockWidget(Qt::RightDockWidgetArea, weldDock_);
 
     plc_ = new PlcCards(scene_, this);
     plcDock_ = new QDockWidget(this);
@@ -745,6 +753,9 @@ void MainWindow::retranslate() {
     if (auto* dock = findChild<QDockWidget*>("dock.path")) {
         dock->setWindowTitle(trk("dock.path"));
     }
+    if (auto* dock = findChild<QDockWidget*>("dock.weld")) {
+        dock->setWindowTitle(trk("dock.weld"));
+    }
     if (auto* dock = findChild<QDockWidget*>("dock.plc")) {
         dock->setWindowTitle(trk("dock.plc"));
     }
@@ -775,6 +786,9 @@ void MainWindow::retranslate() {
     }
     if (collision_ != nullptr) {
         collision_->retranslate();
+    }
+    if (weld_ != nullptr) {
+        weld_->retranslate();
     }
     if (motion_ != nullptr) {
         motion_->retranslate();
@@ -1307,7 +1321,17 @@ void MainWindow::arrangeLineDocks() {
     show(floorDock_, true);
     show(operationDock_, true);
     show(ganttDock_, true);
-    if (lineFocus_ == QStringLiteral("ops")) {
+    show(weldDock_, lineFocus_ == QStringLiteral("weld"));
+    if (lineFocus_ == QStringLiteral("weld")) {
+        show(floorDock_, false);
+        show(operationDock_, false);
+        show(ganttDock_, false);
+        show(weldDock_, true);
+        resizeDocks({weldDock_}, {460}, Qt::Horizontal);
+        if (weldDock_ != nullptr) {
+            weldDock_->raise();
+        }
+    } else if (lineFocus_ == QStringLiteral("ops")) {
         resizeDocks({operationDock_, floorDock_}, {820, 280}, Qt::Horizontal);
         resizeDocks({ganttDock_}, {180}, Qt::Vertical);
         operationDock_->raise();
@@ -1741,6 +1765,8 @@ void MainWindow::loadDemo(const QString& name) {
         lineFocus_ = QStringLiteral("ops");
     } else if (name.endsWith(QStringLiteral("gantt"))) {
         lineFocus_ = QStringLiteral("gantt");
+    } else if (name.endsWith(QStringLiteral("weld"))) {
+        lineFocus_ = QStringLiteral("weld");
     }
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
@@ -1820,7 +1846,24 @@ void MainWindow::loadDemo(const QString& name) {
         statusLabel_->setText(QString::fromStdString(scene_.layout.title) + QStringLiteral(" · ") +
                               (grafted ? QStringLiteral("KR420 模型") : QStringLiteral("代理模型")) +
                               QStringLiteral(" · 实测 ") + QString::number(measured.updated));
-        applyTaskMode(0);
+        if (lineFocus_ == QStringLiteral("weld")) {
+            prepareExampleWelds(scene_);
+            if (weld_ != nullptr) {
+                weld_->reload();
+            }
+            int reachable = 0;
+            for (const WeldSpot& spot : scene_.welds) {
+                if (spot.reachable) {
+                    ++reachable;
+                }
+            }
+            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 贴合表面 · 可对齐 %2 · 焊钳绕法向")
+                                      .arg(static_cast<int>(scene_.welds.size()))
+                                      .arg(reachable));
+            applyTaskMode(3);
+        } else {
+            applyTaskMode(0);
+        }
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
@@ -1859,6 +1902,16 @@ void MainWindow::loadDemo(const QString& name) {
     }
     rebuildTree();
     viewport_->fitAll();
+    if (lineFocus_ == QStringLiteral("weld") && !scene_.welds.empty()) {
+        Vec3 center{0, 0, 0};
+        for (const WeldSpot& spot : scene_.welds) {
+            center = center + spot.position;
+        }
+        center = center / static_cast<double>(scene_.welds.size());
+        viewport_->camera().target = center;
+        viewport_->camera().distance = 1600;
+        viewport_->camera().eyeDirection = {0.55, -0.72, 0.42};
+    }
 }
 
 void MainWindow::runLargeSceneBench(const QString& screenshot) {
@@ -2216,6 +2269,7 @@ void MainWindow::applyTaskMode(int mode) {
     show(floorDock_, showLine);
     show(operationDock_, showLine);
     show(ganttDock_, showLine);
+    show(weldDock_, taskMode_ == 3 || lineFocus_ == QStringLiteral("weld"));
     if (lineDemo_) {
         arrangeLineDocks();
     }

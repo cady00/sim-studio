@@ -11,6 +11,7 @@ add_library(sim_core
     src/LineModel.cpp
     src/Dxf.cpp
     src/DemoScene.cpp
+    src/Weld.cpp
     src/Pick.cpp
     src/I18n.cpp
 )
