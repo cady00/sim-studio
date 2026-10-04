@@ -110,6 +110,175 @@ bool circleThrough(Vec3 a, Vec3 b, Vec3 c, Vec3& center, Vec3& axis, double& swe
     return std::abs(sweep) > 1e-6;
 }
 
+std::string externalModeOf(const RobotPath& path, const PathPoint& point) {
+    if (!point.external.empty()) {
+        return point.external;
+    }
+    if (!path.external.empty()) {
+        return path.external;
+    }
+    return "locked";
+}
+
+void writeExternal(KinematicResource& resource, const std::vector<int>& index, const std::vector<double>& values) {
+    for (std::size_t k = 0; k < index.size() && k < values.size(); ++k) {
+        KinJoint& joint = resource.joints[static_cast<std::size_t>(index[k])];
+        if (!joint.coupledTo.empty()) {
+            continue;
+        }
+        joint.position = values[k];
+    }
+}
+
+void pushCoupled(KinematicResource& resource, const RobotPath& path, const PathPoint& point, const CartesianPose& goal, double dt,
+                 Chunk& chunk, std::vector<std::string>& warnings) {
+    const std::string mode = externalModeOf(path, point);
+    const CartesianPose start = poseNow(resource);
+    const std::vector<int> external = externalJointIndices(resource);
+    std::vector<double> ext0(external.size());
+    std::vector<double> ext1(external.size());
+    for (std::size_t k = 0; k < external.size(); ++k) {
+        const KinJoint& joint = resource.joints[static_cast<std::size_t>(external[k])];
+        ext0[k] = jointCommand(resource, joint);
+        ext1[k] = ext0[k];
+    }
+    bool circular = false;
+    Vec3 center;
+    Vec3 circleAxis{0, 0, 1};
+    double sweep = 0;
+    if (mode == "sync" && point.move == PathMove::Circ) {
+        if (circleThrough(start.position, point.via, goal.position, center, circleAxis, sweep)) {
+            circular = true;
+        } else {
+            warnings.push_back(point.name.empty() ? "circ fell back to lin" : point.name + " fell back to lin");
+        }
+    }
+    if (mode == "sync") {
+        for (std::size_t k = 0; k < external.size(); ++k) {
+            const KinJoint& joint = resource.joints[static_cast<std::size_t>(external[k])];
+            if (joint.externalKind != "track" || joint.motion != JointMotion::Prismatic) {
+                continue;
+            }
+            Vec3 axis = normalize(joint.axis);
+            if (!joint.parentLink.empty()) {
+                Mat4 parent = Mat4::identity();
+                if (linkWorld(resource, joint.parentLink, parent)) {
+                    axis = normalize(transformVector(parent, joint.axis));
+                }
+            }
+            if (length(axis) < 1e-12) {
+                axis = {1, 0, 0};
+            }
+            const double along = dot(goal.position - (start.position - axis * ext0[k]), axis);
+            ext1[k] = clampJoint(joint, along);
+        }
+    } else if (mode == "positioner") {
+        for (std::size_t k = 0; k < external.size(); ++k) {
+            const KinJoint& joint = resource.joints[static_cast<std::size_t>(external[k])];
+            if (joint.externalKind != "positioner" || k >= point.externalValues.size()) {
+                continue;
+            }
+            ext1[k] = clampJoint(joint, point.externalValues[k]);
+        }
+    }
+
+    bool workpiece = false;
+    CartesianPose startLocal = start;
+    CartesianPose goalLocal;
+    goalLocal.position = point.position;
+    goalLocal.rotation = point.orientation;
+    if (mode == "positioner" && !path.workpiece.empty() && namedFrameWorld(resource, path.workpiece, startLocal)) {
+        workpiece = true;
+        const CartesianPose frameNow = startLocal;
+        startLocal = poseFromMatrix(mul(inverseAffine(matrixFromPose(frameNow)), matrixFromPose(start)));
+    }
+
+    double distance = std::max(length(goal.position - start.position), 1e-6);
+    if (circular) {
+        distance = std::max(std::abs(length(start.position - center) * sweep), 1e-6);
+    } else if (workpiece) {
+        std::vector<double> saved = ext0;
+        writeExternal(resource, external, ext1);
+        CartesianPose frameEnd;
+        if (namedFrameWorld(resource, path.workpiece, frameEnd)) {
+            const CartesianPose endPose = poseFromMatrix(mul(matrixFromPose(frameEnd), matrixFromPose(goalLocal)));
+            distance = std::max(length(endPose.position - start.position), 1e-6);
+        }
+        writeExternal(resource, external, saved);
+    }
+
+    const double speed = std::max(point.speed, 1e-3);
+    const double accel = std::max(speed * 4.0, 1.0);
+    double duration = profileDuration(ProfileKind::Trapezoid, 0, distance, speed, accel);
+    double driver0 = 0;
+    double driver1 = distance;
+    double driverV = speed;
+    double driverA = accel;
+    for (std::size_t k = 0; k < external.size(); ++k) {
+        if (std::abs(ext1[k] - ext0[k]) < 1e-9) {
+            continue;
+        }
+        const KinJoint& joint = resource.joints[static_cast<std::size_t>(external[k])];
+        const double jointDuration =
+            profileDuration(ProfileKind::Trapezoid, ext0[k], ext1[k], std::max(joint.maxSpeed, 1e-6), std::max(joint.maxAccel, 1e-6));
+        if (jointDuration > duration) {
+            duration = jointDuration;
+            driver0 = ext0[k];
+            driver1 = ext1[k];
+            driverV = std::max(joint.maxSpeed, 1e-6);
+            driverA = std::max(joint.maxAccel, 1e-6);
+        }
+    }
+
+    const RedundancyPreference saved = resource.redundancy;
+    chunk.frames.push_back(jointVector(resource));
+    if (duration <= 1e-6) {
+        resource.redundancy = saved;
+        return;
+    }
+    const int steps = std::max(1, static_cast<int>(std::ceil(duration / dt)));
+    for (int step = 1; step <= steps; ++step) {
+        bool done = false;
+        const double along = profileSample(ProfileKind::Trapezoid, driver0, driver1, driverV, driverA, step * dt, &done);
+        const double span = driver1 - driver0;
+        const double u = std::abs(span) < 1e-12 ? 1.0 : std::clamp((along - driver0) / span, 0.0, 1.0);
+        std::vector<double> ext(external.size());
+        for (std::size_t k = 0; k < external.size(); ++k) {
+            ext[k] = ext0[k] + (ext1[k] - ext0[k]) * u;
+        }
+        writeExternal(resource, external, ext);
+        CartesianPose pose;
+        if (workpiece) {
+            CartesianPose frame;
+            if (namedFrameWorld(resource, path.workpiece, frame)) {
+                CartesianPose local;
+                local.position = startLocal.position + (goalLocal.position - startLocal.position) * u;
+                local.rotation = slerpPublic(startLocal.rotation, goalLocal.rotation, u);
+                pose = poseFromMatrix(mul(matrixFromPose(frame), matrixFromPose(local)));
+            } else {
+                pose.position = start.position + (goal.position - start.position) * u;
+                pose.rotation = slerpPublic(start.rotation, goal.rotation, u);
+            }
+        } else if (circular) {
+            pose.position = rotateAbout(start.position, center, circleAxis, sweep * u);
+            pose.rotation = slerpPublic(start.rotation, goal.rotation, u);
+        } else {
+            pose.position = start.position + (goal.position - start.position) * u;
+            pose.rotation = slerpPublic(start.rotation, goal.rotation, u);
+        }
+        resource.redundancy.mode = "fixed";
+        resource.redundancy.fixed = ext;
+        const std::vector<double> next = ikOrHold(resource, pose, warnings);
+        resource.redundancy = saved;
+        setJointVector(resource, next);
+        chunk.frames.push_back(jointVector(resource));
+        if (done) {
+            break;
+        }
+    }
+    resource.redundancy = saved;
+}
+
 std::string ownerLink(const Scene& scene, const KinematicResource& resource, const std::string& partName) {
     auto node = scene.findByName(partName);
     while (node) {
@@ -429,6 +598,21 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
             goal = forwardModel(resource);
             setJointVector(resource, current);
         }
+        const std::string mode = externalModeOf(path, point);
+        if (mode == "sync" || mode == "positioner") {
+            pushCoupled(resource, path, point, goal, plan.dt, chunks[i], plan.warnings);
+            continue;
+        }
+        const RedundancyPreference savedRedundancy = resource.redundancy;
+        if (hasExternalAxis(resource)) {
+            resource.redundancy.mode = "fixed";
+            resource.redundancy.fixed.clear();
+            for (const KinJoint& joint : resource.joints) {
+                if (!joint.externalName.empty()) {
+                    resource.redundancy.fixed.push_back(jointCommand(resource, joint));
+                }
+            }
+        }
         if (point.move == PathMove::Circ) {
             const CartesianPose start = forwardModel(resource);
             Vec3 center;
@@ -459,9 +643,11 @@ MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotP
                     }
                 }
             }
+            resource.redundancy = savedRedundancy;
             continue;
         }
         pushCartesian(resource, goal, point.speed, plan.dt, chunks[i], plan.warnings);
+        resource.redundancy = savedRedundancy;
     }
 
     for (std::size_t i = 0; i < chunks.size(); ++i) {
@@ -604,7 +790,7 @@ void BuiltinRobotSolver::step(double dtSeconds) {
     // Collision sets already name the parts that matter. Hiding the rest keeps a
     // 100-solid robot from being voxelized on every tick; visibility is restored
     // before the viewport draws.
-    const auto hidden = hidePartsOutsideProximity(*scene_);
+    const auto hidden = hideAllDuringQuery_ ? hideAllMeshedParts(*scene_) : hidePartsOutsideProximity(*scene_);
     const auto hits = collidingPairs(*scene_, *resource);
     for (const auto& node : hidden) {
         if (node) {

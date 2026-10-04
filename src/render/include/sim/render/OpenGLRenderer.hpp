@@ -40,7 +40,6 @@ private:
     unsigned lineProgram_ = 0;
     unsigned lineVao_ = 0;
     unsigned lineVbo_ = 0;
-    unsigned instanceVbo_ = 0;
     FrameParams frame_;
     int submitted_ = 0;
     int culled_ = 0;

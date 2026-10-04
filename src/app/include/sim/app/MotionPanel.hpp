@@ -77,6 +77,13 @@ private:
     QDoubleSpinBox* ratioSpin_ = nullptr;
     QLineEdit* poseName_ = nullptr;
     QComboBox* poseCombo_ = nullptr;
+    QLineEdit* carrierName_ = nullptr;
+    QLineEdit* mountLinkName_ = nullptr;
+    QComboBox* externalKindCombo_ = nullptr;
+    QComboBox* redundancyCombo_ = nullptr;
+    QDoubleSpinBox* weightTravel_ = nullptr;
+    QDoubleSpinBox* weightMid_ = nullptr;
+    QDoubleSpinBox* weightManip_ = nullptr;
     QComboBox* profileCombo_ = nullptr;
     QLabel* pickLabel_ = nullptr;
     QLabel* liveLabel_ = nullptr;
@@ -103,6 +110,8 @@ private:
     QDoubleSpinBox* pathZone_ = nullptr;
     QDoubleSpinBox* goalSpin_[3] = {};
     QLineEdit* pathName_ = nullptr;
+    QComboBox* pathExternalCombo_ = nullptr;
+    QLineEdit* externalTargets_ = nullptr;
     QListWidget* pathList_ = nullptr;
     QLabel* planLabel_ = nullptr;
 };

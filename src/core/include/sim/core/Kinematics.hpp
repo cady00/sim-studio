@@ -18,6 +18,10 @@ enum class JointMotion { Revolute, Prismatic };
 struct KinLink {
     std::string name;
     std::string nodeId;
+    // Rigid mount onto another link, with no joint of its own. The robot base
+    // sits on a carriage this way: world = parent * mountRest.
+    std::string mountedOn;
+    Transform mountRest{};
 };
 
 struct KinJoint {
@@ -37,6 +41,11 @@ struct KinJoint {
     double coupleRatio = 1;
     double position = 0;
     Transform restLocal{};
+    // Empty, or "E1".."E6" once the joint is coupled to the robot controller.
+    // externalKind is "" | "track" | "positioner". A track moves the robot base.
+    // A positioner moves the workpiece and does not move the robot base.
+    std::string externalName;
+    std::string externalKind;
 };
 
 struct KinPose {
@@ -48,6 +57,20 @@ struct NamedFrame {
     std::string name;
     Vec3 origin{0, 0, 0};
     Quat rotation = Quat::identity();
+    // Empty means the chain tip (the usual TCP). A workpiece frame names the platter link.
+    std::string link;
+};
+
+// How a redundant external axis is chosen during inverse kinematics.
+// "fixed" holds `fixed` (or the seed, where `fixed` is short). The other modes
+// sample the external axes and score travel, mid-range, and manipulability together.
+// Weights are relative. A third external axis stays at the seed during the search.
+struct RedundancyPreference {
+    std::string mode = "fixed";
+    double travel = 1;
+    double midrange = 0.2;
+    double manipulability = 0.2;
+    std::vector<double> fixed;
 };
 
 // Generic 6-axis arm, millimeters and a spherical wrist. Joint zero is the arm
@@ -81,6 +104,7 @@ struct KinematicResource {
     std::vector<KinJoint> joints;
     std::vector<KinPose> poses;
     std::vector<NamedFrame> frames;
+    RedundancyPreference redundancy;
 };
 
 enum class PathMove { Ptp, Lin, Circ };
@@ -95,12 +119,20 @@ struct PathPoint {
     Vec3 via{0, 0, 0};
     double speed = 100;
     double zone = 0;
+    // Empty inherits the path. Otherwise "locked", "sync", or "positioner".
+    std::string external;
+    // Parallel to the resource's external joints, in joint-list order.
+    std::vector<double> externalValues;
 };
 
 struct RobotPath {
     std::string name;
     std::string resource;
     std::vector<PathPoint> points;
+    // "locked" holds external axes. "sync" moves track axes with LIN/CIRC.
+    // "positioner" interprets the point in the workpiece frame.
+    std::string external = "locked";
+    std::string workpiece;
 };
 
 struct LogicCondition {
@@ -172,5 +204,14 @@ KinLink* findLink(KinematicResource& resource, const std::string& name);
 const KinPose* findPose(const KinematicResource& resource, const std::string& name);
 
 double clampJoint(const KinJoint& joint, double position);
+
+inline bool hasExternalAxis(const KinematicResource& resource) {
+    for (const KinJoint& joint : resource.joints) {
+        if (!joint.externalName.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
 
 }  // namespace sim

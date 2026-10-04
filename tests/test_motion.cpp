@@ -427,3 +427,434 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
         }
     }
 }
+
+sim::KinematicResource redundantArm() {
+    sim::KinematicResource resource;
+    resource.name = "arm";
+    resource.ik = "spherical_wrist";
+    resource.wrist.d1 = 300;
+    resource.wrist.a2 = 400;
+    resource.wrist.a3 = 300;
+    resource.wrist.d6 = 0;
+    for (int i = 0; i < 6; ++i) {
+        sim::KinJoint joint;
+        joint.name = "A" + std::to_string(i + 1);
+        joint.lower = -180;
+        joint.upper = 180;
+        joint.maxSpeed = 180;
+        joint.maxAccel = 360;
+        resource.joints.push_back(joint);
+    }
+    return resource;
+}
+
+sim::KinJoint& addExternal(sim::KinematicResource& resource, const std::string& name, const std::string& kind, sim::JointMotion motion,
+                          sim::Vec3 axis, double lower, double upper) {
+    sim::KinJoint joint;
+    joint.name = name;
+    joint.externalName = name;
+    joint.externalKind = kind;
+    joint.motion = motion;
+    joint.axis = axis;
+    joint.lower = lower;
+    joint.upper = upper;
+    joint.limited = true;
+    joint.maxSpeed = motion == sim::JointMotion::Prismatic ? 1500 : 60;
+    joint.maxAccel = motion == sim::JointMotion::Prismatic ? 1500 : 120;
+    resource.joints.push_back(std::move(joint));
+    return resource.joints.back();
+}
+
+double externalAt(const std::vector<double>& joints, const sim::KinematicResource& resource, const std::string& name) {
+    for (std::size_t i = 0; i < resource.joints.size() && i < joints.size(); ++i) {
+        if (resource.joints[i].externalName == name) {
+            return joints[i];
+        }
+    }
+    return 0;
+}
+
+double distanceToSegment(sim::Vec3 point, sim::Vec3 a, sim::Vec3 b) {
+    const sim::Vec3 ab = b - a;
+    const double denom = sim::dot(ab, ab);
+    if (denom < 1e-12) {
+        return sim::length(point - a);
+    }
+    const double t = std::clamp(sim::dot(point - a, ab) / denom, 0.0, 1.0);
+    return sim::length(point - (a + ab * t));
+}
+
+TEST_CASE("external track shifts the chain and mounts the arm") {
+    sim::KinematicResource arm = redundantArm();
+    addExternal(arm, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, 0, 10000);
+    const sim::CartesianPose home = sim::forwardModel(arm);
+    REQUIRE(std::abs(home.position.x - 700) < 1e-4);
+    REQUIRE(std::abs(home.position.y) < 1e-4);
+    REQUIRE(std::abs(home.position.z - 300) < 1e-4);
+    arm.joints.back().position = 1000;
+    const sim::CartesianPose slid = sim::forwardModel(arm);
+    REQUIRE(std::abs(slid.position.x - home.position.x - 1000) < 1e-3);
+    REQUIRE(std::abs(slid.position.y - home.position.y) < 1e-3);
+    REQUIRE(std::abs(slid.position.z - home.position.z) < 1e-3);
+
+    sim::Scene scene;
+    auto& robot = sim::ensureResource(scene, "robot");
+    robot.ik = "numerical";
+    sim::addLink(scene, robot, "rail", "", {});
+    sim::addLink(scene, robot, "carriage", "rail", {});
+    sim::addLink(scene, robot, "arm", "carriage", {});
+    sim::KinJoint& slide = sim::addJoint(robot, scene, "slide", "rail", "carriage", sim::JointMotion::Prismatic, {1, 0, 0}, {});
+    slide.lower = 0;
+    slide.upper = 10000;
+    slide.externalName = "E1";
+    slide.externalKind = "track";
+    sim::KinLink* armLink = sim::findLink(robot, "arm");
+    REQUIRE(armLink != nullptr);
+    armLink->mountedOn = "carriage";
+    armLink->mountRest = {};
+    sim::NamedFrame tcp;
+    tcp.name = "tcp";
+    tcp.link = "arm";
+    tcp.origin = {500, 0, 200};
+    robot.frames.push_back(tcp);
+    const sim::CartesianPose atZero = sim::forwardModel(robot);
+    REQUIRE(std::abs(atZero.position.x - 500) < 1e-4);
+    REQUIRE(std::abs(atZero.position.z - 200) < 1e-4);
+    slide.position = 1000;
+    const sim::CartesianPose atFar = sim::forwardModel(robot);
+    REQUIRE(std::abs(atFar.position.x - 1500) < 1e-3);
+    REQUIRE(std::abs(atFar.position.y) < 1e-3);
+    REQUIRE(std::abs(atFar.position.z - 200) < 1e-3);
+}
+
+TEST_CASE("redundancy resolution can hold, shorten travel, center joints, or open the elbow") {
+    const sim::CartesianPose target{{700, 0, 300}, sim::Quat::identity()};
+
+    sim::KinematicResource fixedArm = redundantArm();
+    addExternal(fixedArm, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, 0, 1000);
+    fixedArm.redundancy.mode = "fixed";
+    fixedArm.redundancy.fixed = {0};
+    const sim::IkResult atZero = sim::inverseModel(fixedArm, target, {});
+    REQUIRE(atZero.ok);
+    REQUIRE(std::abs(externalAt(atZero.joints, fixedArm, "E1")) < 1e-3);
+    fixedArm.redundancy.fixed = {500};
+    const sim::IkResult atRail = sim::inverseModel(fixedArm, target, {});
+    REQUIRE(atRail.ok);
+    REQUIRE(std::abs(externalAt(atRail.joints, fixedArm, "E1") - 500) < 1e-3);
+
+    sim::KinematicResource travelArm = redundantArm();
+    addExternal(travelArm, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, 0, 800);
+    travelArm.redundancy.mode = "fixed";
+    travelArm.redundancy.fixed = {200};
+    const sim::IkResult bent = sim::inverseModel(travelArm, target, {});
+    REQUIRE(bent.ok);
+    sim::setJointVector(travelArm, bent.joints);
+    travelArm.redundancy.mode = "travel";
+    travelArm.redundancy.travel = 1;
+    travelArm.redundancy.midrange = 0;
+    travelArm.redundancy.manipulability = 0;
+    travelArm.redundancy.fixed.clear();
+    const sim::IkResult shortTravel = sim::inverseModel(travelArm, target, sim::jointVector(travelArm));
+    REQUIRE(shortTravel.ok);
+    const double travelE = externalAt(shortTravel.joints, travelArm, "E1");
+    std::cerr << "travel external " << travelE << "\n";
+    REQUIRE(std::abs(travelE - 200) < std::abs(travelE - 0));
+
+    sim::KinematicResource midArm = redundantArm();
+    addExternal(midArm, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, -400, 400);
+    midArm.redundancy.mode = "fixed";
+    midArm.redundancy.fixed = {200};
+    const sim::IkResult midSeed = sim::inverseModel(midArm, target, {});
+    REQUIRE(midSeed.ok);
+    sim::setJointVector(midArm, midSeed.joints);
+    midArm.redundancy.mode = "midrange";
+    midArm.redundancy.travel = 0;
+    midArm.redundancy.midrange = 1;
+    midArm.redundancy.manipulability = 0;
+    midArm.redundancy.fixed.clear();
+    const sim::IkResult centered = sim::inverseModel(midArm, target, sim::jointVector(midArm));
+    REQUIRE(centered.ok);
+    const double midE = externalAt(centered.joints, midArm, "E1");
+    std::cerr << "midrange external " << midE << "\n";
+    REQUIRE(std::abs(midE) < std::abs(midE - 200));
+
+    sim::KinematicResource openArm = redundantArm();
+    addExternal(openArm, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, 0, 800);
+    openArm.redundancy.mode = "manipulability";
+    openArm.redundancy.travel = 0.05;
+    openArm.redundancy.midrange = 0.05;
+    openArm.redundancy.manipulability = 1;
+    const sim::IkResult opened = sim::inverseModel(openArm, target, {});
+    REQUIRE(opened.ok);
+    const double openE = externalAt(opened.joints, openArm, "E1");
+    std::cerr << "manipulability external " << openE << "\n";
+    // Translational manipulability for this arm peaks near elbow 63° (track 100 mm),
+    // not at 90°. The base joint's lever arm is longer there than at the square elbow.
+    // The stretched pose (track 0) is still rejected.
+    REQUIRE(std::abs(openE - 100) < 1.0);
+    REQUIRE(std::abs(openE) > 50);
+
+    sim::KinematicResource held = redundantArm();
+    addExternal(held, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, -400, 400);
+    addExternal(held, "E2", "positioner", sim::JointMotion::Revolute, {0, 0, 1}, -180, 180);
+    addExternal(held, "E3", "positioner", sim::JointMotion::Revolute, {0, 0, 1}, -180, 180);
+    held.joints.back().position = 40;
+    held.redundancy.mode = "midrange";
+    held.redundancy.travel = 0;
+    held.redundancy.midrange = 1;
+    held.redundancy.manipulability = 0;
+    const sim::CartesianPose home = sim::forwardModel(held);
+    const sim::IkResult kept = sim::inverseModel(held, home, sim::jointVector(held));
+    REQUIRE(kept.ok);
+    REQUIRE(std::abs(externalAt(kept.joints, held, "E3") - 40) < 1e-3);
+}
+
+TEST_CASE("synchronised linear motion keeps the tcp on the segment and waits for the track") {
+    sim::Scene scene;
+    auto& arm = sim::ensureResource(scene, "arm");
+    arm = redundantArm();
+    addExternal(arm, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, 0, 10000);
+    const sim::CartesianPose start = sim::forwardModel(arm);
+    sim::RobotPath path;
+    path.name = "long";
+    path.resource = arm.name;
+    path.external = "sync";
+    sim::PathPoint far;
+    far.name = "far";
+    far.move = sim::PathMove::Lin;
+    far.cartesian = true;
+    far.position = start.position + sim::Vec3{8000, 0, 0};
+    far.orientation = start.rotation;
+    far.speed = 5000;
+    path.points.push_back(far);
+    const sim::MotionPlan plan = sim::planRobotPath(scene, arm, path);
+    std::cerr << "sync seconds " << plan.seconds << " samples " << plan.samples.size() << "\n";
+    for (const std::string& warning : plan.warnings) {
+        std::cerr << "sync warning " << warning << "\n";
+    }
+    REQUIRE(plan.ok);
+    REQUIRE(plan.seconds > 6.2);
+    REQUIRE(plan.seconds < 6.6);
+    REQUIRE(plan.samples.size() > 2);
+    const double moved = plan.samples.back()[6] - plan.samples.front()[6];
+    REQUIRE(moved > 2000);
+    for (const std::vector<double>& sample : plan.samples) {
+        REQUIRE(sample[6] >= -1e-3);
+        REQUIRE(sample[6] <= 10000 + 1e-3);
+        sim::setJointVector(arm, sample);
+        const sim::CartesianPose pose = sim::forwardModel(arm);
+        REQUIRE(distanceToSegment(pose.position, start.position, far.position) < 2.0);
+    }
+    sim::setJointVector(arm, plan.samples.back());
+    REQUIRE(sim::length(sim::forwardModel(arm).position - far.position) < 2.0);
+}
+
+TEST_CASE("positioner sync keeps the tcp on the workpiece and a track reports partial reach") {
+    sim::Scene scene;
+    auto& robot = sim::ensureResource(scene, "arm");
+    robot.ik = "spherical_wrist";
+    robot.wrist.a2 = 600;
+    robot.wrist.a3 = 600;
+    robot.wrist.d1 = 0;
+    robot.wrist.d6 = 0;
+    for (int i = 0; i < 6; ++i) {
+        sim::KinJoint joint;
+        joint.name = "A" + std::to_string(i + 1);
+        joint.lower = -180;
+        joint.upper = 180;
+        robot.joints.push_back(joint);
+    }
+    sim::addLink(scene, robot, "ground", "", {});
+    sim::addLink(scene, robot, "platter", "ground", {});
+    sim::KinJoint& spin = sim::addJoint(robot, scene, "spin", "ground", "platter", sim::JointMotion::Revolute, {0, 0, 1}, {});
+    spin.externalName = "E1";
+    spin.externalKind = "positioner";
+    spin.lower = -180;
+    spin.upper = 180;
+    spin.maxSpeed = 60;
+    spin.maxAccel = 120;
+    sim::NamedFrame work;
+    work.name = "work";
+    work.link = "platter";
+    work.origin = {300, 0, 0};
+    robot.frames.push_back(work);
+
+    sim::CartesianPose start{{300, 0, 50}, sim::Quat::identity()};
+    const sim::IkResult home = sim::inverseModel(robot, start, {});
+    REQUIRE(home.ok);
+    sim::setJointVector(robot, home.joints);
+    REQUIRE(sim::length(sim::forwardModel(robot).position - start.position) < 1.0);
+
+    spin.position = 90;
+    sim::CartesianPose frame;
+    REQUIRE(sim::namedFrameWorld(robot, "work", frame));
+    const sim::Vec3 turned = frame.position + frame.rotation.rotate({0, 0, 50});
+    REQUIRE(sim::length(turned - sim::Vec3{0, 300, 50}) < 1e-3);
+    sim::CartesianPose goal;
+    goal.position = turned;
+    goal.rotation = frame.rotation;
+    const sim::IkResult atTurn = sim::inverseModel(robot, goal, sim::jointVector(robot));
+    REQUIRE(atTurn.ok);
+    sim::setJointVector(robot, atTurn.joints);
+    REQUIRE(sim::length(sim::forwardModel(robot).position - goal.position) < 1.0);
+
+    sim::setJointVector(robot, home.joints);
+    sim::RobotPath path;
+    path.name = "spin";
+    path.resource = robot.name;
+    path.external = "positioner";
+    path.workpiece = "work";
+    sim::PathPoint point;
+    point.name = "spot";
+    point.move = sim::PathMove::Lin;
+    point.cartesian = true;
+    point.position = {0, 0, 50};
+    point.orientation = sim::Quat::identity();
+    point.externalValues = {90};
+    point.speed = 5000;
+    path.points.push_back(point);
+    const sim::MotionPlan plan = sim::planRobotPath(scene, robot, path);
+    REQUIRE(plan.ok);
+    REQUIRE(plan.seconds > 1.5);
+    for (const std::vector<double>& sample : plan.samples) {
+        sim::setJointVector(robot, sample);
+        sim::CartesianPose live;
+        REQUIRE(sim::namedFrameWorld(robot, "work", live));
+        const sim::Vec3 onPart = live.position + live.rotation.rotate({0, 0, 50});
+        REQUIRE(sim::length(sim::forwardModel(robot).position - onPart) < 1.0);
+    }
+
+    sim::KinematicResource reach = redundantArm();
+    addExternal(reach, "E1", "track", sim::JointMotion::Prismatic, {1, 0, 0}, 0, 2000);
+    const sim::CartesianPose far{{1500, 0, 300}, sim::Quat::identity()};
+    const sim::ReachReport report = sim::analyzeReach(reach, far, 9);
+    REQUIRE(report.samples == 9);
+    REQUIRE(report.reachable > 0);
+    REQUIRE(report.reachable < report.samples);
+
+    const std::vector<sim::OlpAxisName> names = sim::externalExportMap(reach);
+    REQUIRE(names.size() == 1);
+    REQUIRE(names[0].e == "E1");
+    REQUIRE(names[0].rapid == "eax_a");
+    REQUIRE(names[0].fanuc == "GP2:J1");
+
+    sim::Scene mounted;
+    sim::ensureResource(mounted, "robot");
+    sim::ensureResource(mounted, "kl");
+    sim::KinematicResource& userRobot = *sim::findResource(mounted.resources, "robot");
+    sim::KinematicResource& carrier = *sim::findResource(mounted.resources, "kl");
+    sim::addLink(mounted, userRobot, "base", "", {});
+    sim::addLink(mounted, carrier, "rail", "", {});
+    sim::addLink(mounted, carrier, "carriage", "rail", {});
+    sim::KinJoint& rail = sim::addJoint(carrier, mounted, "slide", "rail", "carriage", sim::JointMotion::Prismatic, {1, 0, 0}, {});
+    rail.upper = 10000;
+    std::string error;
+    REQUIRE(sim::attachExternalAxes(mounted, userRobot, "kl", "carriage", "track", error));
+    REQUIRE(error.empty());
+    REQUIRE(userRobot.joints.back().externalName == "E1");
+    REQUIRE(userRobot.joints.back().externalKind == "track");
+    sim::KinLink* base = sim::findLink(userRobot, "base");
+    REQUIRE(base != nullptr);
+    REQUIRE(base->mountedOn == "carriage");
+    const auto baseNode = mounted.find(base->nodeId);
+    const auto carriage = mounted.find(sim::findLink(userRobot, "carriage")->nodeId);
+    REQUIRE(baseNode);
+    REQUIRE(carriage);
+    REQUIRE(baseNode->parent.lock() == carriage);
+
+    reach.redundancy.mode = "travel";
+    reach.redundancy.travel = 1;
+    reach.redundancy.fixed = {250};
+    sim::RobotPath stored;
+    stored.name = "job";
+    stored.resource = reach.name;
+    stored.external = "sync";
+    stored.workpiece = "work";
+    sim::PathPoint storedPoint;
+    storedPoint.external = "sync";
+    storedPoint.externalValues = {250, 10};
+    stored.points.push_back(storedPoint);
+    std::string jsonError;
+    sim::KinematicResource loaded;
+    REQUIRE(sim::kinematicsFromJson(sim::kinematicsToJson(reach), loaded, jsonError));
+    REQUIRE(loaded.joints.back().externalName == "E1");
+    REQUIRE(loaded.joints.back().externalKind == "track");
+    REQUIRE(loaded.redundancy.mode == "travel");
+    REQUIRE(loaded.redundancy.fixed.size() == 1);
+    REQUIRE(std::abs(loaded.redundancy.fixed[0] - 250) < 1e-9);
+    sim::RobotPath loadedPath;
+    REQUIRE(sim::robotPathFromJson(sim::robotPathToJson(stored), loadedPath, jsonError));
+    REQUIRE(loadedPath.external == "sync");
+    REQUIRE(loadedPath.workpiece == "work");
+    REQUIRE(loadedPath.points[0].external == "sync");
+    REQUIRE(loadedPath.points[0].externalValues.size() == 2);
+}
+
+TEST_CASE("kr420 on a ten metre track follows a line longer than its reach") {
+    const std::filesystem::path step = std::filesystem::path(SIM_SOURCE_DIR) / "testdata/local/KR420_R3080_KR280_R3080.stp";
+    if (!std::filesystem::exists(step)) {
+        SKIP("local KR 420 STEP is not in the tree");
+    }
+    sim::Scene scene;
+    sim::StepImporter importer;
+    const sim::ImportResult imported = importer.importFile(step.string(), scene);
+    REQUIRE(imported.ok);
+    const sim::SuggestResult suggestion = sim::suggestLinkGroups(scene);
+    std::string error;
+    REQUIRE(sim::applyLinkSuggestions(scene, "kr420", suggestion, sim::kr420DatasheetLimits(), error));
+    REQUIRE(sim::addKr420TrackDemonstration(scene, error));
+    sim::KinematicResource* robot = sim::findResource(scene.resources, "kr420");
+    REQUIRE(robot != nullptr);
+    REQUIRE(robot->joints.size() == 7);
+    REQUIRE(robot->joints.back().externalName == "E1");
+    REQUIRE(robot->joints.back().externalKind == "track");
+    REQUIRE(robot->joints.back().upper == 10000);
+    const sim::RobotPath* path = nullptr;
+    for (const sim::RobotPath& candidate : scene.robotPaths) {
+        if (candidate.name == "long") {
+            path = &candidate;
+        }
+    }
+    REQUIRE(path != nullptr);
+    const sim::CartesianPose start = sim::forwardModel(*robot);
+    const auto hidden = sim::hideAllMeshedParts(scene);
+    const sim::MotionPlan plan = sim::planRobotPath(scene, *robot, *path);
+    std::cerr << "kr420 track seconds " << plan.seconds << " samples " << plan.samples.size() << "\n";
+    for (const std::string& warning : plan.warnings) {
+        std::cerr << "kr420 track warning " << warning << "\n";
+    }
+    REQUIRE(plan.ok);
+    REQUIRE(plan.seconds > 6.0);
+    REQUIRE(plan.samples.back()[6] - plan.samples.front()[6] > 3000);
+    double partX = 0;
+    if (const auto base = sim::findLink(*robot, "base")) {
+        if (const auto node = scene.find(base->nodeId)) {
+            if (!node->children.empty() && node->children.front()) {
+                partX = node->children.front()->worldMatrix()(3, 0);
+            }
+        }
+    }
+    sim::setJointVector(*robot, plan.samples.back());
+    sim::applyResource(scene, *robot);
+    double partXFar = partX;
+    if (const auto base = sim::findLink(*robot, "base")) {
+        if (const auto node = scene.find(base->nodeId)) {
+            if (!node->children.empty() && node->children.front()) {
+                partXFar = node->children.front()->worldMatrix()(3, 0);
+            }
+        }
+    }
+    std::cerr << "scene part x " << partX << " -> " << partXFar << " track " << plan.samples.back()[6] << "\n";
+    REQUIRE(partXFar - partX > 3000);
+    sim::setJointVector(*robot, plan.samples[plan.samples.size() / 2]);
+    const sim::CartesianPose mid = sim::forwardModel(*robot);
+    const sim::Vec3 end = path->points.back().position;
+    REQUIRE(distanceToSegment(mid.position, start.position, end) < 5.0);
+    sim::setJointVector(*robot, plan.samples.back());
+    REQUIRE(sim::length(sim::forwardModel(*robot).position - end) < 5.0);
+    for (const auto& node : hidden) {
+        if (node) {
+            node->visible = true;
+        }
+    }
+}

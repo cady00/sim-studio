@@ -107,6 +107,7 @@ private:
     class CollisionPanel* collision_ = nullptr;
     bool collisionDemo_ = false;
     bool kr420Demo_ = false;
+    bool kr420TrackDemo_ = false;
     std::string demoPath_;
     std::string pendingPath_;
     std::vector<double> jointRest_;

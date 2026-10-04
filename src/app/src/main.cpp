@@ -95,7 +95,7 @@ int main(int argc, char* argv[]) {
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
     QCommandLineOption play("play", "Start the simulation after opening a project.");
     QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
-    QCommandLineOption demo("demo", "Built-in demo: turntable, scara, collision, or kr420.", "name");
+    QCommandLineOption demo("demo", "Built-in demo: turntable, scara, collision, kr420, or kr420track.", "name");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);

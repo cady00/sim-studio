@@ -155,7 +155,10 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
                      {"tcp", vec3ToJson(resource.scara.tcp)}};
     json["links"] = nlohmann::json::array();
     for (const KinLink& link : resource.links) {
-        json["links"].push_back({{"name", link.name}, {"node", link.nodeId}});
+        json["links"].push_back({{"name", link.name},
+                                 {"node", link.nodeId},
+                                 {"mountedOn", link.mountedOn},
+                                 {"mount", transformToJson(link.mountRest)}});
     }
     json["joints"] = nlohmann::json::array();
     for (const KinJoint& joint : resource.joints) {
@@ -173,7 +176,9 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
                                   {"coupledTo", joint.coupledTo},
                                   {"coupleRatio", joint.coupleRatio},
                                   {"position", joint.position},
-                                  {"rest", transformToJson(joint.restLocal)}});
+                                  {"rest", transformToJson(joint.restLocal)},
+                                  {"external", joint.externalName},
+                                  {"externalKind", joint.externalKind}});
     }
     json["poses"] = nlohmann::json::array();
     for (const KinPose& pose : resource.poses) {
@@ -185,9 +190,16 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
     }
     json["frames"] = nlohmann::json::array();
     for (const NamedFrame& frame : resource.frames) {
-        json["frames"].push_back(
-            {{"name", frame.name}, {"origin", vec3ToJson(frame.origin)}, {"rotation", quatToJson(frame.rotation)}});
+        json["frames"].push_back({{"name", frame.name},
+                                  {"origin", vec3ToJson(frame.origin)},
+                                  {"rotation", quatToJson(frame.rotation)},
+                                  {"link", frame.link}});
     }
+    json["redundancy"] = {{"mode", resource.redundancy.mode},
+                          {"travel", resource.redundancy.travel},
+                          {"midrange", resource.redundancy.midrange},
+                          {"manipulability", resource.redundancy.manipulability},
+                          {"fixed", resource.redundancy.fixed}};
     return json;
 }
 
@@ -227,6 +239,10 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
             KinLink link;
             link.name = item.value("name", std::string{});
             link.nodeId = item.value("node", std::string{});
+            link.mountedOn = item.value("mountedOn", std::string{});
+            if (item.contains("mount")) {
+                link.mountRest = transformFromJson(item.at("mount"));
+            }
             if (!link.name.empty()) {
                 resource.links.push_back(std::move(link));
             }
@@ -261,6 +277,8 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
             if (item.contains("rest")) {
                 joint.restLocal = transformFromJson(item.at("rest"));
             }
+            joint.externalName = item.value("external", std::string{});
+            joint.externalKind = item.value("externalKind", std::string{});
             if (!joint.name.empty()) {
                 resource.joints.push_back(std::move(joint));
             }
@@ -290,8 +308,21 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
             if (item.contains("rotation")) {
                 frame.rotation = quatFromJson(item.at("rotation"));
             }
+            frame.link = item.value("link", std::string{});
             if (!frame.name.empty()) {
                 resource.frames.push_back(std::move(frame));
+            }
+        }
+    }
+    if (json.contains("redundancy")) {
+        const auto& redundancy = json.at("redundancy");
+        resource.redundancy.mode = redundancy.value("mode", std::string("fixed"));
+        resource.redundancy.travel = redundancy.value("travel", resource.redundancy.travel);
+        resource.redundancy.midrange = redundancy.value("midrange", resource.redundancy.midrange);
+        resource.redundancy.manipulability = redundancy.value("manipulability", resource.redundancy.manipulability);
+        if (redundancy.contains("fixed")) {
+            for (const auto& value : redundancy.at("fixed")) {
+                resource.redundancy.fixed.push_back(value.get<double>());
             }
         }
     }
@@ -413,6 +444,8 @@ nlohmann::json robotPathToJson(const RobotPath& path) {
     nlohmann::json json;
     json["name"] = path.name;
     json["resource"] = path.resource;
+    json["external"] = path.external;
+    json["workpiece"] = path.workpiece;
     json["points"] = nlohmann::json::array();
     for (const PathPoint& point : path.points) {
         json["points"].push_back({{"name", point.name},
@@ -423,7 +456,9 @@ nlohmann::json robotPathToJson(const RobotPath& path) {
                                   {"orientation", quatToJson(point.orientation)},
                                   {"via", vec3ToJson(point.via)},
                                   {"speed", point.speed},
-                                  {"zone", point.zone}});
+                                  {"zone", point.zone},
+                                  {"external", point.external},
+                                  {"externalValues", point.externalValues}});
     }
     return json;
 }
@@ -436,6 +471,8 @@ bool robotPathFromJson(const nlohmann::json& json, RobotPath& path, std::string&
     path = {};
     path.name = json.at("name").get<std::string>();
     path.resource = json.value("resource", std::string{});
+    path.external = json.value("external", std::string("locked"));
+    path.workpiece = json.value("workpiece", std::string{});
     if (json.contains("points")) {
         for (const auto& item : json.at("points")) {
             PathPoint point;
@@ -463,6 +500,12 @@ bool robotPathFromJson(const nlohmann::json& json, RobotPath& path, std::string&
             }
             point.speed = item.value("speed", 100.0);
             point.zone = item.value("zone", 0.0);
+            point.external = item.value("external", std::string{});
+            if (item.contains("externalValues")) {
+                for (const auto& value : item.at("externalValues")) {
+                    point.externalValues.push_back(value.get<double>());
+                }
+            }
             path.points.push_back(std::move(point));
         }
     }

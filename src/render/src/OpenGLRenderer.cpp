@@ -9,24 +9,20 @@ namespace {
 const char* kMeshVertex = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
-layout(location = 2) in vec4 iM0;
-layout(location = 3) in vec4 iM1;
-layout(location = 4) in vec4 iM2;
-layout(location = 5) in vec4 iM3;
-layout(location = 6) in vec4 iColor;
 uniform mat4 uViewProj;
+uniform mat4 uModel;
+uniform vec4 uColor;
 uniform vec3 uEye;
 out vec3 vNormal;
 out vec3 vWorld;
 out vec3 vColor;
 out float vHighlight;
 void main() {
-    mat4 model = mat4(iM0, iM1, iM2, iM3);
-    vec4 world = model * vec4(aPos, 1.0);
+    vec4 world = uModel * vec4(aPos, 1.0);
     vWorld = world.xyz;
-    vNormal = normalize(mat3(model) * aNormal);
-    vColor = iColor.rgb;
-    vHighlight = iColor.a;
+    vNormal = normalize(mat3(uModel) * aNormal);
+    vColor = uColor.rgb;
+    vHighlight = uColor.a;
     gl_Position = uViewProj * world;
 }
 )";
@@ -132,7 +128,6 @@ bool OpenGLRenderer::initialize(std::string& error) {
     }
     glGenVertexArrays(1, &lineVao_);
     glGenBuffers(1, &lineVbo_);
-    glGenBuffers(1, &instanceVbo_);
     ready_ = true;
     return true;
 }
@@ -151,10 +146,6 @@ void OpenGLRenderer::clearMeshes() {
 
 void OpenGLRenderer::shutdown() {
     clearMeshes();
-    if (instanceVbo_ != 0) {
-        glDeleteBuffers(1, &instanceVbo_);
-        instanceVbo_ = 0;
-    }
     if (lineVbo_ != 0) {
         glDeleteBuffers(1, &lineVbo_);
         lineVbo_ = 0;
@@ -217,28 +208,19 @@ void OpenGLRenderer::beginFrame(const FrameParams& frame) {
 
 void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>& instances) {
     const int count = static_cast<int>(instances.size() / 20);
-    if (count <= 0) {
+    if (count <= 0 || meshProgram_ == 0) {
         return;
     }
+    // One uniform draw per copy. Instanced matrix attributes did not deliver
+    // translation on the software GL context, so a moving base stayed put.
+    const int modelLoc = glGetUniformLocation(meshProgram_, "uModel");
+    const int colorLoc = glGetUniformLocation(meshProgram_, "uColor");
     glBindVertexArray(mesh.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVbo_);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(instances.size() * sizeof(float)), instances.data(),
-                 GL_DYNAMIC_DRAW);
-    const auto stride = static_cast<int>(20 * sizeof(float));
-    for (int column = 0; column < 4; ++column) {
-        const unsigned location = static_cast<unsigned>(2 + column);
-        glEnableVertexAttribArray(location);
-        glVertexAttribPointer(location, 4, GL_FLOAT, GL_FALSE, stride,
-                              reinterpret_cast<void*>(static_cast<std::size_t>(column) * 4 * sizeof(float)));
-        glVertexAttribDivisor(location, 1);
-    }
-    glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(16 * sizeof(float)));
-    glVertexAttribDivisor(6, 1);
-    glDrawElementsInstanced(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr, count);
-    for (unsigned location = 2; location <= 6; ++location) {
-        glVertexAttribDivisor(location, 0);
-        glDisableVertexAttribArray(location);
+    for (int i = 0; i < count; ++i) {
+        const float* record = instances.data() + static_cast<std::size_t>(i) * 20;
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, record);
+        glUniform4fv(colorLoc, 1, record + 16);
+        glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr);
     }
     glBindVertexArray(0);
     submitted_ += count;

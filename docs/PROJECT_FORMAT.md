@@ -1,6 +1,6 @@
 # .simproj 项目格式
 
-当前版本 5，格式标识 `simstudio.project`。扩展名 `.simproj`。读取器接受版本 1 到 5。版本 1 没有机构、信号和脚本字段，打开后这些内容为空。版本 2 没有运动学、逻辑块和路径。版本 3 没有碰撞集和凸分解缓存，打开后近距阈值用默认 5 mm，碰撞集为空。版本 4 的节点没有 `faceAxes`，打开后该数组为空。
+当前版本 6，格式标识 `simstudio.project`。扩展名 `.simproj`。读取器接受版本 1 到 6。版本 1 没有机构、信号和脚本字段，打开后这些内容为空。版本 2 没有运动学、逻辑块和路径。版本 3 没有碰撞集和凸分解缓存，打开后近距阈值用默认 5 mm，碰撞集为空。版本 4 的节点没有 `faceAxes`，打开后该数组为空。版本 5 没有外部轴字段，打开后关节不是外部轴，冗余模式是固定，路径锁住外部轴。
 
 文件是 **store-only ZIP**（压缩方法 0，UTF-8 文件名标志，CRC32）。不使用 ZIP64，单个成员建议小于 4 GiB。读取器拒绝方法 8，因此不要用通用压缩工具重新打包。
 
@@ -149,3 +149,13 @@
 ```
 
 运动学编辑器用它做「圆柱面定轴」和按轴分组。它不是 B-rep，改了网格也不会自动重算。
+
+## 版本 6：外部轴
+
+运动学关节可以带 `external`（`E1`…`E6` 或空）和 `externalKind`（`track`、`positioner` 或空）。连杆可以带 `mountedOn` 和 `mount`（安装到另一根连杆上的静止变换，中间没有关节）。命名坐标系可以带 `link`，空表示链的末端。资源可以带 `redundancy`：
+
+```json
+"redundancy": {"mode": "fixed", "travel": 1, "midrange": 0.2, "manipulability": 0.2, "fixed": [0]}
+```
+
+`mode` 是 `fixed`、`travel`、`midrange` 或 `manipulability`。路径可以带 `external`（`locked`、`sync`、`positioner`）和 `workpiece`。路径点可以带 `external` 和 `externalValues`。旧文件没有这些字段时按上面的默认值。说明见 [EXTERNAL.md](EXTERNAL.md)。

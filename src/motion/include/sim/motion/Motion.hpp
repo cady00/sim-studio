@@ -66,6 +66,35 @@ double profileSample(ProfileKind kind, double q0, double q1, double vmax, double
 double jointCommand(const KinematicResource& resource, const KinJoint& joint);
 CartesianPose forwardModel(const KinematicResource& resource);
 IkResult inverseModel(const KinematicResource& resource, const CartesianPose& target, const std::vector<double>& seed);
+bool linkWorld(const KinematicResource& resource, const std::string& linkName, Mat4& world);
+bool namedFrameWorld(const KinematicResource& resource, const std::string& frameName, CartesianPose& pose);
+CartesianPose poseFromMatrix(const Mat4& matrix);
+Mat4 matrixFromPose(const CartesianPose& pose);
+
+// Names stored for a later OLP post. This does not write a robot program.
+struct OlpAxisName {
+    std::string joint;
+    std::string e;
+    std::string rapid;
+    std::string fanuc;
+};
+
+std::vector<OlpAxisName> externalExportMap(const KinematicResource& resource);
+std::vector<int> externalJointIndices(const KinematicResource& resource);
+
+struct ReachReport {
+    int samples = 0;
+    int reachable = 0;
+    double lower = 0;
+    double upper = 0;
+    std::string joint;
+};
+
+// Locks the first track joint across its range and counts inverse-kinematics successes.
+ReachReport analyzeReach(const KinematicResource& resource, const CartesianPose& target, int samples);
+// Copies a user-built carrier onto the robot, names the joints E1..E6, and mounts the robot root.
+bool attachExternalAxes(Scene& scene, KinematicResource& robot, const std::string& carrierName,
+                        const std::string& mountLink, const std::string& kind, std::string& error);
 
 void applyResource(Scene& scene, const KinematicResource& resource);
 std::vector<double> jointVector(const KinematicResource& resource);
@@ -171,6 +200,10 @@ std::vector<RevoluteLimit> kr420DatasheetLimits();
 std::vector<std::shared_ptr<SceneNode>> hidePartsOutsideProximity(Scene& scene);
 // Obstacle, tint is already applied by applyLinkSuggestions. Adds a PTP/LIN path named "cycle".
 void addKr420Demonstration(Scene& scene);
+// Hides every meshed part. Used when a path has no collision sets, so planning does not voxelize them.
+std::vector<std::shared_ptr<SceneNode>> hideAllMeshedParts(Scene& scene);
+// Rail built with addLink/addJoint, then attached. Adds a sync LIN named "long". Speed and accel are placeholders.
+bool addKr420TrackDemonstration(Scene& scene, std::string& error);
 
 // In-house planner. IRcsAdapter is the unimplemented vendor seam.
 class IRcsAdapter {
@@ -191,6 +224,7 @@ public:
     bool arm(const std::string& pathName, std::string& error);
     const MotionPlan& plan() const { return plan_; }
     bool playing() const { return playing_; }
+    void setHideAllDuringQuery(bool hide) { hideAllDuringQuery_ = hide; }
 
 private:
     Scene* scene_ = nullptr;
@@ -198,6 +232,7 @@ private:
     std::string resourceName_;
     double cursor_ = 0;
     bool playing_ = false;
+    bool hideAllDuringQuery_ = false;
 };
 
 std::unique_ptr<IRobotSolver> createRobotSolver();

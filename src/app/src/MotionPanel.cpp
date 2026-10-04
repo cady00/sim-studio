@@ -12,12 +12,16 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
+#include <stdexcept>
+#include <utility>
 
 namespace sim {
 namespace {
@@ -61,6 +65,32 @@ void MotionPanel::retranslate() {
     }
     if (solidLabel_ != nullptr) {
         solidLabel_->setText(trk("motion.solids"));
+    }
+    auto refill = [this](QComboBox* box, std::initializer_list<std::pair<const char*, const char*>> items) {
+        if (box == nullptr) {
+            return;
+        }
+        const QVariant current = box->currentData();
+        const QSignalBlocker blocker(box);
+        box->clear();
+        for (const auto& item : items) {
+            box->addItem(trk(item.first), QString::fromLatin1(item.second));
+        }
+        const int index = box->findData(current);
+        if (index >= 0) {
+            box->setCurrentIndex(index);
+        }
+    };
+    refill(externalKindCombo_, {{"motion.kind.track", "track"}, {"motion.kind.positioner", "positioner"}});
+    refill(redundancyCombo_, {{"motion.redundancy.fixed", "fixed"},
+                              {"motion.redundancy.travel", "travel"},
+                              {"motion.redundancy.midrange", "midrange"},
+                              {"motion.redundancy.manipulability", "manipulability"}});
+    refill(pathExternalCombo_, {{"motion.external.locked", "locked"},
+                                {"motion.external.sync", "sync"},
+                                {"motion.external.positioner", "positioner"}});
+    if (externalTargets_ != nullptr) {
+        externalTargets_->setPlaceholderText(trk("motion.externalValues"));
     }
     const auto buttons = findChildren<QPushButton*>();
     for (QPushButton* button : buttons) {
@@ -160,6 +190,29 @@ void MotionPanel::buildUi() {
     kinForm->addRow(accelSpin_);
     kinForm->addRow(trk("motion.couple"), coupleCombo_);
     kinForm->addRow(trk("motion.ratio"), ratioSpin_);
+    carrierName_ = new QLineEdit("kl");
+    mountLinkName_ = new QLineEdit("carriage");
+    externalKindCombo_ = new QComboBox;
+    externalKindCombo_->addItem(trk("motion.kind.track"), QStringLiteral("track"));
+    externalKindCombo_->addItem(trk("motion.kind.positioner"), QStringLiteral("positioner"));
+    redundancyCombo_ = new QComboBox;
+    redundancyCombo_->addItem(trk("motion.redundancy.fixed"), QStringLiteral("fixed"));
+    redundancyCombo_->addItem(trk("motion.redundancy.travel"), QStringLiteral("travel"));
+    redundancyCombo_->addItem(trk("motion.redundancy.midrange"), QStringLiteral("midrange"));
+    redundancyCombo_->addItem(trk("motion.redundancy.manipulability"), QStringLiteral("manipulability"));
+    weightTravel_ = spinBox(0, 100);
+    weightTravel_->setValue(1);
+    weightMid_ = spinBox(0, 100);
+    weightMid_->setValue(0.2);
+    weightManip_ = spinBox(0, 100);
+    weightManip_->setValue(0.2);
+    kinForm->addRow(trk("motion.carrier"), carrierName_);
+    kinForm->addRow(trk("motion.mountLink"), mountLinkName_);
+    kinForm->addRow(trk("motion.externalKind"), externalKindCombo_);
+    kinForm->addRow(trk("motion.redundancy"), redundancyCombo_);
+    kinForm->addRow(trk("motion.weightTravel"), weightTravel_);
+    kinForm->addRow(trk("motion.weightMid"), weightMid_);
+    kinForm->addRow(trk("motion.weightManip"), weightManip_);
     kinForm->addRow(poseName_);
     kinForm->addRow(poseCombo_);
     kinForm->addRow(profileCombo_);
@@ -233,6 +286,24 @@ void MotionPanel::buildUi() {
         joint.maxAccel = accelSpin_->value();
         applyResource(scene_, *current);
         refresh();
+    });
+    addButton("motion.attachExternal", [this] {
+        KinematicResource* current = resource();
+        if (current == nullptr) {
+            return;
+        }
+        std::string error;
+        const std::string kind = externalKindCombo_->currentData().toString().toStdString();
+        if (!attachExternalAxes(scene_, *current, carrierName_->text().trimmed().toStdString(),
+                                mountLinkName_->text().trimmed().toStdString(), kind, error)) {
+            liveLabel_->setText(QString::fromStdString(error));
+            return;
+        }
+        applyResource(scene_, *current);
+        refresh();
+        if (viewport_ != nullptr) {
+            viewport_->update();
+        }
     });
     addButton("motion.axisFromPoints", [this] {
         if (pickCount_ < 2) {
@@ -468,6 +539,12 @@ void MotionPanel::buildUi() {
         spin = spinBox(-1e5, 1e5);
     }
     pathName_ = new QLineEdit("path");
+    pathExternalCombo_ = new QComboBox;
+    pathExternalCombo_->addItem(trk("motion.external.locked"), QStringLiteral("locked"));
+    pathExternalCombo_->addItem(trk("motion.external.sync"), QStringLiteral("sync"));
+    pathExternalCombo_->addItem(trk("motion.external.positioner"), QStringLiteral("positioner"));
+    externalTargets_ = new QLineEdit;
+    externalTargets_->setPlaceholderText(trk("motion.externalValues"));
     pathList_ = new QListWidget;
     planLabel_ = new QLabel;
     planLabel_->setWordWrap(true);
@@ -486,6 +563,8 @@ void MotionPanel::buildUi() {
     goalRow->addWidget(goalSpin_[2]);
     robotLayout->addLayout(goalRow);
     robotLayout->addWidget(pathName_);
+    robotLayout->addWidget(pathExternalCombo_);
+    robotLayout->addWidget(externalTargets_);
     robotLayout->addWidget(pathList_);
     robotLayout->addWidget(planLabel_);
     auto* robotButtons = new QHBoxLayout;
@@ -498,12 +577,53 @@ void MotionPanel::buildUi() {
     auto* playPath = new QPushButton;
     tag(playPath, "motion.playPath");
     playPath->setText(trk("motion.playPath"));
+    auto* reach = new QPushButton;
+    tag(reach, "motion.reach");
+    reach->setText(trk("motion.reach"));
     auto* attach = new QPushButton;
     tag(attach, "motion.attach");
     attach->setText(trk("motion.attach"));
     auto* detach = new QPushButton;
     tag(detach, "motion.detach");
     detach->setText(trk("motion.detach"));
+    auto writeRedundancy = [this] {
+        if (refreshing_) {
+            return;
+        }
+        KinematicResource* current = resource();
+        if (current == nullptr || redundancyCombo_ == nullptr) {
+            return;
+        }
+        current->redundancy.mode = redundancyCombo_->currentData().toString().toStdString();
+        current->redundancy.travel = weightTravel_->value();
+        current->redundancy.midrange = weightMid_->value();
+        current->redundancy.manipulability = weightManip_->value();
+    };
+    connect(redundancyCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, writeRedundancy] {
+        if (refreshing_ || redundancyCombo_ == nullptr) {
+            return;
+        }
+        const QString mode = redundancyCombo_->currentData().toString();
+        refreshing_ = true;
+        if (mode == QStringLiteral("travel")) {
+            weightTravel_->setValue(1);
+            weightMid_->setValue(0.05);
+            weightManip_->setValue(0);
+        } else if (mode == QStringLiteral("midrange")) {
+            weightTravel_->setValue(0.05);
+            weightMid_->setValue(1);
+            weightManip_->setValue(0);
+        } else if (mode == QStringLiteral("manipulability")) {
+            weightTravel_->setValue(0.05);
+            weightMid_->setValue(0.05);
+            weightManip_->setValue(1);
+        }
+        refreshing_ = false;
+        writeRedundancy();
+    });
+    connect(weightTravel_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [writeRedundancy](double) { writeRedundancy(); });
+    connect(weightMid_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [writeRedundancy](double) { writeRedundancy(); });
+    connect(weightManip_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [writeRedundancy](double) { writeRedundancy(); });
     connect(ikCombo_, &QComboBox::currentTextChanged, this, [this](const QString& text) {
         if (refreshing_) {
             return;
@@ -531,12 +651,22 @@ void MotionPanel::buildUi() {
             scene_.robotPaths.push_back(std::move(created));
             path = &scene_.robotPaths.back();
         }
+        path->external = pathExternalCombo_->currentData().toString().toStdString();
         PathPoint point;
         point.name = "p" + std::to_string(path->points.size() + 1);
         pathMoveFromName(moveKind_->currentText().toStdString(), point.move);
         point.speed = pathSpeed_->value();
         point.zone = pathZone_->value();
         point.joints = jointVector(*current);
+        point.external = path->external;
+        for (const std::string& token : splitComma(externalTargets_->text())) {
+            try {
+                point.externalValues.push_back(std::stod(token));
+            } catch (const std::exception&) {
+                liveLabel_->setText(trk("motion.externalValues"));
+                return;
+            }
+        }
         if (point.move != PathMove::Ptp) {
             point.cartesian = true;
             const CartesianPose pose = forwardModel(*current);
@@ -584,6 +714,16 @@ void MotionPanel::buildUi() {
             play_(pathName_->text().toStdString());
         }
     });
+    connect(reach, &QPushButton::clicked, this, [this] {
+        KinematicResource* current = resource();
+        if (current == nullptr) {
+            return;
+        }
+        CartesianPose target = forwardModel(*current);
+        target.position = target.position + Vec3{goalSpin_[0]->value(), goalSpin_[1]->value(), goalSpin_[2]->value()};
+        const ReachReport report = analyzeReach(*current, target, 9);
+        liveLabel_->setText(trk("motion.reachResult").arg(report.reachable).arg(report.samples));
+    });
     connect(attach, &QPushButton::clicked, this, [this] {
         KinematicResource* current = resource();
         if (current == nullptr || scene_.selectedId().empty()) {
@@ -606,6 +746,7 @@ void MotionPanel::buildUi() {
     robotButtons->addWidget(addPoint);
     robotButtons->addWidget(plan);
     robotButtons->addWidget(playPath);
+    robotButtons->addWidget(reach);
     robotButtons->addWidget(attach);
     robotButtons->addWidget(detach);
     robotLayout->addLayout(robotButtons);
@@ -774,6 +915,17 @@ void MotionPanel::fillCombos() {
     const int ikIndex = ikCombo_->findText(ik);
     if (ikIndex >= 0) {
         ikCombo_->setCurrentIndex(ikIndex);
+    }
+    if (redundancyCombo_ != nullptr) {
+        const QSignalBlocker blockCombo(redundancyCombo_);
+        const QSignalBlocker blockTravel(weightTravel_);
+        const QSignalBlocker blockMid(weightMid_);
+        const QSignalBlocker blockManip(weightManip_);
+        const int modeIndex = redundancyCombo_->findData(QString::fromStdString(current->redundancy.mode));
+        redundancyCombo_->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
+        weightTravel_->setValue(current->redundancy.travel);
+        weightMid_->setValue(current->redundancy.midrange);
+        weightManip_->setValue(current->redundancy.manipulability);
     }
     refreshLive();
 }

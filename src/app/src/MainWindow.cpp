@@ -46,6 +46,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -1100,11 +1101,12 @@ void MainWindow::showScripting() {
 void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path; }
 
 void MainWindow::captureScreenshot() {
-    viewport_->update();
-    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    QImage view = viewport_->captureView();
+    // update() only queues a paint. The simulation clock is advanced before the
+    // event loop runs, so the widget FBO would still show the pose from fitAll.
+    viewport_->repaint();
+    QImage view = viewport_->grabFramebuffer();
     if (view.isNull()) {
-        view = viewport_->grabFramebuffer();
+        view = viewport_->captureView();
     }
     QImage window = grab().toImage();
     if (!view.isNull() && !window.isNull()) {
@@ -1302,7 +1304,11 @@ void MainWindow::playSimulation() {
     robot_->build(scene_, robotError);
     const std::string path = !pendingPath_.empty() ? pendingPath_ : demoPath_;
     pendingPath_.clear();
-    const auto hidden = kr420Demo_ ? hidePartsOutsideProximity(scene_) : std::vector<std::shared_ptr<SceneNode>>{};
+    if (robot_ != nullptr) {
+        robot_->setHideAllDuringQuery(kr420TrackDemo_);
+    }
+    const auto hidden = kr420TrackDemo_ ? hideAllMeshedParts(scene_)
+                                        : (kr420Demo_ ? hidePartsOutsideProximity(scene_) : std::vector<std::shared_ptr<SceneNode>>{});
     if (!path.empty()) {
         if (!robot_->arm(path, robotError) && !robotError.empty()) {
             statusLabel_->setText(QString::fromStdString(robotError));
@@ -1362,6 +1368,7 @@ void MainWindow::runScriptSnippet() {}
 void MainWindow::loadDemo(const QString& name) {
     collisionDemo_ = name == QStringLiteral("collision");
     kr420Demo_ = name == QStringLiteral("kr420");
+    kr420TrackDemo_ = name == QStringLiteral("kr420track");
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
         demoPath_ = "pick_place";
@@ -1391,6 +1398,30 @@ void MainWindow::loadDemo(const QString& name) {
                 }
             }
         }
+    } else if (kr420TrackDemo_) {
+        scene_.clear();
+        demoPath_.clear();
+        const QString stepPath = QString::fromUtf8(SIM_SOURCE_DIR "/testdata/local/KR420_R3080_KR280_R3080.stp");
+        if (!QFile::exists(stepPath)) {
+            statusLabel_->setText(trk("motion.kr420Missing"));
+        } else {
+            StepImporter importer;
+            const ImportResult imported = importer.importFile(stepPath.toStdString(), scene_);
+            if (!imported.ok) {
+                statusLabel_->setText(QString::fromStdString(imported.message));
+            } else {
+                const SuggestResult suggestion = suggestLinkGroups(scene_);
+                std::string error;
+                if (!applyLinkSuggestions(scene_, "kr420", suggestion, kr420DatasheetLimits(), error)) {
+                    statusLabel_->setText(QString::fromStdString(error.empty() ? suggestion.note : error));
+                } else if (!addKr420TrackDemonstration(scene_, error)) {
+                    statusLabel_->setText(QString::fromStdString(error));
+                } else {
+                    demoPath_ = "long";
+                    statusLabel_->setText(QString::fromStdString(suggestion.note));
+                }
+            }
+        }
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
@@ -1413,7 +1444,7 @@ void MainWindow::beginHeadlessPlayback() {
                 resizeDocks({signals, scripts}, {380, 720}, Qt::Horizontal);
             }
         }
-        viewport_->setStandardView(StandardView::Iso);
+        viewport_->setStandardView(kr420TrackDemo_ ? StandardView::Front : StandardView::Iso);
         viewport_->fitAll();
         if (collisionDemo_ && collision_ != nullptr) {
             if (auto* dock = findChild<QDockWidget*>("dock.collision")) {
@@ -1434,8 +1465,16 @@ void MainWindow::beginHeadlessPlayback() {
         if (screenshotPath_.isEmpty()) {
             return;
         }
-        const int delay = static_cast<int>(std::max(headlessSeconds_, 0.2) * 1000.0) + 400;
-        QTimer::singleShot(delay, this, &MainWindow::captureScreenshot);
+        // Catch up on the simulation clock before the first software-GL paint.
+        // A wall-clock timer expires during that paint and both shots land at time 0.
+        const double target = std::max(headlessSeconds_, 0.0);
+        int guard = 0;
+        while (simulation_ && simulation_->time() + 1e-4 < target && guard < 8) {
+            const double remain = target - simulation_->time();
+            simulation_->tick(std::min(remain, 2.0));
+            ++guard;
+        }
+        QTimer::singleShot(0, this, &MainWindow::captureScreenshot);
     });
 }
 
