@@ -1,9 +1,13 @@
 #include "sim/ai/Commands.hpp"
 
+#include "sim/ai/Provider.hpp"
 #include "sim/collision/Query.hpp"
 
 #include "sim/io/AssetImport.hpp"
 #include "sim/motion/Motion.hpp"
+
+#include <algorithm>
+#include <cctype>
 
 #include <vector>
 
@@ -101,10 +105,12 @@ nlohmann::json CommandExecutor::catalog() {
         op("ems_import", "Read a generic product, process, and plant XML file into the PPR model.", {"path"}, true),
         op("asset_import", "Import a file through the asset registry. Format is chosen by extension, then by content.", {"path"}, true),
         op("asset_export", "Export visible meshes as gltf, glb, or stl.", {"path", "format"}, true),
-        op("nl_to_logic", "Future: natural language to a logic block or script.", {"text"}, false),
-        op("layout_suggest", "Future: suggest a line layout. Does not edit the scene.", {"text"}, false),
-        op("cycle_optimize", "Future: suggest cycle-time changes.", {"text"}, false),
-        op("explain_anomaly", "Future: explain a signal or cycle anomaly.", {"text"}, false),
+        op("logic_upsert", "Create or replace a logic block. steps is a list of actions.", {"name", "steps", "repeat"}, true),
+        op("line_set_cyclic", "Turn the operation list into a repeating production cycle.", {"value"}, true),
+        op("nl_to_logic", "Offline rules turn a sentence into logic commands. An optional localhost model can replace the commands.", {"text"}, true),
+        op("layout_suggest", "Offline rules add stations. An optional localhost model can replace the commands.", {"text"}, true),
+        op("cycle_optimize", "Offline rules shorten a task that is more than twice the median and mark the line cyclic.", {"text"}, true),
+        op("explain_anomaly", "Offline rules describe stuck signals and mark anomaly_explained.", {"text"}, true),
     });
 }
 
@@ -833,8 +839,179 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         return okValue(path);
     }
+    if (op == "logic_upsert") {
+        const std::string name = command.value("name", "");
+        if (name.empty()) {
+            return fail("logic block needs a name");
+        }
+        LogicBlock block;
+        block.name = name;
+        block.repeat = command.value("repeat", false);
+        block.resource = command.value("resource", "");
+        if (command.contains("steps") && command.at("steps").is_array()) {
+            LogicStep step;
+            for (const auto& item : command.at("steps")) {
+                if (!item.is_object()) {
+                    continue;
+                }
+                LogicAction action;
+                action.kind = item.value("kind", "wait");
+                action.signal = item.value("signal", "");
+                action.seconds = item.value("seconds", 0.0);
+                step.actions.push_back(std::move(action));
+            }
+            if (!step.actions.empty()) {
+                block.steps.push_back(std::move(step));
+            }
+        }
+        bool replaced = false;
+        for (LogicBlock& existing : scene_.logicBlocks) {
+            if (existing.name == name) {
+                existing = block;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            scene_.logicBlocks.push_back(std::move(block));
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(name);
+    }
+    if (op == "line_set_cyclic") {
+        scene_.layout.cyclic = command.value("value", true);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(scene_.layout.cyclic);
+    }
     if (op == "nl_to_logic" || op == "layout_suggest" || op == "cycle_optimize" || op == "explain_anomaly") {
-        return fail(op + " is a documented hook and is not implemented");
+        const std::string text = command.value("text", "");
+        std::string folded = text;
+        for (char& character : folded) {
+            character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        }
+        nlohmann::json commands = nlohmann::json::array();
+        std::string note;
+        if (op == "nl_to_logic") {
+            std::string cue = "barrier";
+            std::string act = "push";
+            const auto when = folded.find("when ");
+            const auto then = folded.find(" then ");
+            if (when != std::string::npos && then != std::string::npos && then > when) {
+                cue = folded.substr(when + 5, then - (when + 5));
+                act = folded.substr(then + 6);
+            }
+            const auto dang = text.find("当");
+            const auto ze = text.find("则");
+            if (dang != std::string::npos && ze != std::string::npos && ze > dang) {
+                cue = text.substr(dang + std::string("当").size(), ze - (dang + std::string("当").size()));
+                act = text.substr(ze + std::string("则").size());
+            }
+            auto trim = [](std::string value) {
+                while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
+                    value.erase(value.begin());
+                }
+                while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+                    value.pop_back();
+                }
+                return value;
+            };
+            cue = trim(cue);
+            act = trim(act);
+            if (cue.empty()) {
+                cue = "go";
+            }
+            if (act.empty()) {
+                act = "done";
+            }
+            if (text.find("气缸") != std::string::npos || folded.find("cylinder") != std::string::npos) {
+                act = "cylinder";
+            }
+            commands.push_back({{"op", "logic_upsert"},
+                                {"name", "nl"},
+                                {"repeat", true},
+                                {"steps",
+                                 nlohmann::json::array({{{"kind", "wait_signal"}, {"signal", cue}},
+                                                        {{"kind", "set_output"}, {"signal", act}}})}});
+            note = "rule: wait " + cue + " then set " + act;
+        } else if (op == "layout_suggest") {
+            if (text.find("焊接") != std::string::npos || folded.find("weld") != std::string::npos) {
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_weld"}, {"name", "焊接"}, {"kind", "robot"}, {"x", 2000}});
+                note = "rule: weld station";
+            } else {
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_load"}, {"name", "上料"}, {"kind", "manual"}, {"x", 0}});
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_weld"}, {"name", "焊接"}, {"kind", "robot"}, {"x", 2500}});
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_inspect"}, {"name", "检查"}, {"kind", "manual"}, {"x", 5000}});
+                note = "rule: load, weld, inspect";
+            }
+        } else if (op == "cycle_optimize") {
+            std::vector<double> spans;
+            for (const Operation& operation : scene_.operations) {
+                if (operation.kind == OpKind::Task && operation.seconds > 0) {
+                    spans.push_back(operation.seconds);
+                }
+            }
+            std::sort(spans.begin(), spans.end());
+            const double median = spans.empty() ? 0 : spans[(spans.size() - 1) / 2];
+            for (const Operation& operation : scene_.operations) {
+                if (operation.kind == OpKind::Task && median > 0 && operation.seconds > median * 2.0) {
+                    commands.push_back({{"op", "line_add_op"},
+                                        {"id", operation.id},
+                                        {"name", operation.name},
+                                        {"station", operation.station},
+                                        {"parent", operation.parent},
+                                        {"kind", "task"},
+                                        {"seconds", median}});
+                }
+            }
+            commands.push_back({{"op", "line_set_cyclic"}, {"value", true}});
+            note = spans.empty() ? "rule: line set cyclic" : "rule: cap tasks above twice the median";
+        } else {
+            std::string stuck;
+            for (const Signal& signal : scene_.signals) {
+                if (signal.type == SignalType::Bool && signal.flag) {
+                    if (!stuck.empty()) {
+                        stuck += ", ";
+                    }
+                    stuck += signal.name;
+                }
+            }
+            note = stuck.empty() ? "没有保持为真的布尔信号" : "这些布尔信号保持为真: " + stuck;
+            commands.push_back({{"op", "set_bool"}, {"name", "anomaly_explained"}, {"value", true}});
+        }
+        if (command.value("use_model", false)) {
+            ProviderConfig config;
+            config.enabled = true;
+            config.kind = "openai-compatible";
+            config.endpoint = command.value("endpoint", "http://127.0.0.1:8080/v1/chat/completions");
+            config.model = command.value("model", "local");
+            auto provider = createAiProvider(config);
+            std::string modelError;
+            const nlohmann::json reply = provider->complete(
+                {{"messages", nlohmann::json::array({{{"role", "user"}, {"content", text}}})}}, modelError);
+            if (reply.contains("commands") && reply.at("commands").is_array()) {
+                commands = reply.at("commands");
+                note = "localhost model";
+            } else if (!modelError.empty()) {
+                note += "; " + modelError;
+            }
+        }
+        nlohmann::json applied = nlohmann::json::array();
+        for (const auto& generated : commands) {
+            if (!generated.is_object()) {
+                continue;
+            }
+            const std::string generatedOp = generated.value("op", "");
+            if (generatedOp == "nl_to_logic" || generatedOp == "layout_suggest" || generatedOp == "cycle_optimize" ||
+                generatedOp == "explain_anomaly") {
+                return fail("model command cannot call " + generatedOp);
+            }
+            const CommandResult step = execute(generated);
+            if (!step.ok) {
+                return fail(step.error.empty() ? "generated command failed" : step.error);
+            }
+            applied.push_back({{"op", generatedOp}, {"value", step.value}});
+        }
+        return okValue({{"note", note}, {"commands", commands}, {"applied", applied}});
     }
     return fail("unknown op " + op);
 }

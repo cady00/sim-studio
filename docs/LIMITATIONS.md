@@ -15,8 +15,8 @@
 | IGES | `createImporter("iges")` 和资源注册表都走 OCCT `IGESControl_Reader`，读入后做三角化。读失败时返回错误，不造网格。 |
 | 二进制 DXF | 读到二进制头时返回 `binary DXF is not supported`。 |
 | 压缩 ZIP | 工程包只接受存储法（method 0）。压缩条目报错，不假装解压成功。 |
-| `nl_to_logic`、`layout_suggest`、`cycle_optimize`、`explain_anomaly` | 返回 `is a documented hook and is not implemented`。单元测试锁定这句。 |
-| AI 提供方 | `complete` 不发网络请求。未启用、无端点、或传输未编译时返回错误和空 JSON。`capabilities()` 为空。 |
+| `nl_to_logic`、`layout_suggest`、`cycle_optimize`、`explain_anomaly` | 默认用离线规则生成命令，再交给 `CommandExecutor`。改动进撤销栈。句子对不上规则时仍给出一条明确的缺省命令，不假装听懂了。 |
+| AI 提供方 | 默认关闭，不打开套接字。启用后只接受 `http://127.0.0.1` 或 `http://localhost` 的 OpenAI 兼容 `POST /v1/chat/completions`。其它主机直接拒绝。连不上本机时退回规则。`usesNetwork()` 保持为假，因为没有出本机的请求。 |
 | `IRcsAdapter` | 只有纯虚接口，没有厂商 RCS 实现。规划走内置求解器。 |
 | PLCSIM Advanced | 卡片只显示地址和「本机没有安装运行时」。不打开套接字。 |
 | OPC UA 互通 | 自研客户端只和本仓库的回环服务器对测。没有 open62541 互通，也没有 PLCSIM 连接。 |
