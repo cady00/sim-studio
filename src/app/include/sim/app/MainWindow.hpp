@@ -50,6 +50,7 @@ public:
     void beginHeadlessPlayback();
     void loadDemo(const QString& name);
     void runLargeSceneBench(const QString& screenshot);
+    void finishLargeSceneBench();
     void usePhysicsBackend(PhysicsBackend backend);
     void setTaskModeName(const QString& mode);
     void setThemeName(const QString& theme);
@@ -181,6 +182,14 @@ private:
     QPushButton* cancelButton_ = nullptr;
     QString projectPath_;
     QString screenshotPath_;
+    QString benchShot_;
+    int benchTries_ = 0;
+    int benchPhase_ = 0;
+    double benchFitMs_ = 0;
+    int benchFitSubmitted_ = 0;
+    int benchFitCulled_ = 0;
+    int benchFitDraws_ = 0;
+    int benchFitDrawn_ = 0;
     bool refreshing_ = false;
     bool importing_ = false;
     std::thread importThread_;

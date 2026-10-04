@@ -343,7 +343,11 @@ void OpenGLRenderer::submitLines(const LineBatch& lines) {
     }
 }
 
-void OpenGLRenderer::endFrame() {}
+void OpenGLRenderer::endFrame() {
+    // llvmpipe finishes the draw on the calling thread. Without this, the paint
+    // timer stops at the draw call and the real raster shows up on the next swap.
+    glFinish();
+}
 
 bool OpenGLRenderer::captureRgba(std::vector<std::uint8_t>& rgba, int& width, int& height) {
     width = std::max(frame_.width, 1);

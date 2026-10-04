@@ -33,8 +33,10 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
+#include <QSurfaceFormat>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -1880,34 +1882,102 @@ void MainWindow::loadDemo(const QString& name) {
 }
 
 void MainWindow::runLargeSceneBench(const QString& screenshot) {
-    if (treeDock_ != nullptr) {
-        treeDock_->hide();
+    benchShot_ = screenshot;
+    benchTries_ = 0;
+    benchPhase_ = 0;
+    for (QDockWidget* dock : {treeDock_, propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_,
+                              pathDock_, plcDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
+        if (dock != nullptr) {
+            dock->hide();
+        }
     }
-    if (propertyDock_ != nullptr) {
-        propertyDock_->hide();
-    }
+    // The 100000-part field is a renderer bench. Filling a QTreeWidget row per part
+    // would dominate memory before the first draw, so the structure callback stays quiet.
+    auto callback = std::move(scene_.onChanged);
+    scene_.onChanged = nullptr;
     buildLargeField(scene_, 100000, 256);
-    rebuildTree();
+    scene_.onChanged = std::move(callback);
+    // show() has already returned, but the OpenGL widget is realized on the event loop.
+    QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+}
+
+void MainWindow::finishLargeSceneBench() {
+    if (benchPhase_ == 0) {
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        if (viewport_ == nullptr || !viewport_->isValid() || viewport_->width() < 32 || viewport_->height() < 32) {
+            if (++benchTries_ < 40) {
+                QTimer::singleShot(50, this, [this] { finishLargeSceneBench(); });
+                return;
+            }
+            std::cout << "BENCH failed reason=viewport_not_realized tries=" << benchTries_ << std::endl;
+            QApplication::exit(2);
+            return;
+        }
+        viewport_->setStandardView(StandardView::Iso);
+        viewport_->setForceDetail(true);
+        viewport_->fitAll();
+        benchPhase_ = 1;
+        // A second repaint in the same slot does not enter paintGL. Time the next turn.
+        QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+        return;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    viewport_->repaint();
+    const double wallMs = static_cast<double>(timer.nsecsElapsed()) / 1.0e6;
+    const double drawMs = viewport_->lastDrawMs();
+    const double frameMs = wallMs > drawMs ? wallMs : drawMs;
+    if (viewport_->lastSubmitted() <= 0) {
+        if (++benchTries_ < 40) {
+            QTimer::singleShot(50, this, [this] { finishLargeSceneBench(); });
+            return;
+        }
+        std::cout << "BENCH failed reason=no_instances phase=" << benchPhase_ << " wall_ms=" << wallMs
+                  << " draw_ms=" << drawMs << std::endl;
+        QApplication::exit(2);
+        return;
+    }
+
+    if (benchPhase_ == 1) {
+        benchFitMs_ = frameMs;
+        benchFitSubmitted_ = viewport_->lastSubmitted();
+        benchFitCulled_ = viewport_->lastCulled();
+        benchFitDraws_ = viewport_->lastDraws();
+        benchFitDrawn_ = viewport_->lastDrawnTriangles();
+        double rssKb = 0;
+        std::ifstream status("/proc/self/status");
+        std::string label;
+        while (status >> label) {
+            if (label == "VmRSS:") {
+                status >> rssKb;
+                break;
+            }
+            status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        }
+        viewport_->setCallout(QString("10万零件 · 全细节 %1 三角 · %2 ms · RSS %3 MB · MSAA %4")
+                                  .arg(benchFitDrawn_)
+                                  .arg(benchFitMs_, 0, 'f', 0)
+                                  .arg(rssKb / 1024.0, 0, 'f', 0)
+                                  .arg(QSurfaceFormat::defaultFormat().samples()));
+        viewport_->setForceDetail(false);
+        viewport_->camera().target = scene_.worldBounds().center();
+        viewport_->camera().distance = 4500;
+        benchPhase_ = 2;
+        QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+        return;
+    }
+
     long long sceneTriangles = 0;
+    int meshTriangles = 0;
     for (const auto& [id, mesh] : scene_.meshes()) {
         (void)id;
         if (mesh) {
+            meshTriangles = static_cast<int>(mesh->triangleCount());
             sceneTriangles += static_cast<long long>(mesh->triangleCount()) * std::max(0, scene_.nodeCount() - 1);
         }
     }
-    viewport_->setForceDetail(true);
-    viewport_->fitAll();
-    viewport_->repaint();
-    const double fitMs = viewport_->lastDrawMs();
-    const int fitSubmitted = viewport_->lastSubmitted();
-    const int fitCulled = viewport_->lastCulled();
-    const int fitDraws = viewport_->lastDraws();
-    const int fitDrawn = viewport_->lastDrawnTriangles();
-    viewport_->setForceDetail(false);
-    viewport_->camera().target = scene_.worldBounds().center();
-    viewport_->camera().distance = 2000;
-    viewport_->repaint();
-    const double nearMs = viewport_->lastDrawMs();
+    const int parts = std::max(0, scene_.nodeCount() - 1);
     double rssKb = 0;
     std::ifstream status("/proc/self/status");
     std::string label;
@@ -1918,15 +1988,24 @@ void MainWindow::runLargeSceneBench(const QString& screenshot) {
         }
         status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     }
-    std::cout << "BENCH parts=100000 triangles=" << sceneTriangles << " submitted=" << fitSubmitted << " culled=" << fitCulled
-              << " draws=" << fitDraws << " drawn_triangles=" << fitDrawn << " frame_ms=" << fitMs
-              << " fps=" << (fitMs > 0 ? 1000.0 / fitMs : 0) << " rss_mb=" << (rssKb / 1024.0)
+    const int msaa = QSurfaceFormat::defaultFormat().samples();
+    const double rssMb = rssKb / 1024.0;
+    const double nearMs = frameMs;
+    std::cout << "BENCH parts=" << parts << " mesh_triangles=" << meshTriangles << " triangles=" << sceneTriangles
+              << " submitted=" << benchFitSubmitted_ << " culled=" << benchFitCulled_ << " draws=" << benchFitDraws_
+              << " drawn_triangles=" << benchFitDrawn_ << " frame_ms=" << benchFitMs_
+              << " fps=" << (benchFitMs_ > 0 ? 1000.0 / benchFitMs_ : 0) << " rss_mb=" << rssMb << " msaa=" << msaa
               << " near_submitted=" << viewport_->lastSubmitted() << " near_culled=" << viewport_->lastCulled()
               << " near_drawn=" << viewport_->lastDrawnTriangles() << " near_frame_ms=" << nearMs
               << " near_fps=" << (nearMs > 0 ? 1000.0 / nearMs : 0) << " resident=" << viewport_->residentMeshes()
               << std::endl;
-    if (!screenshot.isEmpty()) {
-        setScreenshotPath(screenshot);
+    if (benchFitMs_ < 1.0 || nearMs < 1.0) {
+        std::cout << "BENCH failed reason=timer_did_not_cover_paint" << std::endl;
+        QApplication::exit(2);
+        return;
+    }
+    if (!benchShot_.isEmpty()) {
+        setScreenshotPath(benchShot_);
         captureScreenshot();
     } else {
         QApplication::exit(0);
