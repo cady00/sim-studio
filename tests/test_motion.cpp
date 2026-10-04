@@ -4,6 +4,7 @@
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/StepImporter.hpp"
 #include "sim/motion/Motion.hpp"
+#include "sim/motion/Scope.hpp"
 #include "sim/motion/WeldPlan.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -1076,4 +1077,46 @@ TEST_CASE("editor devices are built from links joints and poses") {
     std::string error;
     REQUIRE(sim::jogJoint(*hoist, "rise", 50, error));
     REQUIRE(sim::findJoint(*hoist, "rise")->position == Catch::Approx(350));
+}
+
+TEST_CASE("scope records signals, joint velocity, and csv") {
+    sim::Scene scene;
+    sim::buildEditorDevices(scene);
+    sim::Signal go;
+    go.name = "go";
+    go.type = sim::SignalType::Bool;
+    scene.signals.push_back(go);
+    sim::ScopeTrace trace;
+    trace.watch({"sig:go", "jnt:hoist/rise"});
+    sim::KinJoint* rise = sim::findJoint(*sim::findResource(scene.resources, "hoist"), "rise");
+    REQUIRE(rise != nullptr);
+    const double positions[] = {0, 10, 30};
+    for (int i = 0; i < 3; ++i) {
+        rise->position = positions[i];
+        scene.findSignal("go")->flag = i >= 2;
+        trace.sample(scene, i * 0.1);
+    }
+    REQUIRE(trace.time.size() == 3);
+    REQUIRE(trace.valueAt("sig:go", 0.05) == Catch::Approx(0));
+    REQUIRE(trace.valueAt("sig:go", 0.2) == Catch::Approx(1));
+    REQUIRE(trace.valueAt("sig:go", 0.25) == Catch::Approx(1));
+    const std::vector<double> speed = trace.velocity("jnt:hoist/rise");
+    const std::vector<double> accel = trace.acceleration("jnt:hoist/rise");
+    REQUIRE(speed.size() == 3);
+    REQUIRE(speed[0] == Catch::Approx(0));
+    REQUIRE(speed[1] == Catch::Approx(100));
+    REQUIRE(speed[2] == Catch::Approx(200));
+    REQUIRE(accel[1] == Catch::Approx(1000));
+    REQUIRE(accel[2] == Catch::Approx(1000));
+    const std::string csv = trace.toCsv(true, true);
+    REQUIRE(csv.find("time,sig:go,jnt:hoist/rise,jnt:hoist/rise.v,jnt:hoist/rise.a") == 0);
+    REQUIRE(csv.find("0.200000,1.000000,30.000000,200.000000,1000.000000") != std::string::npos);
+
+    trace.watch({"sig:missing"});
+    trace.sample(scene, 0.3);
+    REQUIRE(trace.valueAt("sig:missing", 0.3) == Catch::Approx(0));
+    for (int i = 0; i < 240000; ++i) {
+        trace.sample(scene, 1.0 + i * 0.01);
+    }
+    REQUIRE(trace.time.size() == sim::ScopeTrace::kMaxSamples);
 }

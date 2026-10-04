@@ -250,6 +250,7 @@ private:
     QDockWidget* motionDock_ = nullptr;
     QDockWidget* logicDock_ = nullptr;
     QDockWidget* pathDock_ = nullptr;
+    QDockWidget* scopeDock_ = nullptr;
     QDockWidget* plcDock_ = nullptr;
     QDockWidget* physicsDock_ = nullptr;
     class ChromeBar* chrome_ = nullptr;
@@ -257,6 +258,7 @@ private:
     class IntentBar* intent_ = nullptr;
     class LogicCanvas* logicCanvas_ = nullptr;
     class PathTimeline* pathTimeline_ = nullptr;
+    class SignalScope* scope_ = nullptr;
     class PlcCards* plc_ = nullptr;
     class PhysicsShelf* physicsShelf_ = nullptr;
     class FloorPlanView* floor_ = nullptr;

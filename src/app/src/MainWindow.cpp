@@ -354,6 +354,12 @@ void MainWindow::buildUi() {
     pathDock_->setWidget(pathTimeline_);
     addDockWidget(Qt::BottomDockWidgetArea, pathDock_);
 
+    scope_ = new SignalScope(scene_, this);
+    scopeDock_ = new QDockWidget(this);
+    scopeDock_->setObjectName("dock.scope");
+    scopeDock_->setWidget(scope_);
+    addDockWidget(Qt::BottomDockWidgetArea, scopeDock_);
+
     weld_ = new WeldPanel(scene_, i18n_, this);
     weldDock_ = new QDockWidget(this);
     weldDock_->setObjectName("dock.weld");
@@ -740,6 +746,9 @@ void MainWindow::bindScene() {
             if (logicCanvas_ != nullptr) {
                 logicCanvas_->reload();
             }
+            if (scope_ != nullptr) {
+                scope_->reload();
+            }
             if (weld_ != nullptr) {
                 weld_->reload();
             }
@@ -822,6 +831,13 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.path")) {
         dock->setWindowTitle(trk("dock.path"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.scope")) {
+        dock->setWindowTitle(trk("dock.scope"));
+    }
+    if (scope_ != nullptr) {
+        scope_->setTexts(trk("scope.velocity"), trk("scope.acceleration"), trk("scope.export"), trk("scope.clear"),
+                         trk("scope.waiting"));
     }
     if (auto* dock = findChild<QDockWidget*>("dock.weld")) {
         dock->setWindowTitle(trk("dock.weld"));
@@ -1385,6 +1401,7 @@ void MainWindow::arrangeLineDocks() {
     show(motionDock_, false);
     show(logicDock_, false);
     show(pathDock_, false);
+    show(scopeDock_, false);
     show(collisionDock_, false);
     show(signalDock_, false);
     show(scriptDock_, false);
@@ -1425,6 +1442,9 @@ void MainWindow::captureScreenshot() {
     // update() only queues a paint. The simulation clock is advanced before the
     // event loop runs, so the widget FBO would still show the pose from fitAll.
     viewport_->repaint();
+    if (scope_ != nullptr && scope_->isVisible()) {
+        scope_->repaint();
+    }
     QImage view = viewport_->grabFramebuffer();
     if (view.isNull()) {
         view = viewport_->captureView();
@@ -1633,12 +1653,21 @@ void MainWindow::playSimulation() {
             }
         }
     }
-    simulation_->setHooks([this] { scripting_->onStart(); },
+    simulation_->setHooks([this] {
+                              scripting_->onStart();
+                              if (scope_ != nullptr) {
+                                  scope_->clearTrace();
+                                  scope_->sample(0);
+                              }
+                          },
                           [this](double dt) {
                               scripting_->onStep(dt);
                               logic_.step(scene_, dt);
                               if (robot_ != nullptr) {
                                   robot_->step(dt);
+                              }
+                              if (scope_ != nullptr && simulation_ != nullptr) {
+                                  scope_->sample(simulation_->time() + dt);
                               }
                           },
                           [this] { scripting_->onStop(); });
@@ -1735,6 +1764,9 @@ void MainWindow::onSimTick() {
     }
     if (pathTimeline_ != nullptr) {
         pathTimeline_->update();
+    }
+    if (scope_ != nullptr) {
+        scope_->update();
     }
     const std::string log = scripting_->takeLog();
     if (!log.empty() && scriptLog_ != nullptr) {
@@ -2555,6 +2587,7 @@ void MainWindow::applyTaskMode(int mode) {
     show(motionDock_, taskMode_ == 1 || taskMode_ == 3);
     show(logicDock_, taskMode_ == 2);
     show(pathDock_, taskMode_ == 3);
+    show(scopeDock_, taskMode_ == 1 || taskMode_ == 2 || taskMode_ == 4 || taskMode_ == 5);
     show(collisionDock_, taskMode_ == 4 || taskMode_ == 5);
     show(signalDock_, taskMode_ == 2 || taskMode_ == 4 || taskMode_ == 5);
     show(scriptDock_, taskMode_ == 5);
@@ -2579,6 +2612,10 @@ void MainWindow::applyTaskMode(int mode) {
         pathTimeline_->reload();
         resizeDocks({pathDock_}, {260}, Qt::Vertical);
     }
+    if (scope_ != nullptr && scopeDock_ != nullptr && scopeDock_->isVisible()) {
+        scope_->reload();
+        resizeDocks({scopeDock_}, {280}, Qt::Vertical);
+    }
     if (taskMode_ == 5 && plcDock_ != nullptr) {
         resizeDocks({plcDock_}, {300}, Qt::Horizontal);
     }
@@ -2599,6 +2636,9 @@ void MainWindow::setThemeName(const QString& theme) {
     }
     if (pathTimeline_ != nullptr) {
         pathTimeline_->setDark(themeName_ == "dark");
+    }
+    if (scope_ != nullptr) {
+        scope_->setDark(themeName_ == "dark");
     }
     if (floor_ != nullptr) {
         floor_->setDark(themeName_ == "dark");
@@ -2624,7 +2664,7 @@ void MainWindow::showPlcConnection() {
     // The task mode is applied before the event loop starts.
     applyTaskMode(5);
     for (QDockWidget* dock : {treeDock_, propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_,
-                              pathDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
+                              pathDock_, scopeDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
         if (dock != nullptr) {
             dock->hide();
         }
