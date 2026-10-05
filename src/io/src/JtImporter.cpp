@@ -806,18 +806,33 @@ std::string firstCodec(const std::uint8_t* data, std::size_t size, bool big) {
     return fallback;
 }
 
+bool readCountedIds(Reader& reader, std::vector<int>& ids) {
+    const std::int32_t count = reader.i32();
+    if (!reader.ok || count < 0 || count > 100000 || reader.left() < static_cast<std::size_t>(count) * 4) {
+        return false;
+    }
+    ids.resize(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        ids[static_cast<std::size_t>(i)] = reader.i32();
+    }
+    return reader.ok;
+}
+
 bool readBaseNode(Reader& reader, std::vector<int>& attributes) {
     reader.u8();
     reader.u32();
-    const std::int32_t count = reader.i32();
-    if (!reader.ok || count < 0 || count > 100000) {
+    return readCountedIds(reader, attributes);
+}
+
+// Process Simulate JT 9.1 writes a zero byte before the attribute count and again
+// before the child count. The 9.4/10 layout has no such byte.
+bool readBaseNode91(Reader& reader, std::vector<int>& attributes) {
+    reader.u8();
+    reader.u32();
+    if (reader.u8() != 0) {
         return false;
     }
-    attributes.resize(static_cast<std::size_t>(count));
-    for (int i = 0; i < count; ++i) {
-        attributes[static_cast<std::size_t>(i)] = reader.i32();
-    }
-    return reader.ok;
+    return readCountedIds(reader, attributes);
 }
 
 bool readChildList(Reader& reader, int major, std::vector<int>& children) {
@@ -829,20 +844,20 @@ bool readChildList(Reader& reader, int major, std::vector<int>& children) {
         if (extra) {
             reader.u16();
         }
-        const std::int32_t count = reader.i32();
-        if (!reader.ok || count < 0 || count > 100000 || reader.left() < static_cast<std::size_t>(count) * 4) {
-            return false;
-        }
-        children.resize(static_cast<std::size_t>(count));
-        for (int i = 0; i < count; ++i) {
-            children[static_cast<std::size_t>(i)] = reader.i32();
-        }
-        return reader.ok;
+        return readCountedIds(reader, children);
     };
     if (major >= 10) {
         return tryOnce(false) || tryOnce(true);
     }
     return tryOnce(true) || tryOnce(false);
+}
+
+bool readChildList91(Reader& reader, std::vector<int>& children) {
+    reader.u8();
+    if (reader.u8() != 0) {
+        return false;
+    }
+    return readCountedIds(reader, children);
 }
 
 std::string readMbString(Reader& reader) {
@@ -1000,7 +1015,11 @@ Quat quatFromRows(const double* m) {
         rotation.y = (r12 + r21) / s;
         rotation.z = 0.25 * s;
     }
-    return rotation.normalized();
+    rotation = rotation.normalized();
+    if (!std::isfinite(rotation.w) || !std::isfinite(rotation.x) || !std::isfinite(rotation.y) || !std::isfinite(rotation.z)) {
+        return {};
+    }
+    return rotation;
 }
 
 struct FileModel {
@@ -1182,8 +1201,15 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
                                   : type == kRangeLod      ? NodeRole::RangeLod
                                   : type == kSwitch        ? NodeRole::Switch
                                                            : NodeRole::Group;
+                    const std::uint8_t* payloadStart = body.cur;
                     if (!readBaseNode(body, object.attributes) || !readChildList(body, model.major, object.children)) {
-                        continue;
+                        body.cur = payloadStart;
+                        body.ok = true;
+                        object.attributes.clear();
+                        object.children.clear();
+                        if (!readBaseNode91(body, object.attributes) || !readChildList91(body, object.children)) {
+                            continue;
+                        }
                     }
                     if (type == kSwitch && body.left() >= 4) {
                         body.u8();
@@ -1516,7 +1542,7 @@ struct BuiltNode {
 };
 
 int subtreeTriangles(const FileModel& model, int id, int depth) {
-    if (depth > 8) {
+    if (depth > 128) {
         return 0;
     }
     const auto found = model.nodes.find(id);
@@ -1536,7 +1562,7 @@ int subtreeTriangles(const FileModel& model, int id, int depth) {
 void buildGraph(FileModel& model, Scene& scene, int objectId, const std::shared_ptr<SceneNode>& parent,
                 std::vector<int>& stack, std::unordered_map<int, std::string>& placedMeshes, int depth, int& nodes,
                 int& meshes, int& triangles) {
-    if (depth > 64 || parent == nullptr) {
+    if (depth > 256 || parent == nullptr) {
         return;
     }
     if (std::find(stack.begin(), stack.end(), objectId) != stack.end()) {
@@ -1597,12 +1623,23 @@ void buildGraph(FileModel& model, Scene& scene, int objectId, const std::shared_
         } else if (!children.empty()) {
             children.resize(1);
         }
-    } else if (object.role == NodeRole::Switch) {
+    } else if (object.role == NodeRole::Switch && !children.empty()) {
+        int index = 0;
         if (object.selectedChild >= 0 && object.selectedChild < static_cast<int>(children.size())) {
-            children = {children[static_cast<std::size_t>(object.selectedChild)]};
-        } else if (!children.empty()) {
-            children.resize(1);
+            index = object.selectedChild;
         }
+        // JT 9.1 often selects an empty branch and keeps the mesh on the other one.
+        if (subtreeTriangles(model, children[static_cast<std::size_t>(index)], 0) <= 0) {
+            int bestCount = 0;
+            for (std::size_t i = 0; i < children.size(); ++i) {
+                const int count = subtreeTriangles(model, children[i], 0);
+                if (count > bestCount) {
+                    bestCount = count;
+                    index = static_cast<int>(i);
+                }
+            }
+        }
+        children = {children[static_cast<std::size_t>(index)]};
     }
     stack.push_back(objectId);
     for (int child : children) {

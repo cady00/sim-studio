@@ -297,15 +297,15 @@ TEST_CASE("private cojt components calibrate kinematics", "[cojt]") {
     const sim::AssetImportResult trackResult = sim::importCojt((root / "irbt6004_0_d_10m_01.cojt").string(), trackScene);
     INFO(trackResult.message);
     REQUIRE(trackResult.ok);
-    REQUIRE(trackResult.triangleCount == 0);
+    REQUIRE(trackResult.triangleCount == 30236);
     sim::KinematicResource* track = sim::findResource(trackScene.resources, "irbt6004_0_d_10m_01");
     REQUIRE(track != nullptr);
     REQUIRE(track->joints.size() == 1);
     REQUIRE(track->joints[0].externalName == "E1");
     REQUIRE(track->joints[0].externalKind == "track");
     REQUIRE(track->joints[0].motion == sim::JointMotion::Prismatic);
-    REQUIRE(track->joints[0].upper == Catch::Approx(10000));
-    REQUIRE(track->source.find("component name") != std::string::npos);
+    REQUIRE(track->joints[0].upper == Catch::Approx(11568));
+    REQUIRE(track->source.find("mesh bounds") != std::string::npos);
     sim::Scene mounted;
     const sim::AssetImportResult mountedTrack =
         sim::importCojt((root / "irbt6004_0_d_10m_01.cojt").string(), mounted);
@@ -360,7 +360,7 @@ TEST_CASE("private cojt components calibrate kinematics", "[cojt]") {
     const sim::AssetImportResult kr420Result = sim::importCojt((root / "kr420r3080_4.cojt").string(), kr420);
     INFO(kr420Result.message);
     REQUIRE(kr420Result.ok);
-    REQUIRE(kr420Result.triangleCount == 0);
+    REQUIRE(kr420Result.triangleCount == 301973);
     sim::KinematicResource* heavy = sim::findResource(kr420.resources, "kr420r3080_4");
     REQUIRE(heavy != nullptr);
     REQUIRE(heavy->joints.empty());
