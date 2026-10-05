@@ -30,6 +30,9 @@ OCCT 的 Draw 模块没有链接。`ldd` 里没有 `TKDraw`、`TKTopTest`。
 | pybind11 | `simstudio` 嵌入模块 | Linux 2.11.1。Windows 为 vcpkg `pybind11`。 | BSD-3-Clause | 仅头文件，链到 libpython | 保留 BSD 文本。 | 低。 |
 | Catch2 | 单元测试 | Linux 3.4.0 | Boost Software License 1.0 | 测试可执行文件。不进 `simstudio`。 | 不随产品发行则无义务。若发行测试程序，保留 BSL 文本。 | 无产品风险。 |
 | OpenSSL | OPC UA Basic256Sha256（RSA-SHA256、RSA-OAEP、AES-256-CBC、HMAC-SHA256）和自签证书 | Linux 3.0.13（`libssl` / `libcrypto`） | Apache-2.0 | 动态：`libssl.so`、`libcrypto.so`。头文件只出现在 `src/io/src/OpcUaCrypto.cpp`。不把 OpenSSL 源码放进仓库。 | 保留 Apache-2.0 与 NOTICE。动态链接，不修改 OpenSSL 源码。 | 宽松。没有选用 GPL 组件。 |
+| zlib | JT 段的 zlib 解压 | Linux 1.3（`libz`） | zlib License | 动态：`libz.so`。`sim_io` 通过 `ZLIB::ZLIB` 链接。ZIP 容器仍是自写的存储法，不调用 zlib。 | 保留 zlib 许可文本。不修改 zlib 源码。 | 宽松。 |
+| liblzma | JT 10.x 段的 XZ / LZMA 解压 | Linux 5.4.5 | 公有领域（0BSD 风格的 liblzma 许可） | 动态：`liblzma.so`。`sim_io` 通过 `LibLZMA::LibLZMA` 链接，只用 `lzma_auto_decoder`。 | 保留许可文本。不修改 liblzma 源码。 | 宽松。没有选用 GPL 的 xz 工具。 |
+| libcurl | 目录机器人网格的首次 HTTPS 下载 | Linux 8.5.0 | curl License（MIT 风格） | 动态：`libcurl.so`。头文件只出现在 `src/motion/src/RobotCatalog.cpp`。只请求表里的 `https://` 地址。 | 保留 curl 许可文本。不修改 libcurl 源码。 | 宽松。 |
 
 ## 传递依赖（本机 `ldd` 实际加载）
 
@@ -55,7 +58,7 @@ OCCT 的 Draw 模块没有链接。`ldd` 里没有 `TKDraw`、`TKTopTest`。
 | libstdc++ / libgcc | GCC 运行时 | 系统 | GPL-3.0 **带 GCC Runtime Library Exception** | 动态 | 例外允许专有程序链接这些运行时。保留例外文本即可。 |
 | glibc | 系统 | 系统 | LGPL-2.1 | 动态 | 使用系统 C 库，不静态链接。 |
 
-没有链接 NVIDIA PhysX、Bullet、bgfx、Diligent、CoACD、V-HACD、libccd、zlib 源码（zip 容器自己写，见下）、OpenUSD、open62541。`src/io/src/OpcUa.cpp` 自己写了 OPC UA 二进制分块（Hello/Acknowledge、OpenSecureChannel、CreateSession、ActivateSession、Browse、Read、Write、CreateSubscription、CreateMonitoredItems、Publish）。SecurityPolicy None 不加密。Basic256Sha256 的 Sign 与 SignAndEncrypt 用 OpenSSL 3 做 RSA-SHA256、RSA-OAEP-SHA1、AES-256-CBC 和 HMAC-SHA256，自签证书可写成 PEM。对测对象是本仓库的回环服务器，没有和 open62541 或 PLCSIM 互通。PLCSIM Advanced 没有安装，卡片不打开那一路套接字。OCCT 的 CMake 配置把 `HAVE_RAPIDJSON` 传进了编译定义。本机 `ldd` 没有加载 RapidJSON，我们的源文件也不包含它。RapidJSON 若被 OCCT 以头文件用到，许可证是 MIT。
+没有链接 NVIDIA PhysX、Bullet、bgfx、Diligent、CoACD、V-HACD、libccd、OpenUSD、open62541。ZIP 容器自己写存储法，不调用 zlib。JT 的 zlib 与 LZMA 段才链接 `libz` 和 `liblzma`。`src/io/src/OpcUa.cpp` 自己写了 OPC UA 二进制分块（Hello/Acknowledge、OpenSecureChannel、CreateSession、ActivateSession、Browse、Read、Write、CreateSubscription、CreateMonitoredItems、Publish）。SecurityPolicy None 不加密。Basic256Sha256 的 Sign 与 SignAndEncrypt 用 OpenSSL 3 做 RSA-SHA256、RSA-OAEP-SHA1、AES-256-CBC 和 HMAC-SHA256，自签证书可写成 PEM。对测对象是本仓库的回环服务器，没有和 open62541 或 PLCSIM 互通。PLCSIM Advanced 没有安装，卡片不打开那一路套接字。OCCT 的 CMake 配置把 `HAVE_RAPIDJSON` 传进了编译定义。本机 `ldd` 没有加载 RapidJSON，我们的源文件也不包含它。RapidJSON 若被 OCCT 以头文件用到，许可证是 MIT。
 
 界面字体栈按顺序尝试 HarmonyOS Sans SC、思源黑体、Noto Sans CJK SC，然后是系统里已有的微软雅黑或苹方。**没有把 HarmonyOS Sans 打进安装包。** 若以后嵌入该字体，须保留版权与许可、不得修改字形、不得把字体文件单独再分发，并在软件关于页声明使用。思源黑体与 Inter、JetBrains Mono 若以后嵌入，许可证是 SIL OFL 1.1。当前二进制不包含这些字体文件。
 
@@ -91,7 +94,11 @@ Qt Advanced Docking System 是 LGPL-2.1。闭源产品可以动态链接它，�
 
 GJK 和 ZIP 记录布局是公开规格，实现是这里写的。没有发现需要整段换掉的拷贝。
 
-STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、data URI 与 GLB）、ASCII/二进制 DXF 常用实体、URDF 连杆关节、通用 PPR XML、XLSX 的 ZIP 打包，以及 OPC UA 二进制 SecurityPolicy None 客户端，都是本仓库写的，没有再引入 DXF、glTF、表格库或 OPC UA 协议栈。open62541 是 MPL-2.0，本构建没有链接它。IGES 与 BREP 使用已经链接的 OCCT（LGPL-2.1 加例外），没有新增库。JT 不解码：商业 JT Open Toolkit 不链接，也不链接 GPL 的 JT 库；`IAssetImporter` 名字 `jt` 的槽会说明原因并失败。
+STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、data URI 与 GLB）、ASCII/二进制 DXF 常用实体、URDF 连杆关节、通用 PPR XML、XLSX 的 ZIP 打包、OPC UA 二进制客户端，以及 JT 文件头、TOC、段、LSG、Int32 压缩包（算术编码、Bitlength、Chopper）和 JT 9 拓扑网格，都是本仓库写的，没有再引入 DXF、glTF、表格库、OPC UA 协议栈或 JT 解析库。open62541 是 MPL-2.0，本构建没有链接它。IGES 与 BREP 使用已经链接的 OCCT（LGPL-2.1 加例外），没有新增库。JT 不链接 Siemens JT Open Toolkit，也不链接 GPL/LGPL 的 JT 库（包括 OpenCascade TKJT）。实现对照的是公开的 ISO 14306 文件布局，没有把规范原文抄进源码。
+
+## 目录机器人网格
+
+KR6 R900、IRB 120、LR Mate 200iD、GP8 的连杆 STL 来自 ROS-Industrial 公开仓库。核对过的 `package.xml` 是：`kuka_kr6_support` BSD，`abb_irb120_support` Apache-2.0，`fanuc_lrmate200id_support` BSD，`motoman_gp8_support` BSD-3-Clause。这些许可证写在包上，包说明只说「含有 3D 模型」，没有单独的网格再分发条款。ABB 的说明还写惯量来自厂商提供的 CAD。因此这些 STL 不放进 git。程序在首次使用时用 libcurl 从对应仓库的 raw 地址下载到 `~/.local/share/SimStudio/catalog-meshes`。`SIM_CATALOG_MESH_DIR` 和 `SIM_CATALOG_MESH_OFFLINE=1` 都不访问网络。没有找到 KR 280 R3080 的公开网格，第二台保持方盒。具体路径见 `docs/ROBOTS.md`。
 
 ## 接口：哪些可以换
 
@@ -99,7 +106,7 @@ STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、d
 | --- | --- | --- | --- |
 | 刚体 | `IPhysicsEngine`，`PhysicsBackend` | 默认 `jolt`；`builtin` 已能驱动移动副、转动副，做盒子接触、光栅和落体静止 | Jolt 头文件只在 `src/physics/src/JoltPhysicsEngine.cpp` |
 | 近距 | `ICollisionQuery` | `src/collision`，不调用 Jolt | 无 |
-| CAD | `IGeometryKernel` / `ICadImporter` / `IAssetImporter` | `step`、`iges`、`brep` 走已链接的 OCCT。STL、OBJ、PLY、glTF/GLB、DXF、URDF、通用 PPR XML、XLSX 包是自写解析器。JT 只有插件槽 | OCCT 头文件在 `StepImporter.cpp`、`OcctCadImport.cpp` 和 `tools/generate_sample_step.cpp` |
+| CAD | `IGeometryKernel` / `ICadImporter` / `IAssetImporter` | `step`、`iges`、`brep` 走已链接的 OCCT。STL、OBJ、PLY、glTF/GLB、DXF、URDF、通用 PPR XML、XLSX 包和 JT 是自写解析器 | OCCT 头文件在 `StepImporter.cpp`、`OcctCadImport.cpp` 和 `tools/generate_sample_step.cpp`。JT 不包含第三方 JT 头文件 |
 | 渲染 | `IRenderer` | OpenGL 3.3 | Qt 只在 `src/app` 和 `src/render`。`IRenderer` 没有 Qt 类型 |
 | 界面 | 应用壳 | `src/app` 的 `QMainWindow` | 核心、运动、碰撞、物理、IO、脚本、命令层不包含 Qt |
 | 脚本 | `IScriptHost` | CPython + pybind11 | 头文件在 `src/scripting` |

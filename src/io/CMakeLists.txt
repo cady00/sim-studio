@@ -7,6 +7,8 @@ add_library(sim_io
     src/StepImporter.cpp
     src/ObjImporter.cpp
     src/AssetImport.cpp
+    src/JtImporter.cpp
+    src/JtTopo.cpp
     src/Xacro.cpp
     src/OcctCadImport.cpp
     src/OpcUa.cpp
@@ -16,7 +18,9 @@ target_include_directories(sim_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(sim_io SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 target_link_directories(sim_io PUBLIC ${OpenCASCADE_LIBRARY_DIR})
 find_package(OpenSSL REQUIRED)
-target_link_libraries(sim_io PUBLIC sim_core OpenSSL::SSL OpenSSL::Crypto ${SIM_OCCT_LINK})
+find_package(ZLIB REQUIRED)
+find_package(LibLZMA REQUIRED)
+target_link_libraries(sim_io PUBLIC sim_core OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB LibLZMA::LibLZMA ${SIM_OCCT_LINK})
 if(SIM_OCCT_RESOURCE_PATH)
     target_compile_definitions(sim_io PUBLIC "SIM_OCCT_RESOURCE_DIR=\"${SIM_OCCT_RESOURCE_PATH}\"")
 endif()

@@ -17,6 +17,7 @@
 #include "sim/motion/WeldPlan.hpp"
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
+#include "sim/io/AssetImport.hpp"
 #include "sim/io/ObjImporter.hpp"
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/StepImporter.hpp"
@@ -1392,6 +1393,27 @@ void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int 
 
 void MainWindow::cancelImport() { cancelImport_.store(true); }
 
+void MainWindow::importJt(const QString& path) {
+    scene_.clear();
+    const auto registry = createBuiltinRegistry();
+    const AssetImportResult result = registry->importPath(path.toStdString(), scene_);
+    if (!result.ok) {
+        statusLabel_->setText(trk("msg.importFail").arg(QString::fromStdString(result.message)));
+        if (!screenshotPath_.isEmpty()) {
+            QTimer::singleShot(0, qApp, [] { QApplication::exit(2); });
+        }
+        return;
+    }
+    projectPath_.clear();
+    viewport_->setStandardView(StandardView::Iso);
+    viewport_->fitAll();
+    statusLabel_->setText(trk("msg.importOk").arg(result.nodeCount).arg(result.meshCount).arg(result.triangleCount).arg(0));
+    if (!screenshotPath_.isEmpty()) {
+        resizeDocks({treeDock_, propertyDock_}, {460, 280}, Qt::Horizontal);
+        QTimer::singleShot(1000, this, &MainWindow::captureScreenshot);
+    }
+}
+
 void MainWindow::importObj(const QString& path) {
     ObjImporter importer;
     const ImportResult result = importer.importFile(path.toStdString(), scene_);
@@ -2222,15 +2244,15 @@ void MainWindow::loadDemo(const QString& name) {
             if (weld_ != nullptr) {
                 weld_->reload();
             }
-            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 连杆包络 %5 · 互锁保持 %6 s · 节拍 %7 s · KRL %8 点")
+            viewport_->setCallout(QStringLiteral("节拍 %1 s · 互锁保持 %2 s · 示例焊点 %3 · 可达 %4 · KRL %5 点 · %6 · 避障 %7 点 · 连杆包络 %8")
+                                      .arg(schedule.makespan, 0, 'f', 1)
+                                      .arg(hold, 0, 'f', 1)
                                       .arg(static_cast<int>(scene_.welds.size()))
                                       .arg(reachable)
+                                      .arg(krlPoints)
                                       .arg(base)
                                       .arg(tourPoints)
-                                      .arg(envelopeSegments)
-                                      .arg(hold, 0, 'f', 1)
-                                      .arg(schedule.makespan, 0, 'f', 1)
-                                      .arg(krlPoints));
+                                      .arg(envelopeSegments));
             applyTaskMode(3);
         } else {
             applyTaskMode(0);
