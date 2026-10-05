@@ -74,6 +74,7 @@ bool SoftPlcRuntime::start(const SoftPlcDocument& doc, std::string& error) {
     opcWarned_.clear();
     previous_.clear();
     rungPower_.clear();
+    cycles_.clear();
     error.clear();
     note("softplc started");
     return true;
@@ -87,6 +88,7 @@ void SoftPlcRuntime::stop() {
     opcWarned_.clear();
     previous_.clear();
     rungPower_.clear();
+    cycles_.clear();
 }
 
 void SoftPlcRuntime::note(const std::string& line) {
@@ -450,6 +452,8 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
         note(changes.empty() ? std::string(buf) : std::string(buf) + " " + changes);
     }
 
+    trackCycles(scene, simTime);
+
     previous_.clear();
     for (const PlcTag& tag : doc.tags) {
         Image image;
@@ -489,6 +493,148 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
             continue;
         }
         scene.upsertSignal("plc_" + tag.address, SignalType::Bool).flag = tagBool(&tag);
+    }
+}
+
+void SoftPlcRuntime::trackCycles(Scene& scene, double simTime) {
+    auto level = [&](const std::string& address) { return tagBool(findPlcTag(scene.softPlc, address)); };
+    auto edged = [&](const std::string& address, const std::string& which) {
+        if (address.empty()) {
+            return false;
+        }
+        const bool now = level(address);
+        const Image* before = previous(address);
+        const bool was = before != nullptr && before->flag;
+        if (which == "falling") {
+            return was && !now;
+        }
+        return !was && now;
+    };
+    auto publish = [&](const PlcCycleRule& rule, const CycleTrace& trace) {
+        const std::string prefix = rule.id + "_";
+        scene.operations.erase(std::remove_if(scene.operations.begin(), scene.operations.end(),
+                                              [&](const Operation& operation) {
+                                                  return operation.id == rule.id ||
+                                                         (operation.id.size() > prefix.size() &&
+                                                          operation.id.compare(0, prefix.size(), prefix) == 0);
+                                              }),
+                               scene.operations.end());
+        if (!trace.open && !trace.finished) {
+            return;
+        }
+        const std::string stationId = rule.station.empty() ? "st_plc" : rule.station;
+        if (findStation(scene.layout, stationId) == nullptr) {
+            Station station;
+            station.id = stationId;
+            station.name = rule.stationName.empty() ? (rule.name.empty() ? stationId : rule.name) : rule.stationName;
+            station.kind = StationKind::Robot;
+            scene.layout.stations.push_back(std::move(station));
+        }
+        if (scene.layout.title.empty()) {
+            scene.layout.title = "软 PLC 节拍";
+        }
+        const double end = trace.finished ? trace.endTime : simTime;
+        std::vector<CycleSpan> blocks = trace.blocks;
+        if (trace.blocking && end > trace.blockStart + 1e-4) {
+            blocks.push_back(CycleSpan{trace.blockStart, end});
+        }
+        struct Segment {
+            double start = 0;
+            double finish = 0;
+            bool block = false;
+        };
+        std::vector<Segment> segments;
+        double cursor = trace.startTime;
+        for (const CycleSpan& block : blocks) {
+            if (block.start > cursor + 1e-4) {
+                segments.push_back(Segment{cursor, block.start, false});
+            }
+            if (block.end > block.start + 1e-4) {
+                segments.push_back(Segment{block.start, block.end, true});
+            }
+            cursor = std::max(cursor, block.end);
+        }
+        if (end > cursor + 1e-4) {
+            segments.push_back(Segment{cursor, end, false});
+        }
+        if (segments.empty()) {
+            return;
+        }
+        const std::string jobName = rule.name.empty() ? "取放" : rule.name;
+        Operation parent;
+        parent.id = rule.id;
+        parent.name = jobName;
+        parent.kind = OpKind::Sequence;
+        parent.station = stationId;
+        parent.timeSource = "plc";
+        parent.timeNote = "软 PLC 边沿";
+        scene.operations.push_back(parent);
+        for (std::size_t index = 0; index < segments.size(); ++index) {
+            const Segment& segment = segments[index];
+            Operation task;
+            task.id = prefix + std::to_string(index);
+            task.name = segment.block ? "干涉阻塞" : jobName;
+            task.parent = rule.id;
+            task.kind = OpKind::Task;
+            task.station = stationId;
+            task.index = static_cast<int>(index);
+            task.seconds = segment.finish - segment.start;
+            task.wait = index == 0 ? segment.start : 0;
+            task.timeSource = "plc";
+            task.timeNote = segment.block ? "干涉阻塞" : "软 PLC 边沿";
+            scene.operations.push_back(std::move(task));
+        }
+    };
+
+    for (const PlcCycleRule& rule : scene.softPlc.cycles) {
+        if (rule.id.empty() || rule.startSignal.empty()) {
+            continue;
+        }
+        CycleTrace* trace = nullptr;
+        for (CycleTrace& candidate : cycles_) {
+            if (candidate.id == rule.id) {
+                trace = &candidate;
+                break;
+            }
+        }
+        if (trace == nullptr) {
+            cycles_.push_back(CycleTrace{});
+            cycles_.back().id = rule.id;
+            trace = &cycles_.back();
+        }
+        const bool busyNow = !rule.busySignal.empty() && level(rule.busySignal);
+        if (trace->open && busyNow) {
+            trace->sawBusy = true;
+        }
+        if (!trace->open && !trace->finished && edged(rule.startSignal, rule.startEdge)) {
+            trace->open = true;
+            trace->finished = false;
+            trace->startTime = simTime;
+            trace->sawBusy = busyNow;
+            trace->blocking = false;
+            trace->blocks.clear();
+        }
+        if (trace->open && !rule.blockSignal.empty()) {
+            const bool blocked = level(rule.blockSignal);
+            if (blocked && !trace->blocking) {
+                trace->blocking = true;
+                trace->blockStart = simTime;
+            } else if (!blocked && trace->blocking) {
+                trace->blocks.push_back(CycleSpan{trace->blockStart, simTime});
+                trace->blocking = false;
+            }
+        }
+        const bool endReady = rule.busySignal.empty() || trace->sawBusy;
+        if (trace->open && endReady && edged(rule.endSignal, rule.endEdge)) {
+            if (trace->blocking) {
+                trace->blocks.push_back(CycleSpan{trace->blockStart, simTime});
+                trace->blocking = false;
+            }
+            trace->open = false;
+            trace->finished = true;
+            trace->endTime = simTime;
+        }
+        publish(rule, *trace);
     }
 }
 

@@ -62,7 +62,24 @@ private:
         bool done = false;
     };
 
+    struct CycleSpan {
+        double start = 0;
+        double end = 0;
+    };
+    struct CycleTrace {
+        std::string id;
+        bool open = false;
+        bool finished = false;
+        bool sawBusy = false;
+        bool blocking = false;
+        double startTime = 0;
+        double endTime = 0;
+        double blockStart = 0;
+        std::vector<CycleSpan> blocks;
+    };
+
     void oneScan(Scene& scene, double simTime, double period);
+    void trackCycles(Scene& scene, double simTime);
     void note(const std::string& line);
     bool readOpc(const std::string& node, bool& value);
     bool writeOpc(const std::string& node, bool value);
@@ -79,6 +96,7 @@ private:
     std::vector<unsigned char> rungPower_;
     // Mesh-collision latch for this physics step. Zones are tested every scan.
     std::vector<unsigned char> collisionLatch_;
+    std::vector<CycleTrace> cycles_;
 };
 
 // Reserved adapter. available() is false and start() fails. scan() does nothing

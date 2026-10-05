@@ -581,6 +581,21 @@ void attachCommissionRobot(Scene& scene) {
     collision.address = "R1_Collision";
     collision.resource = resource.name;
     scene.softPlc.collisions.push_back(std::move(collision));
+    PlcCycleRule pickCycle;
+    pickCycle.id = "r1_pick";
+    pickCycle.name = "取放";
+    pickCycle.station = "st_r1";
+    pickCycle.stationName = "机器人";
+    pickCycle.startSignal = "R1_Start";
+    pickCycle.startEdge = "rising";
+    pickCycle.endSignal = "R1_AtHome";
+    pickCycle.endEdge = "rising";
+    pickCycle.busySignal = "R1_Busy";
+    pickCycle.blockSignal = "Z1_Occupied";
+    scene.softPlc.cycles.push_back(std::move(pickCycle));
+    if (scene.layout.title.empty()) {
+        scene.layout.title = "虚拟调试";
+    }
 
     auto ensureTag = [&](const char* address) {
         if (findPlcTag(scene.softPlc, address) != nullptr) {

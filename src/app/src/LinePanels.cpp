@@ -294,9 +294,11 @@ protected:
             const double y = top + row * rowH + 6;
             const QRectF block(xOf(bar.start), y, std::max(4.0, xOf(bar.finish) - xOf(bar.start)), rowH - 12);
             double wait = 0;
+            bool blocked = false;
             for (const Operation& operation : scene_.operations) {
                 if (operation.id == bar.id) {
                     wait = std::max(0.0, operation.wait);
+                    blocked = operation.timeNote == "干涉阻塞";
                 }
             }
             if (wait > 1e-6) {
@@ -311,8 +313,13 @@ protected:
             hit.start = bar.start;
             hit.finish = bar.finish;
             hits_.push_back(hit);
-            painter.setBrush(bar.critical ? brand() : QColor(96, 110, 138));
-            painter.setPen(QPen(bar.critical ? brandHot() : QColor(70, 80, 102), bar.critical ? 2 : 1));
+            if (blocked) {
+                painter.setBrush(QColor(196, 92, 42));
+                painter.setPen(QPen(QColor(120, 48, 24), 2));
+            } else {
+                painter.setBrush(bar.critical ? brand() : QColor(96, 110, 138));
+                painter.setPen(QPen(bar.critical ? brandHot() : QColor(70, 80, 102), bar.critical ? 2 : 1));
+            }
             painter.drawRoundedRect(block, 3, 3);
             painter.setPen(Qt::white);
             painter.drawText(block.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, QString::fromStdString(bar.name));
