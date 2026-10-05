@@ -16,8 +16,8 @@ void buildSlipDemo(Scene& scene);
 void buildDeviceDemo(Scene& scene);
 // Photoeye, conveyor, cylinder, and gripper. The soft PLC ladder runs the line.
 void buildCommissionLine(Scene& scene);
-// Photoeye, cylinder, and suction on one soft PLC. The device names match the MCD
-// correspondence in docs/MCD_COMPAT.md. The gantry STEP is not embedded.
+// Photoeye, cylinder, and suction on one soft PLC. Vacuum latches and the cylinder
+// retracts, so the cup lifts the part. Mapping is in docs/MCD_COMPAT.md.
 void buildMcdCompatLine(Scene& scene);
 // Four-station example line. layout.example and ppr.example are true. The KR420 is a named proxy
 // unless a caller replaces the node with an imported model.

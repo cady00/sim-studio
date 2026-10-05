@@ -1028,9 +1028,13 @@ void buildMcdCompatLine(Scene& scene) {
     debounce.preset = 0.02;
     scene.softPlc.tags.push_back(debounce);
     PlcTag settle = tag("T1", PlcValueKind::Timer);
-    settle.preset = 0.25;
+    settle.preset = 0.40;
     scene.softPlc.tags.push_back(settle);
+    PlcTag liftTimer = tag("T2", PlcValueKind::Timer);
+    liftTimer.preset = 0.12;
+    scene.softPlc.tags.push_back(liftTimer);
     scene.softPlc.tags.push_back(tag("M0.0", PlcValueKind::Bool));
+    scene.softPlc.tags.push_back(tag("M1.0", PlcValueKind::Bool));
     PlcTag counter = tag("C0", PlcValueKind::Counter);
     counter.preset = 1;
     scene.softPlc.tags.push_back(counter);
@@ -1081,6 +1085,7 @@ void buildMcdCompatLine(Scene& scene) {
     PlcRung extendRung;
     extendRung.series.push_back(level("T0", true));
     extendRung.series.push_back(level("M0.0", true));
+    extendRung.series.push_back(level("M1.0", false));
     extendRung.coil = "Q0.0";
     extendRung.action = "out";
     PlcRung settleRung;
@@ -1090,7 +1095,15 @@ void buildMcdCompatLine(Scene& scene) {
     PlcRung vacuumRung;
     vacuumRung.series.push_back(level("T1", true));
     vacuumRung.coil = "Q0.2";
-    vacuumRung.action = "out";
+    vacuumRung.action = "set";
+    PlcRung liftTimerRung;
+    liftTimerRung.series.push_back(level("Q0.2", true));
+    liftTimerRung.coil = "T2";
+    liftTimerRung.action = "ton";
+    PlcRung liftRung;
+    liftRung.series.push_back(level("T2", true));
+    liftRung.coil = "M1.0";
+    liftRung.action = "set";
     PlcRung beltRung;
     beltRung.series.push_back(level("I0.0", false));
     beltRung.series.push_back(level("M0.0", false));
@@ -1103,6 +1116,8 @@ void buildMcdCompatLine(Scene& scene) {
     scene.softPlc.rungs.push_back(std::move(extendRung));
     scene.softPlc.rungs.push_back(std::move(settleRung));
     scene.softPlc.rungs.push_back(std::move(vacuumRung));
+    scene.softPlc.rungs.push_back(std::move(liftTimerRung));
+    scene.softPlc.rungs.push_back(std::move(liftRung));
     scene.softPlc.rungs.push_back(std::move(beltRung));
 
     auto addRow = [&](const char* id, StationKind kind) {

@@ -1225,7 +1225,7 @@ TEST_CASE("commission gantt shows the pick and the zone block", "[plc]") {
     REQUIRE_FALSE(scene.findSignal("r1_start")->flag);
 }
 
-TEST_CASE("mcd compat line extends the cylinder and turns the suction on", "[plc]") {
+TEST_CASE("mcd compat line lifts the part after the suction latches", "[plc]") {
     sim::Scene scene;
     sim::buildMcdCompatLine(scene);
     REQUIRE(scene.softPlc.cycles.size() == 3);
@@ -1246,16 +1246,22 @@ TEST_CASE("mcd compat line extends the cylinder and turns the suction on", "[plc
                         },
                         [] {});
     simulation.play();
-    for (int i = 0; i < 80 && simulation.time() < 1.0; ++i) {
+    for (int i = 0; i < 90 && simulation.time() < 1.3; ++i) {
         simulation.tick(0.02);
     }
-    REQUIRE(simulation.time() >= 0.95);
-    REQUIRE(scene.findSignal("photo")->flag);
-    REQUIRE(scene.findSignal("extend")->flag);
-    REQUIRE(scene.findSignal("vacuum")->flag);
-    REQUIRE_FALSE(scene.findSignal("belt_run")->flag);
+    REQUIRE(simulation.time() >= 1.25);
+    const auto product = scene.findByName("Product");
     const auto cylinder = scene.findByName("Cylinder");
-    REQUIRE(cylinder->mech.command > 40);
+    REQUIRE(product != nullptr);
+    REQUIRE(cylinder != nullptr);
+    REQUIRE(suction->mech.held == product->id);
+    REQUIRE(product->mech.motion == sim::BodyMotion::Free);
+    REQUIRE(product->local.translation.z > 90);
+    REQUIRE(scene.findSignal("vacuum")->flag);
+    REQUIRE_FALSE(scene.findSignal("photo")->flag);
+    REQUIRE_FALSE(scene.findSignal("extend")->flag);
+    REQUIRE(scene.findSignal("belt_run")->flag);
+    REQUIRE(cylinder->mech.command < 15);
     const sim::Operation* stroke = nullptr;
     const sim::Operation* vacuum = nullptr;
     for (const sim::Operation& operation : scene.operations) {

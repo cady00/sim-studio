@@ -155,6 +155,8 @@ private:
     bool mcdDemo_ = false;
     bool commissionDemo_ = false;
     bool mcdCompatDemo_ = false;
+    int commissionMeshTriangles_ = 0;
+    QString commissionMeshLabel_;
     bool shelfReload_ = true;
     std::string demoPath_;
     std::string pendingPath_;

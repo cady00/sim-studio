@@ -2301,6 +2301,8 @@ void MainWindow::loadDemo(const QString& name) {
     mcdDemo_ = name == QStringLiteral("mcd");
     commissionDemo_ = name == QStringLiteral("commission") || name == QStringLiteral("commission-force");
     mcdCompatDemo_ = name == QStringLiteral("mcd-compat");
+    commissionMeshTriangles_ = 0;
+    commissionMeshLabel_.clear();
     lineDemo_ = name == QStringLiteral("line") || name.startsWith(QStringLiteral("line-"));
     lineFocus_ = QStringLiteral("floor");
     if (name.endsWith(QStringLiteral("ops"))) {
@@ -2427,6 +2429,38 @@ void MainWindow::loadDemo(const QString& name) {
         usePhysicsBackend(PhysicsBackend::Builtin);
         buildCommissionLine(scene_);
         attachCommissionRobot(scene_);
+        if (const KinematicResource* robot = findResource(scene_.resources, "r1")) {
+            std::string armId;
+            for (const KinLink& link : robot->links) {
+                if (link.name == "arm") {
+                    armId = link.nodeId;
+                }
+            }
+            const std::filesystem::path cojtRoot =
+                std::filesystem::path(SIM_SOURCE_DIR) / "testdata/local/cojt";
+            const std::pair<const char*, const char*> candidates[] = {{"kr420r3080_4.cojt", "KR420"},
+                                                                       {"kr280r3080_4.cojt", "KR280"}};
+            for (const auto& [folderName, label] : candidates) {
+                const std::filesystem::path folder = cojtRoot / folderName;
+                if (!std::filesystem::is_directory(folder)) {
+                    continue;
+                }
+                std::string meshNote;
+                const int triangles = attachCojtVisual(scene_, folder.string(), armId, {560, 260, 0}, meshNote);
+                if (triangles <= 0) {
+                    continue;
+                }
+                commissionMeshTriangles_ = triangles;
+                commissionMeshLabel_ = QString::fromUtf8(label);
+                for (const char* boxName : {"R1Base", "R1Arm", "R1Forearm"}) {
+                    if (const auto box = scene_.findByName(boxName)) {
+                        box->visible = false;
+                    }
+                }
+                statusLabel_->setText(QStringLiteral("%1 网格 %2 三角").arg(commissionMeshLabel_).arg(triangles));
+                break;
+            }
+        }
         if (name == QStringLiteral("commission-force")) {
             if (const auto part = scene_.findByName("Part")) {
                 part->local.translation = {-240, 0, 46};
@@ -3073,6 +3107,15 @@ void MainWindow::beginHeadlessPlayback() {
                 rows << QStringLiteral("瓶颈 %1").arg(busyName);
             }
             rows << QStringLiteral("A1 %1°").arg(shoulder, 0, 'f', 0);
+            if (commissionMeshTriangles_ > 0) {
+                rows.prepend(QStringLiteral("%1 %2 三角").arg(commissionMeshLabel_).arg(commissionMeshTriangles_));
+                if (statusLabel_ != nullptr) {
+                    statusLabel_->setText(QStringLiteral("%1 网格 %2 三角 · A1 %3°")
+                                              .arg(commissionMeshLabel_)
+                                              .arg(commissionMeshTriangles_)
+                                              .arg(shoulder, 0, 'f', 0));
+                }
+            }
             viewport_->setCallout(rows.join(QStringLiteral(" · ")));
             if (sequenceDock_ != nullptr) {
                 sequenceDock_->hide();
@@ -3119,11 +3162,14 @@ void MainWindow::beginHeadlessPlayback() {
             const Signal* vacuum = scene_.findSignal("vacuum");
             const Signal* belt = scene_.findSignal("belt_run");
             const auto cylinder = scene_.findByName("Cylinder");
+            const auto product = scene_.findByName("Product");
             const double stroke = cylinder ? cylinder->mech.command : 0;
-            viewport_->setCallout(QStringLiteral("光电 %1 · 气缸 %2 mm · 吸盘 %3 · 输送 %4")
+            const double partZ = product ? product->local.translation.z : 0;
+            viewport_->setCallout(QStringLiteral("光电 %1 · 气缸 %2 mm · 吸盘 %3 · 工件 %4 mm · 输送 %5")
                                       .arg(photo != nullptr && photo->flag ? QStringLiteral("开") : QStringLiteral("关"))
                                       .arg(stroke, 0, 'f', 0)
                                       .arg(vacuum != nullptr && vacuum->flag ? QStringLiteral("开") : QStringLiteral("关"))
+                                      .arg(partZ, 0, 'f', 0)
                                       .arg(belt != nullptr && belt->flag ? QStringLiteral("走") : QStringLiteral("停")));
             if (sequenceDock_ != nullptr) {
                 sequenceDock_->hide();
