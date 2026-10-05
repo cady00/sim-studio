@@ -37,6 +37,8 @@ struct RenderInstance {
     float distanceMm = 0;
     int lodLevels = 1;
     int triangles = 0;
+    // False keeps the instance in the shadow bounds so it can receive, but skips the depth pass.
+    bool castShadow = true;
 };
 
 struct LineVertex {
@@ -56,12 +58,18 @@ struct LineBatch {
 
 struct FrameParams {
     Mat4 viewProjection = Mat4::identity();
+    Mat4 view = Mat4::identity();
+    Mat4 projection = Mat4::identity();
     Vec3 eye;
     int width = 1;
     int height = 1;
     // When true, submitInstances drops boxes that sit fully outside the clip volume.
     bool frustumCull = true;
     Vec3 clearColor{0.10, 0.11, 0.14};
+    // 0 leaves the key light unshadowed. 1 blacks out the key term in shadow. Fill stays.
+    float shadowStrength = 0.0f;
+    // 0 disables the screen-space occlusion mix. 1 applies the full occlusion term.
+    float aoStrength = 0.0f;
 };
 
 // Highest detail is 0. Coarse levels are for distant repeated parts on a long line.

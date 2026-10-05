@@ -24,6 +24,7 @@
 #include "sim/io/RobotLibrary.hpp"
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/StepImporter.hpp"
+#include "sim/render/Renderer.hpp"
 #include "sim/render/ViewportWidget.hpp"
 
 #include <QAction>
@@ -1364,9 +1365,14 @@ void MainWindow::importStepAsync(const QString& path) {
         const int meshes = result.meshCount;
         const int triangles = result.triangleCount;
         const double elapsed = result.elapsedMs;
+        const QString report = QString::fromStdString(result.report);
+        QStringList warnings;
+        for (const std::string& warning : result.warnings) {
+            warnings.push_back(QString::fromStdString(warning));
+        }
         QMetaObject::invokeMethod(
             this,
-            [this, alive, scene, ok, error, nodes, meshes, triangles, elapsed] {
+            [this, alive, scene, ok, error, nodes, meshes, triangles, elapsed, report, warnings] {
                 if (!alive->load()) {
                     return;
                 }
@@ -1376,7 +1382,7 @@ void MainWindow::importStepAsync(const QString& path) {
                     }
                     scene_.steal(*scene);
                 }
-                onImportFinished(ok, error, nodes, meshes, triangles, elapsed);
+                onImportFinished(ok, error, nodes, meshes, triangles, elapsed, report, warnings);
             },
             Qt::QueuedConnection);
     });
@@ -1396,7 +1402,8 @@ void MainWindow::onImportProgress(int percent, const QString& stageKey, int curr
     statusLabel_->setText(text);
 }
 
-void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs) {
+void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs,
+                                  const QString& report, const QStringList& warnings) {
     importing_ = false;
     importStepAction_->setEnabled(true);
     importObjAction_->setEnabled(true);
@@ -1416,13 +1423,101 @@ void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int 
         return;
     }
     projectPath_.clear();
-    viewport_->setStandardView(StandardView::Iso);
-    viewport_->fitAll();
-    statusLabel_->setText(trk("msg.importOk").arg(nodes).arg(meshes).arg(triangles).arg(QString::number(elapsedMs, 'f', 0)));
+    if (annotateImport_) {
+        annotateImportedCell();
+    }
+    viewport_->frameImportedAssembly(startupView_);
+    QString status = trk("msg.importOk").arg(nodes).arg(meshes).arg(triangles).arg(QString::number(elapsedMs, 'f', 0));
+    if (!report.isEmpty()) {
+        status += QStringLiteral(" · ");
+        status += report;
+    }
+    statusLabel_->setText(status);
+    statusLabel_->setToolTip(warnings.join(QStringLiteral("\n")));
+    if (annotateImport_) {
+        viewport_->setCallout(QStringLiteral("橙 Pallet · 蓝 立柱框架 · 绿 输送 · 品红 相机架 · 其余是文件原色"));
+    } else if (!report.isEmpty()) {
+        viewport_->setCallout(report);
+    }
     if (!screenshotPath_.isEmpty()) {
         resizeDocks({treeDock_, propertyDock_}, {460, 280}, Qt::Horizontal);
         QTimer::singleShot(1000, this, &MainWindow::captureScreenshot);
     }
+}
+
+void MainWindow::annotateImportedCell() {
+    struct Mark {
+        const char* name;
+        bool contains;
+        Vec3 color;
+        const char* label;
+    };
+    const Mark marks[] = {
+        {"Pallet", false, {0.93, 0.45, 0.12}, "Pallet"},
+        {"99MM2018A_E101", false, {0.25, 0.55, 0.95}, "立柱框架"},
+        {"pick up cnv", true, {0.20, 0.75, 0.35}, "输送"},
+        {"Camera Inspection", false, {0.85, 0.25, 0.72}, "相机架"},
+    };
+    std::vector<ViewportWidget::ViewTag> tags;
+    std::function<void(const std::shared_ptr<SceneNode>&, Vec3)> tint =
+        [&](const std::shared_ptr<SceneNode>& node, Vec3 color) {
+            if (!node) {
+                return;
+            }
+            if (node->kind == NodeKind::Part) {
+                node->color = color;
+            }
+            for (const auto& child : node->children) {
+                tint(child, color);
+            }
+        };
+    std::function<Aabb(const std::shared_ptr<SceneNode>&)> boundsOf = [&](const std::shared_ptr<SceneNode>& node) {
+        Aabb box;
+        if (!node) {
+            return box;
+        }
+        if (!node->meshId.empty()) {
+            if (const auto mesh = scene_.mesh(node->meshId)) {
+                box.expand(transformedBounds(mesh->bounds, node->worldMatrix()));
+            }
+        }
+        for (const auto& child : node->children) {
+            box.expand(boundsOf(child));
+        }
+        return box;
+    };
+    std::function<void(const std::shared_ptr<SceneNode>&)> walk = [&](const std::shared_ptr<SceneNode>& node) {
+        if (!node) {
+            return;
+        }
+        for (const Mark& mark : marks) {
+            const bool hit = mark.contains ? node->name.find(mark.name) != std::string::npos : node->name == mark.name;
+            if (!hit) {
+                continue;
+            }
+            tint(node, mark.color);
+            const Aabb box = boundsOf(node);
+            if (box.valid) {
+                ViewportWidget::ViewTag tag;
+                tag.world = box.center();
+                if (std::string(mark.label) == "立柱框架" || std::string(mark.label) == "Pallet") {
+                    tag.world.z = box.max.z;
+                } else if (std::string(mark.label) == "输送") {
+                    tag.world.x = box.max.x;
+                }
+                tag.text = QString::fromUtf8(mark.label);
+                tags.push_back(std::move(tag));
+            }
+            return;
+        }
+        for (const auto& child : node->children) {
+            walk(child);
+        }
+    };
+    if (scene_.root()) {
+        walk(scene_.root());
+    }
+    viewport_->setViewTags(std::move(tags));
 }
 
 void MainWindow::cancelImport() { cancelImport_.store(true); }
@@ -1710,6 +1805,10 @@ void MainWindow::showScripting() {
 }
 
 void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path; }
+
+void MainWindow::setStartupView(StandardView view) { startupView_ = view; }
+
+void MainWindow::setShadeStrength(float ao, float shadow) { viewport_->setShadeStrength(ao, shadow); }
 
 void MainWindow::arrangeLineDocks() {
     if (floorDock_ == nullptr || operationDock_ == nullptr || ganttDock_ == nullptr) {

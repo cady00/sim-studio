@@ -1,5 +1,6 @@
 #include "sim/app/MainWindow.hpp"
 #include "sim/io/OpcUa.hpp"
+#include "sim/render/Camera.hpp"
 
 #include "sim/core/Version.hpp"
 
@@ -129,6 +130,11 @@ int main(int argc, char* argv[]) {
     QCommandLineOption importStep("import", "Import a STEP file on startup.", "file");
     QCommandLineOption openProject("open", "Open a .simproj file.", "file");
     QCommandLineOption screenshot("screenshot", "Save a window image and exit.", "png");
+    QCommandLineOption view("view", "Standard view after import: front, back, left, right, top, bottom, iso.", "name",
+                            "iso");
+    QCommandLineOption annotate("annotate", "Tint pallet, gantry frame, conveyor and camera, and label them.");
+    QCommandLineOption aoStrength("ao", "Screen-space occlusion strength from 0 to 1. Default 0.", "strength", "0");
+    QCommandLineOption shadowStrength("shadow", "Key-light shadow strength from 0 to 1. Default 0.", "strength", "0");
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
     QCommandLineOption play("play", "Start the simulation after opening a project.");
     QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
@@ -147,6 +153,10 @@ int main(int argc, char* argv[]) {
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
+    parser.addOption(view);
+    parser.addOption(annotate);
+    parser.addOption(aoStrength);
+    parser.addOption(shadowStrength);
     parser.addOption(language);
     parser.addOption(play);
     parser.addOption(simSeconds);
@@ -169,6 +179,8 @@ int main(int argc, char* argv[]) {
     application.processEvents();
 
     sim::MainWindow window(parser.value(language));
+    window.setShadeStrength(qBound(0.0f, parser.value(aoStrength).toFloat(), 1.0f),
+                            qBound(0.0f, parser.value(shadowStrength).toFloat(), 1.0f));
     window.setWindowIcon(icon);
     window.show();
     if (parser.isSet(theme)) {
@@ -181,6 +193,34 @@ int main(int argc, char* argv[]) {
     } else if (parser.isSet(openProject)) {
         window.openProject(parser.value(openProject));
     }
+    if (parser.isSet(view)) {
+        const QString name = parser.value(view).trimmed().toLower();
+        sim::StandardView standard = sim::StandardView::Iso;
+        bool known = true;
+        if (name == QLatin1String("front")) {
+            standard = sim::StandardView::Front;
+        } else if (name == QLatin1String("back")) {
+            standard = sim::StandardView::Back;
+        } else if (name == QLatin1String("left")) {
+            standard = sim::StandardView::Left;
+        } else if (name == QLatin1String("right")) {
+            standard = sim::StandardView::Right;
+        } else if (name == QLatin1String("top")) {
+            standard = sim::StandardView::Top;
+        } else if (name == QLatin1String("bottom")) {
+            standard = sim::StandardView::Bottom;
+        } else if (name == QLatin1String("iso")) {
+            standard = sim::StandardView::Iso;
+        } else {
+            known = false;
+        }
+        if (!known) {
+            qWarning("Unknown --view '%s'; using iso", qUtf8Printable(parser.value(view)));
+        } else {
+            window.setStartupView(standard);
+        }
+    }
+    window.setAnnotateImport(parser.isSet(annotate));
     if (parser.isSet(screenshot)) {
         window.setScreenshotPath(parser.value(screenshot));
         const QFileInfo shot(parser.value(screenshot));

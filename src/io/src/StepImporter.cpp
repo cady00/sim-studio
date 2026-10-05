@@ -41,12 +41,23 @@
 #include <Poly_Triangle.hxx>
 #include <Poly_Triangulation.hxx>
 
+#include <BRepBuilderAPI_Sewing.hxx>
+#include <Interface_Check.hxx>
+#include <Interface_CheckIterator.hxx>
+#include <Interface_CheckTool.hxx>
+#include <Interface_InterfaceModel.hxx>
+#include <ShapeFix_Shape.hxx>
+#include <IFSelect_PrintCount.hxx>
+
 #include <algorithm>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 
 namespace sim {
@@ -107,6 +118,17 @@ Transform fromTrsf(const gp_Trsf& trsf, double toMillimeters) {
     const double scale = trsf.ScaleFactor();
     transform.scale = {scale, scale, scale};
     return transform;
+}
+
+void applyCadSurface(SceneNode& node, bool fromFile, Vec3 color) {
+    // File colors stay as stored. Missing colors get a neutral gray. Neither is recast as metal.
+    if (!fromFile) {
+        node.color = {0.62, 0.64, 0.68};
+    } else {
+        node.color = color;
+    }
+    node.metallic = 0.0f;
+    node.roughness = 0.78f;
 }
 
 bool colorOf(const Handle(XCAFDoc_ColorTool)& colors, const TDF_Label& label, Vec3& out) {
@@ -208,6 +230,82 @@ std::shared_ptr<MeshData> tessellate(const TopoDS_Shape& input, double toMillime
     return mesh;
 }
 
+enum class MeshGap { Ok, NoFace, Unmeshed };
+
+struct MeshBuild {
+    std::shared_ptr<MeshData> mesh;
+    MeshGap gap = MeshGap::Ok;
+    int faces = 0;
+    bool healed = false;
+};
+
+int countFaces(const TopoDS_Shape& shape) {
+    int faces = 0;
+    if (shape.IsNull()) {
+        return 0;
+    }
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+        ++faces;
+    }
+    return faces;
+}
+
+// ShapeFix and sewing run only after the first triangulation returns nothing.
+// A valid solid, including the sample fixture, keeps the deflection it already had.
+MeshBuild buildMesh(const TopoDS_Shape& input, double toMillimeters, const gp_Trsf& placement) {
+    MeshBuild built;
+    built.mesh = tessellate(input, toMillimeters, placement);
+    if (built.mesh) {
+        return built;
+    }
+    TopoDS_Shape shape = input;
+    if (!shape.IsNull()) {
+        shape.Location(TopLoc_Location());
+    }
+    built.faces = countFaces(shape);
+    if (shape.IsNull() || built.faces == 0) {
+        built.gap = MeshGap::NoFace;
+        return built;
+    }
+    try {
+        ShapeFix_Shape fixer(shape);
+        fixer.SetPrecision(0.01);
+        fixer.SetMaxTolerance(1.0);
+        fixer.Perform();
+        TopoDS_Shape fixed = fixer.Shape();
+        if (fixed.IsNull()) {
+            fixed = shape;
+        }
+        built.mesh = tessellate(fixed, toMillimeters, placement);
+        if (built.mesh) {
+            built.healed = true;
+            built.gap = MeshGap::Ok;
+            return built;
+        }
+        BRepBuilderAPI_Sewing sewing(0.1);
+        sewing.Add(fixed);
+        sewing.Perform();
+        const TopoDS_Shape& sewed = sewing.SewedShape();
+        built.mesh = tessellate(sewed.IsNull() ? fixed : sewed, toMillimeters, placement);
+        if (built.mesh) {
+            built.healed = true;
+            built.gap = MeshGap::Ok;
+            return built;
+        }
+        built.faces = countFaces(sewed.IsNull() ? fixed : sewed);
+    } catch (const Standard_Failure&) {
+    }
+    built.gap = MeshGap::Unmeshed;
+    return built;
+}
+
+std::string gapReason(const MeshBuild& built) {
+    if (built.gap == MeshGap::NoFace) {
+        return "STEP 形状没有面（没有实体、壳或曲面），节点保留，没有网格";
+    }
+    return "有 " + std::to_string(built.faces) + " 个面，ShapeFix 和缝合后仍然没有三角形，节点保留";
+}
+
 Vec3 placedPoint(const gp_Pnt& point, const gp_Trsf& placement, double toMillimeters) {
     const gp_Pnt moved = point.Transformed(placement);
     return {moved.X() * toMillimeters, moved.Y() * toMillimeters, moved.Z() * toMillimeters};
@@ -283,6 +381,19 @@ std::vector<FaceAxis> collectFaceAxes(const TopoDS_Shape& input, double toMillim
     return axes;
 }
 
+struct GapTally {
+    std::string name;
+    std::string reason;
+    int count = 0;
+};
+
+struct MeshCacheEntry {
+    std::string id;
+    MeshGap gap = MeshGap::Ok;
+    int faces = 0;
+    bool healed = false;
+};
+
 struct ImportContext {
     Scene& scene;
     Handle(XCAFDoc_ShapeTool) shapes;
@@ -290,11 +401,39 @@ struct ImportContext {
     double toMillimeters = 1;
     const ImportProgressFn* progress = nullptr;
     std::atomic<bool>* cancel = nullptr;
-    std::unordered_map<std::string, std::string> meshCache;
+    std::unordered_map<std::string, MeshCacheEntry> meshCache;
     int tessellated = 0;
     int partBudget = 1;
     int created = 0;
+    int partCount = 0;
+    int assemblyCount = 0;
+    int emptyPartCount = 0;
+    int healedShapes = 0;
+    std::vector<GapTally> gaps;
 };
+
+void noteGap(ImportContext& context, const std::string& name, const std::string& reason) {
+    for (GapTally& gap : context.gaps) {
+        if (gap.name == name && gap.reason == reason) {
+            ++gap.count;
+            ++context.emptyPartCount;
+            return;
+        }
+    }
+    context.gaps.push_back(GapTally{name, reason, 1});
+    ++context.emptyPartCount;
+}
+
+void adoptMesh(ImportContext& context, const std::string& name, const MeshCacheEntry& entry, std::string& meshId) {
+    meshId = entry.id;
+    if (entry.gap == MeshGap::Ok) {
+        return;
+    }
+    MeshBuild built;
+    built.gap = entry.gap;
+    built.faces = entry.faces;
+    noteGap(context, name, gapReason(built));
+}
 
 bool cancelled(const ImportContext& context) { return context.cancel != nullptr && context.cancel->load(); }
 
@@ -310,24 +449,46 @@ void report(const ImportContext& context, int percent, const std::string& key, i
     (*context.progress)(progress);
 }
 
-std::string meshFor(ImportContext& context, const TDF_Label& geometryLabel) {
+MeshCacheEntry meshFor(ImportContext& context, const TDF_Label& geometryLabel) {
     const std::string key = labelEntry(geometryLabel);
     const auto cached = context.meshCache.find(key);
     if (cached != context.meshCache.end()) {
         return cached->second;
     }
     TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(geometryLabel);
-    auto mesh = tessellate(shape, context.toMillimeters, gp_Trsf());
+    MeshBuild built = buildMesh(shape, context.toMillimeters, gp_Trsf());
     ++context.tessellated;
     const int percent = 55 + (40 * context.tessellated) / std::max(context.partBudget, 1);
     report(context, std::min(percent, 95), "progress.tessellate", context.tessellated, context.partBudget);
-    if (!mesh) {
-        context.meshCache.emplace(key, std::string{});
-        return {};
+    MeshCacheEntry entry;
+    entry.gap = built.gap;
+    entry.faces = built.faces;
+    entry.healed = built.healed;
+    if (built.healed) {
+        ++context.healedShapes;
     }
-    const std::string id = context.scene.addMesh(std::move(mesh));
-    context.meshCache.emplace(key, id);
-    return id;
+    if (built.mesh) {
+        entry.id = context.scene.addMesh(std::move(built.mesh));
+    }
+    context.meshCache.emplace(key, entry);
+    return entry;
+}
+
+MeshCacheEntry meshForSolid(ImportContext& context, const TopoDS_Shape& solid) {
+    const gp_Trsf placement = solid.Location().Transformation();
+    MeshBuild built = buildMesh(solid, context.toMillimeters, placement);
+    ++context.tessellated;
+    MeshCacheEntry entry;
+    entry.gap = built.gap;
+    entry.faces = built.faces;
+    entry.healed = built.healed;
+    if (built.healed) {
+        ++context.healedShapes;
+    }
+    if (built.mesh) {
+        entry.id = context.scene.addMesh(std::move(built.mesh));
+    }
+    return entry;
 }
 
 int importLabel(ImportContext& context, const TDF_Label& label, const std::shared_ptr<SceneNode>& parent, int depth) {
@@ -354,14 +515,16 @@ int importLabel(ImportContext& context, const TDF_Label& label, const std::share
     auto node = context.scene.makeNode(assembly ? NodeKind::Assembly : NodeKind::Part, name);
     node->local = fromTrsf(XCAFDoc_ShapeTool::GetLocation(label).Transformation(), context.toMillimeters);
     Vec3 color = node->color;
-    if (!colorOf(context.colors, label, color)) {
-        colorOf(context.colors, defined, color);
+    bool fromFile = colorOf(context.colors, label, color);
+    if (!fromFile) {
+        fromFile = colorOf(context.colors, defined, color);
     }
-    node->color = color;
+    applyCadSurface(*node, fromFile, color);
 
     if (assembly) {
         context.scene.addChild(parent, node);
         ++context.created;
+        ++context.assemblyCount;
         TDF_LabelSequence components;
         const TDF_Label componentSource = XCAFDoc_ShapeTool::IsAssembly(label) ? label : defined;
         if (!XCAFDoc_ShapeTool::GetComponents(componentSource, components)) {
@@ -383,18 +546,21 @@ int importLabel(ImportContext& context, const TDF_Label& label, const std::share
         solids.push_back(explorer.Current());
     }
     if (solids.size() <= 1) {
-        node->meshId = meshFor(context, defined);
+        const MeshCacheEntry entry = meshFor(context, defined);
+        adoptMesh(context, name, entry, node->meshId);
         if (!shape.IsNull()) {
             node->faceAxes = collectFaceAxes(shape, context.toMillimeters, gp_Trsf());
         }
         context.scene.addChild(parent, node);
         ++context.created;
+        ++context.partCount;
         return 1;
     }
 
     node->kind = NodeKind::Assembly;
     context.scene.addChild(parent, node);
     ++context.created;
+    ++context.assemblyCount;
     int count = 1;
     int index = 1;
     for (const TopoDS_Shape& solid : solids) {
@@ -404,19 +570,15 @@ int importLabel(ImportContext& context, const TDF_Label& label, const std::share
         char suffix[32];
         std::snprintf(suffix, sizeof(suffix), "Solid %03d", index++);
         auto child = context.scene.makeNode(NodeKind::Part, suffix);
-        const gp_Trsf placement = solid.Location().Transformation();
-        child->meshId = [&] {
-            auto mesh = tessellate(solid, context.toMillimeters, placement);
-            ++context.tessellated;
-            if (!mesh) {
-                return std::string{};
-            }
-            return context.scene.addMesh(std::move(mesh));
-        }();
-        child->faceAxes = collectFaceAxes(solid, context.toMillimeters, placement);
+        const MeshCacheEntry entry = meshForSolid(context, solid);
+        adoptMesh(context, std::string(suffix) + " " + name, entry, child->meshId);
+        child->faceAxes = collectFaceAxes(solid, context.toMillimeters, solid.Location().Transformation());
         child->color = node->color;
+        child->metallic = node->metallic;
+        child->roughness = node->roughness;
         context.scene.addChild(node, child);
         ++context.created;
+        ++context.partCount;
         ++count;
     }
     return count;
@@ -482,6 +644,136 @@ private:
     Handle(TDocStd_Document)& document_;
 };
 
+struct FileCensus {
+    int products = 0;
+    int occurrences = 0;
+    int manifoldSolids = 0;
+    int voidSolids = 0;
+};
+
+FileCensus censusOf(const Handle(Interface_InterfaceModel)& model) {
+    FileCensus census;
+    if (model.IsNull()) {
+        return census;
+    }
+    for (int index = 1; index <= model->NbEntities(); ++index) {
+        const Handle(Standard_Transient) entity = model->Value(index);
+        if (entity.IsNull()) {
+            continue;
+        }
+        const char* type = model->TypeName(entity, Standard_False);
+        if (type == nullptr) {
+            continue;
+        }
+        if (std::strcmp(type, "PRODUCT") == 0) {
+            ++census.products;
+        } else if (std::strcmp(type, "NEXT_ASSEMBLY_USAGE_OCCURRENCE") == 0) {
+            ++census.occurrences;
+        } else if (std::strcmp(type, "MANIFOLD_SOLID_BREP") == 0) {
+            ++census.manifoldSolids;
+        } else if (std::strcmp(type, "BREP_WITH_VOIDS") == 0) {
+            ++census.voidSolids;
+        }
+    }
+    return census;
+}
+
+std::string schemaOf(const std::string& path) {
+    std::ifstream input(path);
+    std::string chunk(16384, '\0');
+    input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    chunk.resize(static_cast<std::size_t>(std::max<std::streamsize>(0, input.gcount())));
+    const auto marker = chunk.find("FILE_SCHEMA");
+    if (marker == std::string::npos) {
+        return {};
+    }
+    const auto open = chunk.find('(', marker);
+    const auto close = chunk.find(')', open == std::string::npos ? marker : open);
+    if (open == std::string::npos || close == std::string::npos || close <= open) {
+        return {};
+    }
+    std::string inner = chunk.substr(open + 1, close - open - 1);
+    std::string out;
+    for (char ch : inner) {
+        if (ch == '\'' || ch == '\n' || ch == '\r') {
+            continue;
+        }
+        out.push_back(ch);
+    }
+    while (!out.empty() && (out.front() == ' ' || out.front() == '(')) {
+        out.erase(out.begin());
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == ')')) {
+        out.pop_back();
+    }
+    return out;
+}
+
+std::string schemaLabel(const std::string& schema) {
+    if (schema.find("AP242") != std::string::npos) {
+        return "AP242";
+    }
+    if (schema.find("AUTOMOTIVE_DESIGN") != std::string::npos) {
+        return "AP214";
+    }
+    if (schema.find("CONFIG_CONTROL_DESIGN") != std::string::npos) {
+        return "AP203";
+    }
+    if (schema.empty()) {
+        return "STEP";
+    }
+    return schema.size() > 48 ? schema.substr(0, 48) : schema;
+}
+
+void appendModelChecks(std::vector<std::string>& warnings, const Handle(Interface_InterfaceModel)& model) {
+    if (model.IsNull()) {
+        return;
+    }
+    Interface_CheckTool tool(model);
+    Interface_CheckIterator iterator = tool.CompleteCheckList();
+    int hidden = 0;
+    for (iterator.Start(); iterator.More(); iterator.Next()) {
+        const Handle(Interface_Check)& check = iterator.Value();
+        if (check.IsNull() || (check->NbFails() == 0 && check->NbWarnings() == 0)) {
+            continue;
+        }
+        const int number = iterator.Number();
+        std::string who = "文件";
+        if (number > 0 && number <= model->NbEntities()) {
+            const Handle(Standard_Transient) entity = model->Value(number);
+            const char* type = entity.IsNull() ? nullptr : model->TypeName(entity, Standard_False);
+            who = "#" + std::to_string(number);
+            if (type != nullptr && type[0] != '\0') {
+                who += " ";
+                who += type;
+            }
+        }
+        auto push = [&](const std::string& text) {
+            if (warnings.size() >= 24) {
+                ++hidden;
+                return;
+            }
+            if (text.find("authorisation") != std::string::npos || text.find("n0.7") != std::string::npos) {
+                warnings.push_back(
+                    "未解析引用 1 条：FILE_NAME 第 7 项 authorisation 是 $，不是带引号的字符串。这是文件头，不是悬空的实体号，几何没有因此丢掉");
+                return;
+            }
+            warnings.push_back(who + "：" + text);
+        };
+        for (int index = 1; index <= check->NbFails(); ++index) {
+            const char* text = check->CFail(index, Standard_True);
+            push(text == nullptr ? std::string{} : std::string(text));
+        }
+        for (int index = 1; index <= check->NbWarnings(); ++index) {
+            const char* text = check->CWarning(index, Standard_True);
+            push(std::string("警告 ") + (text == nullptr ? std::string{} : std::string(text)));
+        }
+    }
+    if (hidden > 0) {
+        warnings.push_back("另有 " + std::to_string(hidden) + " 条 Open CASCADE 检查未逐条展开");
+    }
+}
+
 }  // namespace
 
 ImportResult StepImporter::importFile(const std::string& path, Scene& scene) {
@@ -521,6 +813,10 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     if (status != IFSelect_RetDone) {
         return finish(false, "STEP reader could not read " + path);
     }
+    const Handle(Interface_InterfaceModel) model = reader.Reader().Model();
+    const FileCensus census = censusOf(model);
+    std::vector<std::string> warnings;
+    appendModelChecks(warnings, model);
     if (cancel != nullptr && cancel->load()) {
         return finish(false, "cancelled");
     }
@@ -537,6 +833,16 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     XcafDocumentGuard closeDocument(application, document);
     if (!reader.Transfer(document)) {
         return finish(false, "STEP transfer into the XCAF document failed");
+    }
+    std::ostringstream transferNotes;
+    reader.ChangeReader().PrintCheckTransfer(transferNotes, Standard_True, IFSelect_CountByItem);
+    const std::string transferText = transferNotes.str();
+    if (transferText.find("Nb Total:0") == std::string::npos && transferText.find("Fail") != std::string::npos) {
+        std::string brief = transferText;
+        if (brief.size() > 400) {
+            brief.resize(400);
+        }
+        warnings.push_back("传输检查：" + brief);
     }
 
     const Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(document->Main());
@@ -563,7 +869,7 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
         return finish(false, "STEP file does not contain a shape");
     }
 
-    ImportContext context{scene, shapes, colors, toMillimeters, &progress, cancel, {}, 0, 1, 0};
+    ImportContext context{scene, shapes, colors, toMillimeters, &progress, cancel, {}, 0, 1, 0, 0, 0, 0, 0, {}};
     context.partBudget = 0;
     for (int i = 1; i <= roots.Length(); ++i) {
         context.partBudget += countPartLabels(shapes, roots.Value(i), 0);
@@ -599,6 +905,25 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
             result.triangleCount += static_cast<int>(mesh->triangleCount());
         }
     }
+    result.fileProductCount = census.products;
+    result.fileOccurrenceCount = census.occurrences;
+    result.fileSolidCount = census.manifoldSolids + census.voidSolids;
+    result.partCount = context.partCount;
+    result.assemblyCount = context.assemblyCount;
+    result.emptyPartCount = context.emptyPartCount;
+    for (const GapTally& gap : context.gaps) {
+        warnings.push_back(gap.name + " ×" + std::to_string(gap.count) + "：" + gap.reason);
+    }
+    if (context.healedShapes > 0) {
+        warnings.push_back("ShapeFix 或缝合后恢复了 " + std::to_string(context.healedShapes) +
+                           " 个原先没有三角形的形状");
+    }
+    std::ostringstream report;
+    report << schemaLabel(schemaOf(path)) << " 产品" << result.fileProductCount << " 装配" << result.fileOccurrenceCount
+           << " 实体" << result.fileSolidCount << " 节点" << result.nodeCount << " 网格" << result.meshCount << " 三角"
+           << result.triangleCount << " 空" << result.emptyPartCount;
+    result.report = report.str();
+    result.warnings = std::move(warnings);
     if (progress) {
         progress(ImportProgress{100, "progress.done", context.partBudget, context.partBudget});
     }

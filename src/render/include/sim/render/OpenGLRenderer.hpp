@@ -35,11 +35,35 @@ private:
     };
 
     bool compileProgram(unsigned& program, const char* vertex, const char* fragment, std::string& error);
-    void drawInstances(const GpuMesh& mesh, const std::vector<float>& instances, bool blend);
+    void drawInstances(const GpuMesh& mesh, const std::vector<float>& instances, bool blend, bool tally);
+    void drawBackground();
+    void destroyTargets();
+    bool ensureShadow();
+    bool ensureGeometry(int width, int height);
+    Mat4 lightViewProjection(const Aabb& bounds) const;
 
     std::unordered_map<std::string, GpuMesh> meshes_;
     unsigned meshProgram_ = 0;
+    unsigned shadowProgram_ = 0;
+    unsigned aoProgram_ = 0;
+    unsigned blurProgram_ = 0;
+    unsigned compositeProgram_ = 0;
     unsigned lineProgram_ = 0;
+    unsigned backgroundProgram_ = 0;
+    unsigned backgroundVao_ = 0;
+    unsigned shadowFbo_ = 0;
+    unsigned shadowTex_ = 0;
+    unsigned geomFbo_ = 0;
+    unsigned geomColor_ = 0;
+    unsigned geomNormal_ = 0;
+    unsigned geomDepth_ = 0;
+    unsigned aoFbo_ = 0;
+    unsigned aoTex_ = 0;
+    unsigned aoBlurFbo_ = 0;
+    unsigned aoBlurTex_ = 0;
+    int geomWidth_ = 0;
+    int geomHeight_ = 0;
+    bool shadowReady_ = false;
     unsigned lineVao_ = 0;
     unsigned lineVbo_ = 0;
     unsigned instanceVbo_ = 0;

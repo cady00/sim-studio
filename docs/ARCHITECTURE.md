@@ -47,7 +47,7 @@ src/app         Qt 主窗口、导入线程、命令行
 | Diligent Engine | Apache-2.0，可私有商用 | 本基线没有官方 vcpkg 端口，需要整棵 vendored CMake（glslang、SPIRV-Cross） | 不采用。同样要和 Qt 的 OpenGL 上下文共存，依赖体积大。 |
 | 自有薄接口 `IRenderer` | 仓库自己的代码 | 不增加第三方库 | 采用。OpenGL 3.3 是现在的后端。Vulkan 或 Direct3D 12 以后实现同一个类，视口的输入和相机不用改。 |
 
-`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`selectLodLevel` 按距离选细节级别，当前每个零件只有一级网格，钩子先在提交路径里调用。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。同一网格的多个实例按记录逐个设置模型矩阵再画。软件 OpenGL 上实例化矩阵属性没有把平移送进着色器，所以这条路径用 uniform。Qt 类型只出现在 `src/app` 和 `src/render`（视口是 `QOpenGLWidget`）。`IRenderer` 本身没有 Qt 头文件。
+`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。网格着色用文件颜色乘以中性灯光：一盏方向光、一盏弱补光、均匀环境光、很小的高光、双面法线。方向光阴影和屏幕空间遮蔽在 `FrameParams`，命令行是 `--shadow` 和 `--ao`，默认都是 0。相机投影是透视，导入不改默认视场。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`selectLodLevel` 按距离选细节级别，当前每个零件只有一级网格，钩子先在提交路径里调用。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。同一网格的多个实例按记录逐个设置模型矩阵再画。软件 OpenGL 上实例化矩阵属性没有把平移送进着色器，所以这条路径用 uniform。Qt 类型只出现在 `src/app` 和 `src/render`（视口是 `QOpenGLWidget`）。`IRenderer` 本身没有 Qt 头文件。
 
 离屏读回是 `captureRgba`。截图时视口先走这个接口，失败再退回 Qt 的 `grabFramebuffer`。
 
@@ -105,7 +105,7 @@ KR 420 R3080 / KR 280 R3080 的扁平 STEP 也在 `testdata/local/`，不进仓�
 
 ## STEP 与 OpenUSD
 
-`createGeometryKernel()` 返回 `IGeometryKernel`，当前名字是 `occt`。`createImporter("step")` 给出 `StepImporter`，头文件里没有 OCCT 类型。实现在 `StepImporter.cpp`，用 XCAF 读 AP214 / AP242。网格在引用形状上生成，变换只取该次出现的 location。一个产品里如果有多个实体、却没有装配出现（NAUO），导入器会把每个实体拆成独立零件，并把半径不小于 8 mm 的圆柱或圆记在 `faceAxes` 里。运动学页只看见这些轴线和网格。换内核时换 `IGeometryKernel` 的实现，场景和 `.simproj` 不动。`obj` 由仓库内的解析器读，不经过 OCCT。详见 [KR420.md](KR420.md)。
+`createGeometryKernel()` 返回 `IGeometryKernel`，当前名字是 `occt`。`createImporter("step")` 给出 `StepImporter`，头文件里没有 OCCT 类型。实现在 `StepImporter.cpp`，用 XCAF 读 AP214 / AP203 / AP242。网格在引用形状上生成，变换只取该次出现的 location。一个产品里如果有多个实体、却没有装配出现（NAUO），导入器会把每个实体拆成独立零件，并把半径不小于 8 mm 的圆柱或圆记在 `faceAxes` 里。运动学页只看见这些轴线和网格。导入结果带文件产品数、装配出现数、实体数，以及场景节点、网格、三角形和无网格零件；Open CASCADE 的检查和没有面的零件各写一条警告。第一次细分失败且仍有面时才做 ShapeFix 和缝合。换内核时换 `IGeometryKernel` 的实现，场景和 `.simproj` 不动。`obj` 由仓库内的解析器读，不经过 OCCT。范围和与 PDPS 的差距见 [STEP.md](STEP.md)，扁平机器人见 [KR420.md](KR420.md)。
 
 OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的另一个导入器里，把 USD 的 prim 层级写成现有场景节点和共享网格，单位换成毫米。不把 USD 的舞台对象留在场景图里，这样 `.simproj` 仍然只存自己的 JSON 和网格。导出时从场景图写 USD，而不是从 OCCT 文档转。
 

@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFont>
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QOpenGLContext>
@@ -93,6 +94,98 @@ void ViewportWidget::setStandardView(StandardView view) {
     update();
 }
 
+void ViewportWidget::setViewTags(std::vector<ViewTag> tags) {
+    viewTags_ = std::move(tags);
+    update();
+}
+
+namespace {
+
+bool verticalShell(const Aabb& box, int& thinAxis) {
+    if (!box.valid) {
+        return false;
+    }
+    const double size[3] = {box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z};
+    thinAxis = 0;
+    if (size[1] < size[thinAxis]) {
+        thinAxis = 1;
+    }
+    if (size[2] < size[thinAxis]) {
+        thinAxis = 2;
+    }
+    if (thinAxis == 2) {
+        return false;
+    }
+    const double thickness = size[thinAxis];
+    const double otherA = thinAxis == 0 ? size[1] : size[0];
+    const double otherB = size[2];
+    const double smaller = std::min(otherA, otherB);
+    const double larger = std::max(otherA, otherB);
+    return thickness < 180.0 && thickness / std::max(smaller, 1.0) < 0.2 && smaller > 900.0 && larger > 1500.0;
+}
+
+}  // namespace
+
+void ViewportWidget::frameImportedAssembly(StandardView view) {
+    camera_.setStandardView(view);
+    if (view == StandardView::Iso && scene_ != nullptr && scene_->root()) {
+        const Aabb sceneBox = scene_->worldBounds();
+        Vec3 weighted;
+        double weight = 0;
+        std::vector<std::shared_ptr<SceneNode>> stack{scene_->root()};
+        while (!stack.empty()) {
+            auto node = stack.back();
+            stack.pop_back();
+            if (!node) {
+                continue;
+            }
+            for (const auto& child : node->children) {
+                stack.push_back(child);
+            }
+            if (node->meshId.empty()) {
+                continue;
+            }
+            const auto mesh = scene_->mesh(node->meshId);
+            if (!mesh) {
+                continue;
+            }
+            const Aabb box = transformedBounds(mesh->bounds, node->worldMatrix());
+            int thinAxis = 0;
+            if (!verticalShell(box, thinAxis)) {
+                continue;
+            }
+            const double dx = box.max.x - box.min.x;
+            const double dy = box.max.y - box.min.y;
+            const double dz = box.max.z - box.min.z;
+            const double area = (thinAxis == 0 ? dy * dz : dx * dz);
+            weighted = weighted + box.center() * area;
+            weight += area;
+        }
+        if (weight > 0.0 && sceneBox.valid) {
+            const Vec3 shells = weighted / weight;
+            const Vec3 delta = shells - sceneBox.center();
+            const double spanX = std::max(sceneBox.max.x - sceneBox.min.x, 1.0);
+            const double spanY = std::max(sceneBox.max.y - sceneBox.min.y, 1.0);
+            if (std::abs(delta.y) >= std::abs(delta.x) && std::abs(delta.y) > spanY * 0.12) {
+                const double away = delta.y > 0.0 ? -1.0 : 1.0;
+                camera_.eyeDirection = normalize(Vec3{0.42, away * 0.78, 0.48});
+                camera_.upHint = {0, 0, 1};
+            } else if (std::abs(delta.x) > spanX * 0.12) {
+                const double away = delta.x > 0.0 ? -1.0 : 1.0;
+                camera_.eyeDirection = normalize(Vec3{away * 0.78, 0.42, 0.48});
+                camera_.upHint = {0, 0, 1};
+            }
+        }
+    }
+    fitAll();
+}
+
+void ViewportWidget::setShadeStrength(float ao, float shadow) {
+    aoStrength_ = std::clamp(ao, 0.0f, 1.0f);
+    shadowStrength_ = std::clamp(shadow, 0.0f, 1.0f);
+    update();
+}
+
 void ViewportWidget::setGizmoMode(GizmoMode mode) {
     gizmoMode_ = mode;
     update();
@@ -145,27 +238,55 @@ void ViewportWidget::drawGrid() {
         bounds = scene_->worldBounds();
     }
     double step = 100.0;
-    double half = 1000.0;
+    double centerX = 0;
+    double centerY = 0;
+    double halfX = step * 16.0;
+    double halfY = step * 16.0;
+    double z = 0;
     if (bounds.valid) {
-        const double extent = std::max({std::abs(bounds.min.x), std::abs(bounds.max.x), std::abs(bounds.min.y),
-                                        std::abs(bounds.max.y), bounds.diagonal(), 10.0});
-        const double raw = std::pow(10.0, std::floor(std::log10(extent / 8.0)));
+        const double spanX = std::max(bounds.max.x - bounds.min.x, 10.0);
+        const double spanY = std::max(bounds.max.y - bounds.min.y, 10.0);
+        const double extent = std::max({spanX, spanY, 10.0});
+        const double raw = std::pow(10.0, std::floor(std::log10(std::max(extent / 8.0, 1e-6))));
         step = std::clamp(raw, 1.0, 1000.0);
-        half = step * 16.0;
+        centerX = std::round(((bounds.min.x + bounds.max.x) * 0.5) / step) * step;
+        centerY = std::round(((bounds.min.y + bounds.max.y) * 0.5) / step) * step;
+        const double margin = step * 2.0;
+        halfX = std::max(std::abs(bounds.max.x - centerX), std::abs(bounds.min.x - centerX)) + margin;
+        halfY = std::max(std::abs(bounds.max.y - centerY), std::abs(bounds.min.y - centerY)) + margin;
+        halfX = std::ceil(halfX / step) * step;
+        halfY = std::ceil(halfY / step) * step;
+        // A cell whose lowest solid sits clearly above z=0 keeps file coordinates.
+        // The grid moves to that floor so the machine is not drawn over an origin patch.
+        if (bounds.min.z > step) {
+            z = bounds.min.z - std::min(step * 0.02, 2.0);
+        }
     }
     LineBatch lines;
-    const Vec3 minor{0.22f, 0.24f, 0.28f};
-    const Vec3 major{0.34f, 0.37f, 0.44f};
-    const int count = static_cast<int>(std::round(half / step));
-    for (int i = -count; i <= count; ++i) {
-        const double coordinate = i * step;
-        const Vec3 color = (i % 5 == 0) ? major : minor;
-        pushLine(lines, {coordinate, -half, 0}, color);
-        pushLine(lines, {coordinate, half, 0}, color);
-        pushLine(lines, {-half, coordinate, 0}, color);
-        pushLine(lines, {half, coordinate, 0}, color);
+    const Vec3 minor{0.28f, 0.32f, 0.38f};
+    const Vec3 major{0.48f, 0.54f, 0.62f};
+    const auto majorAt = [](double coordinate, double spacing) {
+        long index = std::lround(coordinate / spacing) % 5;
+        if (index < 0) {
+            index += 5;
+        }
+        return index == 0;
+    };
+    const int countX = static_cast<int>(std::round(halfX / step));
+    const int countY = static_cast<int>(std::round(halfY / step));
+    for (int i = -countX; i <= countX; ++i) {
+        const double x = centerX + static_cast<double>(i) * step;
+        const Vec3 color = majorAt(x, step) ? major : minor;
+        pushLine(lines, {x, centerY - halfY, z}, color);
+        pushLine(lines, {x, centerY + halfY, z}, color);
     }
-    const double axis = half * 0.35;
+    for (int j = -countY; j <= countY; ++j) {
+        const double y = centerY + static_cast<double>(j) * step;
+        const Vec3 color = majorAt(y, step) ? major : minor;
+        pushLine(lines, {centerX - halfX, y, z}, color);
+        pushLine(lines, {centerX + halfX, y, z}, color);
+    }
+    const double axis = std::clamp(std::min(halfX, halfY) * 0.28, step * 3.0, step * 12.0);
     pushLine(lines, {0, 0, 0}, {0.85, 0.28, 0.30});
     pushLine(lines, {axis, 0, 0}, {0.85, 0.28, 0.30});
     pushLine(lines, {0, 0, 0}, {0.30, 0.75, 0.42});
@@ -259,8 +380,12 @@ void ViewportWidget::paintGL() {
     syncMeshes();
     const double aspect = height() > 0 ? static_cast<double>(width()) / height() : 1.0;
     FrameParams frame;
-    frame.viewProjection = mul(camera_.projectionMatrix(aspect), camera_.viewMatrix());
+    frame.projection = camera_.projectionMatrix(aspect);
+    frame.view = camera_.viewMatrix();
+    frame.viewProjection = mul(frame.projection, frame.view);
     frame.eye = camera_.eye();
+    frame.aoStrength = aoStrength_;
+    frame.shadowStrength = shadowStrength_;
     frame.width = std::max(width(), 1);
     frame.height = std::max(height(), 1);
     frame.frustumCull = true;
@@ -690,6 +815,36 @@ void ViewportWidget::paintOverlay() {
         painter.setBrush(QColor(42, 32, 8, 210));
         painter.drawRoundedRect(box, 8, 8);
         painter.drawText(box.adjusted(8, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft, callout_);
+    }
+    if (!viewTags_.empty()) {
+        const double tagAspect = height() > 0 ? static_cast<double>(width()) / height() : 1.0;
+        const QFont previousFont = painter.font();
+        painter.setFont(QFont(previousFont.family(), 11, QFont::Bold));
+        std::vector<QRect> placed;
+        for (const ViewTag& tag : viewTags_) {
+            const Vec3 pixel = camera_.project(tag.world, tagAspect, width(), height());
+            if (pixel.z < -1.0 || pixel.z > 1.0) {
+                continue;
+            }
+            const int chipWidth = QFontMetrics(painter.font()).horizontalAdvance(tag.text) + 16;
+            QRect chip(static_cast<int>(pixel.x) + 6, static_cast<int>(pixel.y) - 12, chipWidth, 22);
+            bool shifted = true;
+            while (shifted) {
+                shifted = false;
+                for (const QRect& other : placed) {
+                    if (chip.intersects(other)) {
+                        chip.translate(0, -26);
+                        shifted = true;
+                    }
+                }
+            }
+            placed.push_back(chip);
+            painter.setPen(QColor(255, 214, 120));
+            painter.setBrush(QColor(12, 16, 28, 210));
+            painter.drawRoundedRect(chip, 4, 4);
+            painter.drawText(chip, Qt::AlignCenter, tag.text);
+        }
+        painter.setFont(previousFont);
     }
     if (measurePoints_.size() == 2) {
         const double distance = length(measurePoints_[1] - measurePoints_[0]);

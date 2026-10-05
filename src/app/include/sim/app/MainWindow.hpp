@@ -2,6 +2,7 @@
 
 #include "sim/core/I18n.hpp"
 #include "sim/core/Scene.hpp"
+#include "sim/render/Camera.hpp"
 #include "sim/io/EditHistory.hpp"
 #include "sim/io/RobotLibrary.hpp"
 #include "sim/motion/Motion.hpp"
@@ -58,6 +59,9 @@ public:
     const Scene& document() const { return scene_; }
     bool importing() const { return importing_; }
     void setScreenshotPath(const QString& path);
+    void setStartupView(StandardView view);
+    void setAnnotateImport(bool enabled) { annotateImport_ = enabled; }
+    void setShadeStrength(float ao, float shadow);
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
@@ -87,7 +91,8 @@ private slots:
     void importObjInteractive();
     void openRobotLibrary();
     void onImportProgress(int percent, const QString& stageKey, int current, int total);
-    void onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs);
+    void onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs,
+                          const QString& report, const QStringList& warnings);
     void onTreeCurrentChanged(const QModelIndex& current, const QModelIndex& previous);
     void onViewportSelection(const QString& id);
     void onTransformEdited();
@@ -216,6 +221,9 @@ private:
     QPushButton* cancelButton_ = nullptr;
     QString projectPath_;
     QString screenshotPath_;
+    StandardView startupView_ = StandardView::Iso;
+    bool annotateImport_ = false;
+    void annotateImportedCell();
     QString benchShot_;
     int benchTries_ = 0;
     int benchPhase_ = 0;
