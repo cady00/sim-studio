@@ -740,19 +740,61 @@ TEST_CASE("private cojt jt files report version and triangles", "[jt]") {
         INFO(result.message);
         REQUIRE(result.ok);
         REQUIRE(result.triangleCount == triangles);
-        REQUIRE(result.message.find(note) != std::string::npos);
+        if (note != nullptr && note[0] != '\0') {
+            REQUIRE(result.message.find(note) != std::string::npos);
+        }
+        REQUIRE(result.message.find("not reachable from the LSG") == std::string::npos);
+        if (triangles <= 0) {
+            return;
+        }
+        sim::Aabb cloud;
+        sim::Aabb centers;
+        int meshNodes = 0;
+        std::vector<std::shared_ptr<sim::SceneNode>> pending{scene.root()};
+        while (!pending.empty()) {
+            auto node = pending.back();
+            pending.pop_back();
+            if (!node) {
+                continue;
+            }
+            for (const auto& child : node->children) {
+                pending.push_back(child);
+            }
+            if (node->meshId.empty()) {
+                continue;
+            }
+            const auto mesh = scene.meshes().find(node->meshId);
+            if (mesh == scene.meshes().end() || !mesh->second || mesh->second->positions.size() < 3) {
+                continue;
+            }
+            ++meshNodes;
+            const sim::Mat4 world = node->worldMatrix();
+            sim::Aabb local;
+            const auto& positions = mesh->second->positions;
+            for (std::size_t i = 0; i + 2 < positions.size(); i += 3) {
+                const sim::Vec3 point = sim::transformPoint(world, {positions[i], positions[i + 1], positions[i + 2]});
+                cloud.expand(point);
+                local.expand(point);
+            }
+            if (local.valid) {
+                centers.expand(local.center());
+            }
+        }
+        REQUIRE(meshNodes > 1);
+        REQUIRE(cloud.valid);
+        REQUIRE(cloud.diagonal() > 400.0);
+        REQUIRE(centers.diagonal() > 100.0);
     };
     expect(root / "kr210_r2700_2.cojt" / "kr210_r2700_2.jt", 387479, "decoded JT 10.5 topologically compressed tri-strips");
     expect(root / "kr210_r2700_2.cojt" / "kr210_r2700_2.jt", 387479, "high-degree face masks are not used by this mesh");
-    expect(root / "kr6_r900sixx.cojt" / "kr6_r900sixx.jt", 0, "36904 decoded triangles are not reachable from the LSG");
-    expect(root / "kr420r3080_4.cojt" / "kr420r3080_4.jt", 0, "450830 decoded triangles are not reachable from the LSG");
-    expect(root / "kr280r3080_4.cojt" / "kr280r3080_4.jt", 0, "450812 decoded triangles are not reachable from the LSG");
-    expect(root / "irb120_3_0_58.cojt" / "irb120_3_0_58.jt", 0, "74248 decoded triangles are not reachable from the LSG");
-    expect(root / "irbt6004_0_d_10m_01.cojt" / "irbt6004_0_d_10m_01.jt", 0,
-           "49385 decoded triangles are not reachable from the LSG");
-    expect(root / "r2000ib210f.cojt" / "r2000ib210f.jt", 0, "50059 decoded triangles are not reachable from the LSG");
-    expect(root / "IRB6700_235-265_IRC5_Grey_Rev1.cojt" / "IRB6700_235-265_IRC5_Grey_Rev1.jt", 0,
-           "179857 decoded triangles are not reachable from the LSG");
+    expect(root / "kr6_r900sixx.cojt" / "kr6_r900sixx.jt", 21915, "decoded topologically compressed tri-strips");
+    expect(root / "kr420r3080_4.cojt" / "kr420r3080_4.jt", 301973, "8 tri-strip LOD(s) were not decoded");
+    expect(root / "kr280r3080_4.cojt" / "kr280r3080_4.jt", 301977, "8 tri-strip LOD(s) were not decoded");
+    expect(root / "irb120_3_0_58.cojt" / "irb120_3_0_58.jt", 44948, "decoded topologically compressed tri-strips");
+    expect(root / "irbt6004_0_d_10m_01.cojt" / "irbt6004_0_d_10m_01.jt", 30236, "decoded topologically compressed tri-strips");
+    expect(root / "r2000ib210f.cojt" / "r2000ib210f.jt", 30261, "decoded topologically compressed tri-strips");
+    expect(root / "IRB6700_235-265_IRC5_Grey_Rev1.cojt" / "IRB6700_235-265_IRC5_Grey_Rev1.jt", 111545,
+           "1 tri-strip LOD(s) were not decoded");
 }
 
 std::vector<std::uint8_t> hexBytes(const char* text) {
