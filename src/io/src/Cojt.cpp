@@ -223,15 +223,21 @@ std::string stripComment(std::string line) {
 bool fieldNumber(const std::string& body, const std::string& key, double& out) {
     const std::string hay = lowerCopy(body);
     const std::string needle = lowerCopy(key);
-    const auto at = hay.find(needle);
-    if (at == std::string::npos) {
-        return false;
+    std::size_t from = 0;
+    while (from < hay.size()) {
+        const auto at = hay.find(needle, from);
+        if (at == std::string::npos) {
+            return false;
+        }
+        const bool left = at == 0 || !(std::isalnum(static_cast<unsigned char>(hay[at - 1])) || hay[at - 1] == '_');
+        const std::size_t after = at + needle.size();
+        const bool right = after >= hay.size() || !(std::isalnum(static_cast<unsigned char>(hay[after])) || hay[after] == '_');
+        if (left && right) {
+            return parseDouble(body.substr(after), out);
+        }
+        from = at + 1;
     }
-    std::size_t i = at + needle.size();
-    while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) {
-        ++i;
-    }
-    return parseDouble(body.substr(i), out);
+    return false;
 }
 
 MachineAxis& machineAxis(MachineData& out, int index) {
@@ -552,7 +558,9 @@ struct BuiltLink {
     bool matched = false;
 };
 
-Vec3 axisFromFrame(const Scene& scene, const std::shared_ptr<SceneNode>& frame, const Mat4& parentWorld, Vec3& anchor) {
+Vec3 axisFromFrame(const Scene& scene, const std::shared_ptr<SceneNode>& frame, const Mat4& parentWorld, Vec3& anchor,
+                   bool& accepted) {
+    accepted = false;
     Vec3 direction{0, 0, 1};
     bool fromMesh = false;
     if (!frame->meshId.empty()) {
@@ -585,7 +593,10 @@ Vec3 axisFromFrame(const Scene& scene, const std::shared_ptr<SceneNode>& frame, 
     if (length(localDirection) < 1e-8) {
         return {0, 0, 1};
     }
-    return normalize(localDirection);
+    direction = normalize(localDirection);
+    // An unrotated frame whose Z is the parent Z does not measure a joint. An elongated mesh does.
+    accepted = fromMesh || std::abs(direction.z) < 0.99;
+    return direction;
 }
 
 void setRest(KinJoint& joint, const std::shared_ptr<SceneNode>& parent, const std::shared_ptr<SceneNode>& child, Scene& scene) {
@@ -798,11 +809,30 @@ bool parseMachineDat(const std::string& text, MachineData& out, std::string& err
         }
         line = stripComment(line.substr(first));
         const auto eq = line.find('=');
-        if (eq == std::string::npos || line[0] != '$') {
+        const auto dollar = line.find('$');
+        if (eq == std::string::npos || dollar == std::string::npos || dollar > eq) {
             continue;
         }
-        const std::string lhs = lowerCopy(line.substr(0, eq));
-        std::string rhs = line.substr(eq + 1);
+        if (dollar > 0) {
+            bool typePrefix = true;
+            for (std::size_t i = 0; i < dollar; ++i) {
+                const unsigned char c = static_cast<unsigned char>(line[i]);
+                if (!(std::isalpha(c) || std::isspace(c))) {
+                    typePrefix = false;
+                    break;
+                }
+            }
+            if (!typePrefix) {
+                continue;
+            }
+            line = line.substr(dollar);
+        }
+        const auto split = line.find('=');
+        if (split == std::string::npos) {
+            continue;
+        }
+        const std::string lhs = lowerCopy(line.substr(0, split));
+        std::string rhs = line.substr(split + 1);
         const auto trim = rhs.find_first_not_of(" \t");
         if (trim != std::string::npos) {
             rhs = rhs.substr(trim);
@@ -975,7 +1005,9 @@ bool loadSide(const std::filesystem::path& folder, Side& side, std::string& erro
     }
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
-        if (ec || !entry.is_regular_file() || lowerCopy(entry.path().extension().string()) != ".info") {
+        const std::string filename = lowerCopy(entry.path().filename().string());
+        const bool infoFile = filename == ".info" || lowerCopy(entry.path().extension().string()) == ".info";
+        if (ec || !entry.is_regular_file() || !infoFile) {
             continue;
         }
         const std::string text = readTextFile(entry.path(), error);
@@ -1277,6 +1309,12 @@ void attachCojtSidecar(const std::string& jtOrFolder, Scene& scene, std::string&
     resource.payload = tuneWeight(side.detail);
     if (side.hasMachine) {
         fillWrist(resource, side.machine);
+    } else {
+        resource.wrist.d1 = 0;
+        resource.wrist.shoulder = 0;
+        resource.wrist.a2 = 0;
+        resource.wrist.a3 = 0;
+        resource.wrist.d6 = 0;
     }
     std::ostringstream source;
     appendSource(source, side);
@@ -1341,6 +1379,7 @@ void attachCojtSidecar(const std::string& jtOrFolder, Scene& scene, std::string&
     }
 
     int axisFrames = 0;
+    int ignoredFrames = 0;
     bool placeholderAxis = false;
     std::vector<MachineAxis> used;
     if (side.hasMachine) {
@@ -1371,9 +1410,15 @@ void attachCojtSidecar(const std::string& jtOrFolder, Scene& scene, std::string&
         if (!measuredAxis) {
             if (const auto frame = findStem(indexed, "ax" + std::to_string(ordinal), {}, usedIds)) {
                 if (links[static_cast<std::size_t>(parentIndex)].node) {
-                    axis = axisFromFrame(scene, frame, links[static_cast<std::size_t>(parentIndex)].node->worldMatrix(), anchor);
-                    measuredAxis = true;
-                    ++axisFrames;
+                    bool accepted = false;
+                    axis = axisFromFrame(scene, frame, links[static_cast<std::size_t>(parentIndex)].node->worldMatrix(), anchor,
+                                         accepted);
+                    if (accepted) {
+                        measuredAxis = true;
+                        ++axisFrames;
+                    } else {
+                        ++ignoredFrames;
+                    }
                 }
             }
         }
@@ -1521,6 +1566,10 @@ void attachCojtSidecar(const std::string& jtOrFolder, Scene& scene, std::string&
     }
     if (placeholderAxis) {
         source << " 没有轴帧、也没有 DH 的关节用了 +Z，这不是测得的轴向。";
+    }
+    if (ignoredFrames > 0) {
+        source << " " << ignoredFrames
+               << " 个 ax 节点没有细长网格，Z 也和父连杆重合，没有当成关节轴。";
     }
     if (dhChain && axisFrames == 0 && !track) {
         source << " 轴向按 KUKA 数学零位：A1 绕 Z，A2/A3 绕 Y，A4 沿 $TX3P3 的 Z，A5/A6 按 $DH alpha 绕 X 转过的 Z。";

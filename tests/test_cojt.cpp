@@ -93,14 +93,16 @@ $AXIS_JERK[1]=10429.6799482
 $COUP_COMP[4,5]={N -161,D 12580}
 $COUP_COMP[4,6]={N -172,D 22917}
 $COUP_COMP[5,6]={N -188,D 21461}
-$TIRORO={X 0.0,Y 0.0,Z 645.0,A 0.0,B 0.0,C 0.0}
-$TFLWP={X 0.0,Y 0.0,Z 215.0,A 0.0,B 0.0,C 0.0}
-$TX3P3={X 1220.0,Y 0.0,Z 115.0,A 0.0,B 90.0,C 0.0}
-$LENGTH_A=330.0
-$LENGTH_B=1150.0
-$DH_4={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA 90.0}
-$DH_5={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA -90.0}
+FRAME $TIRORO={X 0.0,Y 0.0,Z 645.0,A 0.0,B 0.0,C 0.0}
+FRAME $TFLWP={X 0.0,Y 0.0,Z 215.0,A 0.0,B 0.0,C 0.0}
+FRAME $TX3P3={X 1220.0,Y 0.0,Z 115.0,A 0.0,B 90.0,C 0.0}
+REAL $LENGTH_A=330.0
+REAL $LENGTH_B=1150.0
+DECL DHART $DH_4={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA 90.0}
+DECL DHART $DH_5={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA -90.0}
+CHAR $TRAFONAME[32]
 $TRAFONAME[]="#KR210R2700_2 C4 FLR"
+DECL KINCLASS $KINCLASS=#STANDARD
 )";
     REQUIRE(sim::parseMachineDat(dat, machine, error));
     REQUIRE(machine.ok);
@@ -155,13 +157,13 @@ $VEL_AXIS_MA[1]=5000.0
 $COUP_COMP[4,5]={N -161,D 12580}
 $COUP_COMP[4,6]={N -172,D 22917}
 $COUP_COMP[5,6]={N -188,D 21461}
-$TIRORO={X 0.0,Y 0.0,Z 645.0,A 0.0,B 0.0,C 0.0}
-$TFLWP={X 0.0,Y 0.0,Z 215.0,A 0.0,B 0.0,C 0.0}
-$TX3P3={X 1220.0,Y 0.0,Z 115.0,A 0.0,B 90.0,C 0.0}
-$LENGTH_A=330.0
-$LENGTH_B=1150.0
-$DH_4={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA 90.0}
-$DH_5={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA -90.0}
+FRAME $TIRORO={X 0.0,Y 0.0,Z 645.0,A 0.0,B 0.0,C 0.0}
+FRAME $TFLWP={X 0.0,Y 0.0,Z 215.0,A 0.0,B 0.0,C 0.0}
+FRAME $TX3P3={X 1220.0,Y 0.0,Z 115.0,A 0.0,B 90.0,C 0.0}
+REAL $LENGTH_A=330.0
+REAL $LENGTH_B=1150.0
+DECL DHART $DH_4={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA 90.0}
+DECL DHART $DH_5={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA -90.0}
 )");
     sim::Scene scene;
     const sim::AssetImportResult imported = sim::importCojt(folder.string(), scene);
@@ -184,21 +186,42 @@ $DH_5={DHART_A 0.0,DHART_D 0.0,DHART_ALPHA -90.0}
     REQUIRE(robot->joints[4].coupleRatio == Catch::Approx(-188.0 / 21461.0));
     REQUIRE(robot->source.find("TX3P3.Z") != std::string::npos);
     REQUIRE(robot->source.find("多于一个主动轴") != std::string::npos);
+    // A2 soft limit is -140..-5, so a stored 0 is clamped. Open the limits to read the DH zero.
+    for (sim::KinJoint& joint : robot->joints) {
+        joint.lower = -1000;
+        joint.upper = 1000;
+    }
     const sim::CartesianPose flange = sim::forwardModel(*robot);
     REQUIRE(flange.position.x == Catch::Approx(1765).margin(1e-2));
     REQUIRE(flange.position.y == Catch::Approx(0).margin(1e-2));
     REQUIRE(flange.position.z == Catch::Approx(1910).margin(1e-2));
+    robot->joints[0].lower = -185;
+    robot->joints[0].upper = 185;
+    robot->joints[1].lower = -140;
+    robot->joints[1].upper = -5;
+    robot->joints[2].lower = -120;
+    robot->joints[2].upper = 168;
+    robot->joints[1].position = -90;
+    robot->joints[2].position = 90;
+    const sim::CartesianPose homePose = sim::forwardModel(*robot);
+    REQUIRE(homePose.position.x == Catch::Approx(615).margin(1e-2));
+    REQUIRE(homePose.position.y == Catch::Approx(0).margin(1e-2));
+    REQUIRE(homePose.position.z == Catch::Approx(760).margin(1e-2));
+    robot->joints[1].position = -90;
+    robot->joints[2].position = 90;
 
     sim::RobotPath path;
     path.name = "sweep";
     path.resource = robot->name;
     sim::PathPoint home;
     home.move = sim::PathMove::Ptp;
-    home.joints.assign(6, 0);
+    home.joints = {0, -90, 90, 0, 0, 0};
     sim::PathPoint away = home;
     away.joints[0] = robot->joints[0].maxSpeed;
     path.points = {home, away};
     const sim::MotionPlan plan = sim::planRobotPath(scene, *robot, path);
+    const std::string planWarning = plan.warnings.empty() ? std::string("no warnings") : plan.warnings.front();
+    INFO(planWarning);
     REQUIRE(plan.ok);
     REQUIRE(plan.seconds == Catch::Approx(1.0).margin(0.05));
     std::filesystem::remove_all(folder);
@@ -242,17 +265,31 @@ TEST_CASE("private cojt components calibrate kinematics", "[cojt]") {
     REQUIRE(robot->joints.size() == 6);
     REQUIRE(robot->wrist.a2 == Catch::Approx(1150));
     REQUIRE(robot->wrist.d1 == Catch::Approx(645));
+    REQUIRE(robot->wrist.shoulder == Catch::Approx(330));
+    REQUIRE(robot->wrist.a3 == Catch::Approx(1220));
+    REQUIRE(robot->wrist.d6 == Catch::Approx(215));
+    REQUIRE(robot->joints[3].coupledTo.empty());
+    REQUIRE(robot->source.find("TX3P3.Z") != std::string::npos);
     REQUIRE(robot->joints[0].lower == Catch::Approx(-185));
     REQUIRE(robot->joints[0].upper == Catch::Approx(185));
     REQUIRE(robot->joints[1].lower == Catch::Approx(-140));
     REQUIRE(robot->joints[1].upper == Catch::Approx(-5));
     REQUIRE(robot->joints[0].maxSpeed == Catch::Approx(5000.0 * 6.0 * 7.0 / 1798.0).margin(1e-3));
     REQUIRE(robot->joints[4].coupledTo == "A6");
+    REQUIRE(robot->joints[0].axis.z == Catch::Approx(1).margin(1e-6));
+    REQUIRE(robot->joints[1].axis.y == Catch::Approx(1).margin(1e-6));
+    REQUIRE(robot->joints[2].axis.y == Catch::Approx(1).margin(1e-6));
+    REQUIRE(robot->joints[3].axis.x == Catch::Approx(1).margin(1e-6));
+    REQUIRE(robot->source.find("没有当成关节轴") != std::string::npos);
     std::cerr << "kr210 " << kr210Result.message << "\n";
     std::cerr << "kr210 matched speeds";
     for (const sim::KinJoint& joint : robot->joints) {
+        sim::Mat4 parent = sim::Mat4::identity();
+        sim::linkWorld(*robot, joint.parentLink, parent);
+        const sim::Vec3 worldAxis = sim::transformVector(parent, joint.axis);
         std::cerr << " " << joint.name << " " << joint.lower << ".." << joint.upper << " v " << joint.maxSpeed << " axis "
-                  << joint.axis.x << "," << joint.axis.y << "," << joint.axis.z;
+                  << joint.axis.x << "," << joint.axis.y << "," << joint.axis.z << " world " << worldAxis.x << ","
+                  << worldAxis.y << "," << worldAxis.z;
     }
     std::cerr << "\n";
 
@@ -269,19 +306,22 @@ TEST_CASE("private cojt components calibrate kinematics", "[cojt]") {
     REQUIRE(track->joints[0].motion == sim::JointMotion::Prismatic);
     REQUIRE(track->joints[0].upper == Catch::Approx(10000));
     REQUIRE(track->source.find("component name") != std::string::npos);
-    sim::KinematicResource carrier = *track;
     sim::Scene mounted;
+    const sim::AssetImportResult mountedTrack =
+        sim::importCojt((root / "irbt6004_0_d_10m_01.cojt").string(), mounted);
+    REQUIRE(mountedTrack.ok);
     sim::KinematicResource arm;
     arm.name = "arm";
     arm.ik = "spherical_wrist";
     sim::addLink(mounted, arm, "base", {}, {});
     mounted.resources.push_back(arm);
-    mounted.resources.push_back(carrier);
+    sim::KinematicResource* armResource = sim::findResource(mounted.resources, "arm");
+    REQUIRE(armResource != nullptr);
     std::string attachError;
-    REQUIRE(sim::attachExternalAxes(mounted, mounted.resources[0], carrier.name, "carriage", "track", attachError));
-    REQUIRE(sim::hasExternalAxis(mounted.resources[0]));
+    REQUIRE(sim::attachExternalAxes(mounted, *armResource, "irbt6004_0_d_10m_01", "carriage", "track", attachError));
+    REQUIRE(sim::hasExternalAxis(*armResource));
     const sim::KinJoint* e1 = nullptr;
-    for (const sim::KinJoint& joint : mounted.resources[0].joints) {
+    for (const sim::KinJoint& joint : armResource->joints) {
         if (joint.externalName == "E1") {
             e1 = &joint;
         }
@@ -377,6 +417,7 @@ TEST_CASE("private cojt components calibrate kinematics", "[cojt]") {
     std::cerr << "kr420 cycle datasheet " << before.seconds << " cojt-zone " << after.seconds << " medium " << medium
               << "\n";
     REQUIRE(after.ok);
+    REQUIRE(after.seconds == Catch::Approx(192.0 / 60.0).margin(1e-6));
     for (const auto& node : hidden) {
         if (node) {
             node->visible = true;
