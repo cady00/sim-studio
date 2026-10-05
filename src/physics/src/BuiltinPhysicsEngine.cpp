@@ -472,11 +472,15 @@ public:
                     std::string id;
                     const Vec3 origin = worldTranslation(*node);
                     for (const BodyState& body : bodies_) {
-                        if (!body.dynamic) {
+                        if (body.id == node->id) {
                             continue;
                         }
                         auto other = scene_->find(body.id);
-                        if (!other) {
+                        if (!other || other->mech.kind != MechKind::Rigid) {
+                            continue;
+                        }
+                        const bool onBelt = body.riding || other->mech.motion == BodyMotion::Surface;
+                        if (!body.dynamic && !onBelt) {
                             continue;
                         }
                         const double distance = length(worldTranslation(*other) - origin);
@@ -487,6 +491,16 @@ public:
                     }
                     if (!id.empty()) {
                         auto other = scene_->find(id);
+                        other->mech.motion = BodyMotion::Free;
+                        other->mech.kinematic = false;
+                        other->mech.surfaceRide = false;
+                        for (BodyState& body : bodies_) {
+                            if (body.id == id) {
+                                body.dynamic = true;
+                                body.riding = false;
+                                body.velocity = {};
+                            }
+                        }
                         node->mech.held = id;
                         node->mech.direction = worldTranslation(*other) - worldTranslation(*node);
                     }

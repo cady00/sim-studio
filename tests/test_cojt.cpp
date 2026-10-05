@@ -1,3 +1,4 @@
+#include "sim/core/DemoScene.hpp"
 #include "sim/io/Cojt.hpp"
 #include "sim/io/StepImporter.hpp"
 #include "sim/motion/Motion.hpp"
@@ -424,4 +425,48 @@ TEST_CASE("private cojt components calibrate kinematics", "[cojt]") {
         }
     }
     (void)heavy;
+}
+
+TEST_CASE("commission scene mounts the local KR420 cojt mesh on A1", "[cojt]") {
+    const auto folder = std::filesystem::path(SIM_SOURCE_DIR) / "testdata/local/cojt/kr420r3080_4.cojt";
+    if (!std::filesystem::is_directory(folder)) {
+        SKIP("testdata/local/cojt/kr420r3080_4.cojt is not present");
+    }
+    sim::Scene scene;
+    sim::buildCommissionLine(scene);
+    sim::attachCommissionRobot(scene);
+    const sim::KinematicResource* robot = sim::findResource(scene.resources, "r1");
+    REQUIRE(robot != nullptr);
+    std::string armId;
+    for (const sim::KinLink& link : robot->links) {
+        if (link.name == "arm") {
+            armId = link.nodeId;
+        }
+    }
+    REQUIRE_FALSE(armId.empty());
+    std::string note;
+    const int triangles = sim::attachCojtVisual(scene, folder.string(), armId, {560, 260, 0}, note);
+    INFO(note);
+    REQUIRE(triangles > 100000);
+    bool onArm = false;
+    std::vector<std::shared_ptr<sim::SceneNode>> stack{scene.root()};
+    while (!stack.empty()) {
+        const auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+        if (node->meshId.empty()) {
+            continue;
+        }
+        for (auto parent = node->parent.lock(); parent; parent = parent->parent.lock()) {
+            if (parent->id == armId) {
+                onArm = true;
+            }
+        }
+    }
+    REQUIRE(onArm);
 }

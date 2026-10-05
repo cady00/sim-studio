@@ -9,7 +9,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
+#include <unordered_map>
 
 namespace sim {
 namespace {
@@ -1654,5 +1656,92 @@ AssetImportResult importCojt(const std::string& path, Scene& scene) {
 }
 
 void attachCojtFromJt(const std::string& jtPath, Scene& scene, std::string& note) { attachCojtSidecar(jtPath, scene, note); }
+
+int attachCojtVisual(Scene& scene, const std::string& folder, const std::string& parentId, Vec3 foot, std::string& note) {
+    Scene side;
+    const AssetImportResult imported = importCojt(folder, side);
+    if (!imported.ok || imported.triangleCount <= 0 || !side.root()) {
+        note = imported.message.empty() ? "cojt import failed" : imported.message;
+        return 0;
+    }
+    std::unordered_map<std::string, std::string> meshMap;
+    std::vector<std::string> roots;
+    scene.beginEdit();
+    std::function<void(const std::shared_ptr<SceneNode>&, const std::shared_ptr<SceneNode>&)> copy =
+        [&](const std::shared_ptr<SceneNode>& from, const std::shared_ptr<SceneNode>& parent) {
+            if (!from || !parent) {
+                return;
+            }
+            for (const auto& child : from->children) {
+                if (!child) {
+                    continue;
+                }
+                // Assembly so the visual mesh is drawn but left out of the
+                // convex decomposition the soft PLC runs on every scan.
+                auto node = scene.makeNode(NodeKind::Assembly, "cad_" + child->name);
+                node->local = child->local;
+                node->color = child->color;
+                node->visible = child->visible;
+                node->faceAxes = child->faceAxes;
+                if (!child->meshId.empty()) {
+                    const auto existing = meshMap.find(child->meshId);
+                    if (existing == meshMap.end()) {
+                        meshMap.emplace(child->meshId, scene.addMesh(side.mesh(child->meshId)));
+                    }
+                    node->meshId = meshMap[child->meshId];
+                }
+                scene.addChild(parent, node);
+                if (parent == scene.root()) {
+                    roots.push_back(node->id);
+                }
+                copy(child, node);
+            }
+        };
+    copy(side.root(), scene.root());
+
+    std::function<void(const SceneNode&, Aabb&)> expand = [&](const SceneNode& node, Aabb& box) {
+        if (!node.meshId.empty()) {
+            if (const auto meshData = scene.mesh(node.meshId); meshData && meshData->bounds.valid) {
+                const Mat4 world = node.worldMatrix();
+                const Vec3 lo = meshData->bounds.min;
+                const Vec3 hi = meshData->bounds.max;
+                for (int corner = 0; corner < 8; ++corner) {
+                    const Vec3 local{(corner & 1) ? hi.x : lo.x, (corner & 2) ? hi.y : lo.y, (corner & 4) ? hi.z : lo.z};
+                    box.expand(transformPoint(world, local));
+                }
+            }
+        }
+        for (const auto& child : node.children) {
+            if (child) {
+                expand(*child, box);
+            }
+        }
+    };
+    Aabb box;
+    for (const std::string& id : roots) {
+        if (const auto node = scene.find(id)) {
+            expand(*node, box);
+        }
+    }
+    if (!box.valid) {
+        scene.endEdit();
+        note = "cojt produced no mesh bounds";
+        return 0;
+    }
+    const Vec3 delta = foot - Vec3{box.center().x, box.center().y, box.min.z};
+    for (const std::string& id : roots) {
+        if (const auto node = scene.find(id)) {
+            node->local.translation = node->local.translation + delta;
+        }
+    }
+    if (!parentId.empty()) {
+        for (const std::string& id : roots) {
+            scene.reparent(id, parentId, true);
+        }
+    }
+    scene.endEdit();
+    note = imported.message;
+    return imported.triangleCount;
+}
 
 }  // namespace sim

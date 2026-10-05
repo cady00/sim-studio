@@ -136,4 +136,10 @@ bool parseComponentInfo(const std::string& text, std::vector<InfoAxisLimit>& axe
 AssetImportResult importCojt(const std::string& path, Scene& scene);
 void attachCojtFromJt(const std::string& jtPath, Scene& scene, std::string& note);
 
+// Copy a cojt component's meshes into `scene`. The foot (bounds center at the
+// lowest Z) is planted at `foot`, then the imported roots are parented to
+// `parentId` with the world pose kept. Node names are prefixed with `cad_`.
+// Returns the imported triangle count, or 0 when the folder cannot be read.
+int attachCojtVisual(Scene& scene, const std::string& folder, const std::string& parentId, Vec3 foot, std::string& note);
+
 }  // namespace sim

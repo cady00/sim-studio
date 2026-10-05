@@ -222,6 +222,44 @@ TEST_CASE("mcd cylinder throttle and cushion do not jump onto the stop") {
     REQUIRE(fast->local.translation.x == Approx(fast->mech.command).margin(0.1));
 }
 
+TEST_CASE("mcd gripper lifts a surface part off the conveyor", "[devices]") {
+    sim::Scene scene;
+    auto belt = addPart(scene, "Belt");
+    belt->mech.kind = sim::MechKind::Conveyor;
+    belt->mech.motion = sim::BodyMotion::Driven;
+    belt->mech.kinematic = true;
+    belt->mech.halfExtents = {80, 40, 16};
+    belt->mech.direction = {1, 0, 0};
+    belt->mech.speed = 0;
+    belt->local.translation = {0, 0, 16};
+
+    auto part = addPart(scene, "Part");
+    part->mech.kind = sim::MechKind::Rigid;
+    part->mech.motion = sim::BodyMotion::Surface;
+    part->mech.surfaceRide = true;
+    part->mech.kinematic = true;
+    part->mech.halfExtents = {18, 18, 18};
+    part->local.translation = {0, 0, 46};
+
+    auto gripper = addPart(scene, "Gripper");
+    gripper->mech.kind = sim::MechKind::Gripper;
+    gripper->mech.graspSignal = "grip";
+    gripper->mech.graspRadius = 40;
+    gripper->local.translation = {0, 0, 70};
+    scene.upsertSignal("grip", sim::SignalType::Bool).flag = true;
+
+    auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
+    std::string error;
+    REQUIRE(engine->build(scene, error));
+    stepFor(*engine, 0.1);
+    REQUIRE(gripper->mech.held == part->id);
+    REQUIRE(part->mech.motion == sim::BodyMotion::Free);
+    const double heldZ = part->local.translation.z;
+    gripper->local.translation.z = 160;
+    engine->step(sim::Simulation::kFixedDt);
+    REQUIRE(part->local.translation.z > heldZ + 70);
+}
+
 TEST_CASE("mcd gripper attaches the nearest body and releases it") {
     sim::Scene scene;
     auto gripper = addPart(scene, "Gripper");
