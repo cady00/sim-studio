@@ -1,5 +1,7 @@
 #include "JtImporter.hpp"
 
+#include "sim/io/Cojt.hpp"
+
 #include "sim/core/Mesh.hpp"
 #include "sim/io/JtCodec.hpp"
 
@@ -1666,6 +1668,12 @@ AssetImportResult JtImporter::importFile(const std::string& path, Scene& scene) 
     if (triangles == 0 && decodedTriangles > 0) {
         message << ". " << decodedTriangles
                 << " decoded triangles are not reachable from the LSG; no triangles were invented";
+    }
+    std::string cojtNote;
+    attachCojtFromJt(path, scene, cojtNote);
+    if (!cojtNote.empty()) {
+        message << ". " << cojtNote;
+        nodes = scene.nodeCount();
     }
     result.ok = true;
     result.nodeCount = nodes;
