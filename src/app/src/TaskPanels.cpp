@@ -28,6 +28,7 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QTextCursor>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPaintEvent>
@@ -841,7 +842,7 @@ PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scen
     logView_ = new QPlainTextEdit;
     logView_->setReadOnly(true);
     logView_->setPlaceholderText("调试日志");
-    logView_->setMinimumHeight(90);
+    logView_->setMinimumHeight(140);
     layout->addWidget(logView_);
     layout->addStretch(1);
     scroll_->setWidget(inner);
@@ -860,6 +861,12 @@ void PlcCards::revealTags() {
     reload();
     if (scroll_ != nullptr && forceTable_ != nullptr) {
         scroll_->ensureWidgetVisible(forceTable_, 0, 60);
+    }
+}
+
+void PlcCards::revealLog() {
+    if (scroll_ != nullptr && logView_ != nullptr) {
+        scroll_->ensureWidgetVisible(logView_, 0, 24);
     }
 }
 
@@ -1087,6 +1094,7 @@ void PlcCards::showRuntime(const std::vector<std::string>& log) {
             text += QStringLiteral("\n");
         }
         logView_->setPlainText(text);
+        logView_->moveCursor(QTextCursor::End);
     }
 }
 
@@ -1487,6 +1495,21 @@ void SignalScope::reload() {
             list_->item(i)->setCheckState(Qt::Checked);
             ++checked;
         }
+    }
+    filling_ = false;
+    syncWatch();
+}
+
+void SignalScope::prefer(const std::vector<std::string>& ids) {
+    if (list_ == nullptr) {
+        return;
+    }
+    filling_ = true;
+    userPicked_ = true;
+    for (int i = 0; i < list_->count(); ++i) {
+        const std::string id = list_->item(i)->data(Qt::UserRole).toString().toStdString();
+        const bool on = std::find(ids.begin(), ids.end(), id) != ids.end();
+        list_->item(i)->setCheckState(on ? Qt::Checked : Qt::Unchecked);
     }
     filling_ = false;
     syncWatch();

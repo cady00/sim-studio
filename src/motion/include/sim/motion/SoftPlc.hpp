@@ -73,6 +73,8 @@ private:
     std::vector<Image> previous_;
     // Rung power from the previous scan, so CTU sees one rising edge per pulse.
     std::vector<unsigned char> rungPower_;
+    // Mesh-collision latch for this physics step. Zones are tested every scan.
+    std::vector<unsigned char> collisionLatch_;
 };
 
 // Reserved adapter. available() is false and start() fails. scan() does nothing

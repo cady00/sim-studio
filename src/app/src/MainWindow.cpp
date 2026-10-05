@@ -2945,6 +2945,7 @@ void MainWindow::beginHeadlessPlayback() {
             }
             if (scope_ != nullptr) {
                 scope_->reload();
+                scope_->prefer({"sig:Z1_Occupied", "sig:r1_start", "jnt:r1/A1"});
             }
         }
         if (collisionDemo_ && collision_ != nullptr) {
@@ -3007,18 +3008,18 @@ void MainWindow::beginHeadlessPlayback() {
             }
             const Signal* photo = scene_.findSignal("photo");
             const Signal* belt = scene_.findSignal("belt_run");
-            const Signal* grip = scene_.findSignal("r1_grip");
+            const Signal* zone = scene_.findSignal("Z1_Occupied");
+            const Signal* start = scene_.findSignal("r1_start");
             const KinematicResource* robot = findResource(scene_.resources, "r1");
             const double shoulder = robot != nullptr && !robot->joints.empty() ? robot->joints.front().position : 0;
-            const auto held = scene_.findByName("R1Gripper");
-            viewport_->setCallout(QStringLiteral("光电 %1 · 输送 %2 · A1 %3° · R1 夹取 %4 · 工件 %5")
+            viewport_->setCallout(QStringLiteral("光电 %1 · 输送 %2 · 干涉区 %3 · 启动 %4 · A1 %5°")
                                       .arg(photo != nullptr && photo->flag ? QStringLiteral("通") : QStringLiteral("断"))
                                       .arg(belt != nullptr && belt->flag ? QStringLiteral("运行") : QStringLiteral("停"))
-                                      .arg(shoulder, 0, 'f', 0)
-                                      .arg(grip != nullptr && grip->flag ? QStringLiteral("合") : QStringLiteral("开"))
-                                      .arg(held && !held->mech.held.empty() ? QStringLiteral("已持") : QStringLiteral("空")));
+                                      .arg(zone != nullptr && zone->flag ? QStringLiteral("占用") : QStringLiteral("空"))
+                                      .arg(start != nullptr && start->flag ? QStringLiteral("1") : QStringLiteral("0"))
+                                      .arg(shoulder, 0, 'f', 0));
             if (plc_ != nullptr) {
-                plc_->revealTags();
+                plc_->revealLog();
             }
             viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
             viewport_->fitAll();

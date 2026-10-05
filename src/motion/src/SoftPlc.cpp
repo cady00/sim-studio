@@ -1,5 +1,7 @@
 #include "sim/motion/SoftPlc.hpp"
 
+#include "sim/motion/Motion.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -127,6 +129,75 @@ const SoftPlcRuntime::Image* SoftPlcRuntime::previous(const std::string& address
     return nullptr;
 }
 
+namespace {
+
+std::string zoneAddress(const PlcZoneWatch& zone, std::size_t index) {
+    if (!zone.address.empty()) {
+        return zone.address;
+    }
+    if (!zone.name.empty()) {
+        return zone.name + "_Occupied";
+    }
+    return "Z" + std::to_string(index + 1) + "_Occupied";
+}
+
+std::string collisionAddress(const PlcCollisionWatch& watch, std::size_t index) {
+    if (!watch.address.empty()) {
+        return watch.address;
+    }
+    return "R" + std::to_string(index + 1) + "_Collision";
+}
+
+PlcTag* ensureBoolTag(SoftPlcDocument& doc, const std::string& address) {
+    if (PlcTag* tag = findPlcTag(doc, address)) {
+        return tag;
+    }
+    PlcTag created;
+    created.address = address;
+    created.kind = PlcValueKind::Bool;
+    doc.tags.push_back(std::move(created));
+    return findPlcTag(doc, address);
+}
+
+bool pointInZone(Vec3 point, const PlcZoneWatch& zone) {
+    return length(point - zone.center) <= std::max(zone.radius, 0.0);
+}
+
+bool zoneOccupied(const Scene& scene, const PlcZoneWatch& zone) {
+    if (zone.watch.empty()) {
+        for (const KinematicResource& resource : scene.resources) {
+            if (pointInZone(forwardModel(resource).position, zone)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    for (const std::string& name : zone.watch) {
+        if (const KinematicResource* resource = findResource(scene.resources, name)) {
+            if (pointInZone(forwardModel(*resource).position, zone)) {
+                return true;
+            }
+        }
+        if (const auto node = scene.findByName(name)) {
+            if (pointInZone(transformPoint(node->worldMatrix(), {}), zone)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void writeSafetyBit(Scene& scene, SoftPlcDocument& doc, const std::string& address, bool value) {
+    PlcTag* tag = ensureBoolTag(doc, address);
+    if (tag != nullptr && !tag->forced) {
+        tag->flag = value;
+    }
+    const bool published = tag == nullptr ? value : tagBool(tag);
+    scene.upsertSignal(address, SignalType::Bool).flag = published;
+}
+
+}  // namespace
+
 void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
     SoftPlcDocument& doc = scene.softPlc;
     ++scans_;
@@ -170,6 +241,13 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
             }
             (void)got;
         }
+    }
+    for (std::size_t index = 0; index < doc.zones.size(); ++index) {
+        writeSafetyBit(scene, doc, zoneAddress(doc.zones[index], index), zoneOccupied(scene, doc.zones[index]));
+    }
+    for (std::size_t index = 0; index < doc.collisions.size(); ++index) {
+        const bool hit = index < collisionLatch_.size() && collisionLatch_[index] != 0;
+        writeSafetyBit(scene, doc, collisionAddress(doc.collisions[index], index), hit);
     }
 
     auto previousLevel = [this](const std::string& address) {
@@ -407,6 +485,22 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
 void SoftPlcRuntime::scan(Scene& scene, double simTime, double dt) {
     if (!running_ || !scene.softPlc.enabled || scene.softPlc.backend == "plcsim") {
         return;
+    }
+    collisionLatch_.assign(scene.softPlc.collisions.size(), 0);
+    for (std::size_t index = 0; index < scene.softPlc.collisions.size(); ++index) {
+        const PlcCollisionWatch& watch = scene.softPlc.collisions[index];
+        bool hit = false;
+        if (watch.resource.empty()) {
+            for (const KinematicResource& resource : scene.resources) {
+                if (!collidingPairs(scene, resource).empty()) {
+                    hit = true;
+                    break;
+                }
+            }
+        } else if (const KinematicResource* resource = findResource(scene.resources, watch.resource)) {
+            hit = !collidingPairs(scene, *resource).empty();
+        }
+        collisionLatch_[index] = hit ? 1 : 0;
     }
     const double period = std::max(scene.softPlc.scanSeconds, 1e-4);
     acc_ += std::max(dt, 0.0);

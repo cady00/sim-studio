@@ -494,7 +494,7 @@ void attachCommissionRobot(Scene& scene) {
     addBox(scene, scene.find(baseId), "R1Base", {46, 46, 28}, {0.42, 0.46, 0.52}, {0, 0, 28});
     addBox(scene, scene.find(armId), "R1Arm", {90, 18, 16}, {0.18, 0.42, 0.72}, {90, 0, 16});
     addBox(scene, scene.find(forearmId), "R1Forearm", {75, 14, 12}, {0.16, 0.34, 0.58}, {75, 0, 12});
-    auto gripper = addBox(scene, scene.find(toolId), "R1Gripper", {16, 14, 18}, {0.72, 0.76, 0.82}, {16, 0, -8});
+    auto gripper = addBox(scene, scene.find(toolId), "R1Gripper", {16, 14, 18}, {0.72, 0.76, 0.82}, {22, 0, -8});
     gripper->mech.kind = MechKind::Gripper;
     gripper->mech.graspSignal = "r1_grip";
     gripper->mech.graspRadius = 80;
@@ -552,6 +552,12 @@ void attachCommissionRobot(Scene& scene) {
     applyResource(scene, resource);
     addBox(scene, scene.root(), "R1Place", placePad.halfExtents, {0.30, 0.48, 0.36}, placeTool + Vec3{0, 0, -46})->mech = placePad;
 
+    setJointVector(resource, {-60, 10});
+    applyResource(scene, resource);
+    const Vec3 zoneCenter = transformPoint(scene.findByName("R1Gripper")->worldMatrix(), {});
+    setJointVector(resource, {0, 0});
+    applyResource(scene, resource);
+
     auto flag = [&](const char* name, bool value) {
         Signal& signal = scene.upsertSignal(name, SignalType::Bool);
         signal.flag = value;
@@ -562,6 +568,19 @@ void attachCommissionRobot(Scene& scene) {
     flag("r1_atplace", false);
     flag("r1_start", false);
     flag("r1_grip", false);
+    flag("Z1_Occupied", false);
+    auto disc = addBox(scene, scene.root(), "Z1", {100, 100, 4}, {0.86, 0.28, 0.24}, zoneCenter);
+    disc->kind = NodeKind::Assembly;
+    PlcZoneWatch zone;
+    zone.name = "Z1";
+    zone.center = zoneCenter;
+    zone.radius = 100;
+    zone.watch = {"R1Gripper", "R1Work"};
+    scene.softPlc.zones.push_back(std::move(zone));
+    PlcCollisionWatch collision;
+    collision.address = "R1_Collision";
+    collision.resource = resource.name;
+    scene.softPlc.collisions.push_back(std::move(collision));
 
     auto ensureTag = [&](const char* address) {
         if (findPlcTag(scene.softPlc, address) != nullptr) {
@@ -579,6 +598,8 @@ void attachCommissionRobot(Scene& scene) {
     ensureTag("R1_Grip");
     ensureTag("M1.0");
     ensureTag("M2.0");
+    ensureTag("Z1_Occupied");
+    ensureTag("R1_Collision");
     if (PlcTag* home = findPlcTag(scene.softPlc, "R1_AtHome")) {
         home->flag = true;
     }
@@ -610,8 +631,13 @@ void attachCommissionRobot(Scene& scene) {
     PlcRung start;
     start.series.push_back(level("M0.0", true));
     start.series.push_back(level("R1_AtHome", true));
+    start.series.push_back(level("Z1_Occupied", false));
     start.coil = "R1_Start";
     start.action = "set";
+    PlcRung inhibit;
+    inhibit.series.push_back(level("Z1_Occupied", true));
+    inhibit.coil = "R1_Start";
+    inhibit.action = "reset";
     PlcRung grip;
     grip.series.push_back(level("R1_Start", true));
     grip.series.push_back(level("M1.0", true));
@@ -619,6 +645,7 @@ void attachCommissionRobot(Scene& scene) {
     grip.coil = "R1_Grip";
     grip.action = "out";
     scene.softPlc.rungs.push_back(std::move(start));
+    scene.softPlc.rungs.push_back(std::move(inhibit));
     scene.softPlc.rungs.push_back(std::move(grip));
 
     auto setOut = [](const char* signal) {
