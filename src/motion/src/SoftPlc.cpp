@@ -236,6 +236,14 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
             coil->flag = coil->done;
             continue;
         }
+        if (rung.action == "ctd" && coil->kind == PlcValueKind::Counter) {
+            if (power && !wasPower) {
+                coil->integer -= 1;
+            }
+            coil->done = coil->integer <= 0;
+            coil->flag = coil->done;
+            continue;
+        }
         if (rung.action == "ctr" && coil->kind == PlcValueKind::Counter) {
             if (power) {
                 coil->integer = 0;
@@ -252,6 +260,19 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
             } else {
                 coil->elapsed += period;
                 coil->done = coil->elapsed + 1e-6 >= std::max(coil->preset, 0.0);
+            }
+            coil->flag = coil->done;
+            continue;
+        }
+        if (rung.action == "tof" && coil->kind == PlcValueKind::Timer) {
+            if (power) {
+                coil->elapsed = 0;
+                coil->done = true;
+            } else if (coil->done) {
+                coil->elapsed += period;
+                if (coil->elapsed + 1e-6 >= std::max(coil->preset, 0.0)) {
+                    coil->done = false;
+                }
             }
             coil->flag = coil->done;
             continue;

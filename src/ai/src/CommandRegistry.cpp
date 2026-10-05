@@ -27,7 +27,7 @@ constexpr Glyph kGlyphs[] = {
     {U'撤', 'c'}, {U'销', 'x'}, {U'应', 'y'}, {U'用', 'y'}, {U'新', 'x'}, {U'关', 'g'}, {U'闭', 'b'},
     {U'路', 'l'}, {U'径', 'j'}, {U'碰', 'p'}, {U'撞', 'z'}, {U'近', 'j'}, {U'视', 's'}, {U'图', 't'},
     {U'前', 'q'}, {U'后', 'h'}, {U'左', 'z'}, {U'右', 'y'}, {U'上', 's'}, {U'下', 'x'}, {U'等', 'd'},
-    {U'轴', 'z'},
+    {U'轴', 'z'}, {U'库', 'k'},
 };
 
 char initialOf(char32_t code) {
@@ -110,6 +110,7 @@ std::vector<CommandEntry> CommandRegistry::builtin() {
         ui("ui.save", "保存项目", "Save Project", "Ctrl+S", "R1", false),
         ui("ui.import_step", "导入 STEP", "Import STEP", "Ctrl+Shift+I", "R2", false),
         ui("ui.import_obj", "导入 OBJ", "Import OBJ", "", "R2", false),
+        ui("ui.robot_library", "机器人库", "Robot Library", "", "R2", false),
         ui("ui.play", "播放", "Play", "Space", "R0", true),
         ui("ui.pause", "暂停", "Pause", "", "R0", true),
         ui("ui.stop", "停止", "Stop", "", "R1", true),

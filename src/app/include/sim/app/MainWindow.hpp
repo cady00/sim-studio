@@ -3,12 +3,14 @@
 #include "sim/core/I18n.hpp"
 #include "sim/core/Scene.hpp"
 #include "sim/io/EditHistory.hpp"
+#include "sim/io/RobotLibrary.hpp"
 #include "sim/motion/Motion.hpp"
 #include "sim/motion/SoftPlc.hpp"
 #include "sim/physics/PhysicsEngine.hpp"
 #include "sim/scripting/ScriptHost.hpp"
 
 #include <QMainWindow>
+#include <QStringList>
 
 #include <atomic>
 #include <memory>
@@ -49,6 +51,8 @@ public:
     void importStepAsync(const QString& path);
     void importObj(const QString& path);
     void importJt(const QString& path);
+    void presentRobotLibrary(const QString& root, const QString& selectName);
+    QString importNamedRobots(const QString& root, const QStringList& names);
     void openProject(const QString& path);
     bool saveProject(const QString& path);
     const Scene& document() const { return scene_; }
@@ -80,6 +84,7 @@ private slots:
     void saveProjectAsInteractive();
     void importStepInteractive();
     void importObjInteractive();
+    void openRobotLibrary();
     void onImportProgress(int percent, const QString& stageKey, int current, int total);
     void onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs);
     void onTreeCurrentChanged(const QModelIndex& current, const QModelIndex& previous);
@@ -114,6 +119,7 @@ private:
     void selectNode(const QString& id, bool fromTree);
     bool confirmDiscard();
     QString trk(const char* key) const;
+    QString importLibraryEntries(const std::vector<RobotLibraryEntry>& entries);
     void finishScreenshot();
     void applyTaskMode(int mode);
     void runUiCommand(const std::string& id);
@@ -237,6 +243,8 @@ private:
     QAction* saveAsAction_ = nullptr;
     QAction* importStepAction_ = nullptr;
     QAction* importObjAction_ = nullptr;
+    QAction* robotLibraryAction_ = nullptr;
+    class RobotLibraryDialog* robotLibrary_ = nullptr;
     QAction* quitAction_ = nullptr;
     QAction* fitAction_ = nullptr;
     QAction* viewActions_[7] = {};

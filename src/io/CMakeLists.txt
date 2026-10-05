@@ -10,6 +10,7 @@ add_library(sim_io
     src/JtImporter.cpp
     src/JtTopo.cpp
     src/Cojt.cpp
+    src/RobotLibrary.cpp
     src/UsdStage.cpp
     src/Xacro.cpp
     src/OcctCadImport.cpp

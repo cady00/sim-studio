@@ -439,3 +439,78 @@ TEST_CASE("soft plc or branches edges and count up") {
     REQUIRE_FALSE(sim::softPlcFromJson(badEdge, rejected, error));
     REQUIRE(error == "unknown plc contact edge");
 }
+
+TEST_CASE("soft plc ctd counts down and tof holds after power drops") {
+    sim::Scene scene;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    addTag(doc, "I0.0", sim::PlcValueKind::Bool);
+    sim::PlcTag* counter = addTag(doc, "C0", sim::PlcValueKind::Counter);
+    counter->integer = 2;
+    sim::PlcTag* timer = addTag(doc, "T0", sim::PlcValueKind::Timer);
+    timer->preset = 0.03;
+
+    sim::PlcRung down;
+    down.series.push_back(levelContact("I0.0", true));
+    down.coil = "C0";
+    down.action = "ctd";
+    sim::PlcRung off;
+    off.series.push_back(levelContact("I0.0", true));
+    off.coil = "T0";
+    off.action = "tof";
+    doc.rungs = {down, off};
+
+    sim::SoftPlcRuntime runtime;
+    std::string error;
+    REQUIRE(runtime.start(doc, error));
+    auto pulse = [&](bool on) {
+        sim::findPlcTag(doc, "I0.0")->flag = on;
+        runtime.scan(scene, 0.0, 0.01);
+    };
+
+    pulse(false);
+    REQUIRE(counter->integer == 2);
+    REQUIRE_FALSE(counter->done);
+    REQUIRE_FALSE(timer->done);
+    REQUIRE(timer->elapsed == Approx(0.0));
+
+    pulse(true);
+    REQUIRE(counter->integer == 1);
+    REQUIRE_FALSE(counter->done);
+    REQUIRE(timer->done);
+    REQUIRE(timer->elapsed == Approx(0.0));
+
+    pulse(true);
+    REQUIRE(counter->integer == 1);
+
+    pulse(false);
+    REQUIRE(counter->integer == 1);
+    REQUIRE(timer->done);
+    REQUIRE(timer->elapsed == Approx(0.01));
+
+    pulse(true);
+    REQUIRE(counter->integer == 0);
+    REQUIRE(counter->done);
+    REQUIRE(timer->done);
+    REQUIRE(timer->elapsed == Approx(0.0));
+
+    pulse(false);
+    pulse(false);
+    REQUIRE(timer->done);
+    REQUIRE(timer->elapsed == Approx(0.02));
+    pulse(false);
+    REQUIRE_FALSE(timer->done);
+    REQUIRE(timer->flag == false);
+
+    pulse(true);
+    REQUIRE(counter->integer == -1);
+    REQUIRE(counter->done);
+    REQUIRE(timer->done);
+
+    const nlohmann::json json = sim::softPlcToJson(doc);
+    sim::SoftPlcDocument loaded;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.rungs[0].action == "ctd");
+    REQUIRE(loaded.rungs[1].action == "tof");
+}

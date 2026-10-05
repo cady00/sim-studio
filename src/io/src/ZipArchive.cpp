@@ -1,5 +1,7 @@
 #include "sim/io/ZipArchive.hpp"
 
+#include <zlib.h>
+
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -129,7 +131,31 @@ bool ZipArchive::write(const std::string& path, const std::vector<ZipEntry>& ent
     return true;
 }
 
-bool ZipArchive::read(const std::string& path, std::vector<ZipEntry>& entries, std::string& error) {
+bool inflateZip(const std::uint8_t* source, std::size_t sourceSize, std::vector<std::uint8_t>& out, std::string& error) {
+    if (out.size() > 512ull * 1024ull * 1024ull) {
+        error = "zip entry is larger than 512 MB";
+        return false;
+    }
+    z_stream stream{};
+    stream.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(source));
+    stream.avail_in = static_cast<uInt>(sourceSize);
+    // ZIP method 8 is raw deflate, without a zlib wrapper.
+    if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) {
+        error = "deflate stream could not be opened";
+        return false;
+    }
+    stream.next_out = out.data();
+    stream.avail_out = static_cast<uInt>(out.size());
+    const int result = inflate(&stream, Z_FINISH);
+    inflateEnd(&stream);
+    if (result != Z_STREAM_END || stream.total_out != out.size()) {
+        error = "deflate stream did not match the uncompressed size";
+        return false;
+    }
+    return true;
+}
+
+bool ZipArchive::index(const std::string& path, std::vector<ZipIndexEntry>& entries, std::string& error) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         error = "cannot open " + path;
@@ -174,6 +200,7 @@ bool ZipArchive::read(const std::string& path, std::vector<ZipEntry>& entries, s
             error = "truncated zip central directory";
             return false;
         }
+        const std::uint16_t flags = readU16(central.data() + cursor + 8);
         const std::uint16_t method = readU16(central.data() + cursor + 10);
         const std::uint32_t crc = readU32(central.data() + cursor + 16);
         const std::uint32_t compressed = readU32(central.data() + cursor + 20);
@@ -186,47 +213,105 @@ bool ZipArchive::read(const std::string& path, std::vector<ZipEntry>& entries, s
             error = "truncated zip entry name";
             return false;
         }
-        ZipEntry entry;
+        ZipIndexEntry entry;
         entry.name.assign(reinterpret_cast<const char*>(central.data() + cursor + 46), nameLen);
+        entry.method = method;
+        entry.crc = crc;
+        entry.compressed = compressed;
+        entry.uncompressed = uncompressed;
+        entry.localOffset = localOffset;
         cursor += 46 + nameLen + extraLen + commentLen;
-        if (method != 0) {
-            error = "compressed zip entries are not supported (" + entry.name + ")";
+        if ((flags & 1u) != 0) {
+            error = "encrypted zip entries are not supported (" + entry.name + ")";
             return false;
         }
-        if (compressed != uncompressed) {
-            error = "stored zip entry has inconsistent sizes (" + entry.name + ")";
-            return false;
-        }
-        std::vector<std::uint8_t> localHeader(30);
-        in.seekg(static_cast<std::streamoff>(localOffset), std::ios::beg);
-        in.read(reinterpret_cast<char*>(localHeader.data()), 30);
-        if (!in || readU32(localHeader.data()) != 0x04034b50u) {
-            error = "missing local file header for " + entry.name;
-            return false;
-        }
-        const std::uint16_t localName = readU16(localHeader.data() + 26);
-        const std::uint16_t localExtra = readU16(localHeader.data() + 28);
-        const auto dataOffset = static_cast<std::uint64_t>(localOffset) + 30u + localName + localExtra;
-        if (dataOffset + uncompressed > length) {
-            error = "zip entry data is out of range (" + entry.name + ")";
-            return false;
-        }
-        entry.data.resize(uncompressed);
-        in.seekg(static_cast<std::streamoff>(dataOffset), std::ios::beg);
-        if (uncompressed > 0) {
-            in.read(reinterpret_cast<char*>(entry.data.data()), static_cast<std::streamsize>(uncompressed));
-        }
-        if (!in) {
-            error = "failed reading " + entry.name;
-            return false;
-        }
-        if (crc32(entry.data.data(), entry.data.size()) != crc) {
-            error = "crc mismatch for " + entry.name;
+        if (method != 0 && method != 8) {
+            error = "zip compression method is not supported (" + entry.name + ")";
             return false;
         }
         entries.push_back(std::move(entry));
     }
     error.clear();
+    return true;
+}
+
+bool ZipArchive::readEntry(const std::string& path, const ZipIndexEntry& entry, std::vector<std::uint8_t>& data,
+                           std::string& error) {
+    if (entry.uncompressed > 512ull * 1024ull * 1024ull) {
+        error = "zip entry is larger than 512 MB (" + entry.name + ")";
+        return false;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        error = "cannot open " + path;
+        return false;
+    }
+    in.seekg(0, std::ios::end);
+    const auto length = static_cast<std::uint64_t>(in.tellg());
+    std::vector<std::uint8_t> localHeader(30);
+    in.seekg(static_cast<std::streamoff>(entry.localOffset), std::ios::beg);
+    in.read(reinterpret_cast<char*>(localHeader.data()), 30);
+    if (!in || readU32(localHeader.data()) != 0x04034b50u) {
+        error = "missing local file header for " + entry.name;
+        return false;
+    }
+    const std::uint16_t localName = readU16(localHeader.data() + 26);
+    const std::uint16_t localExtra = readU16(localHeader.data() + 28);
+    const auto dataOffset = static_cast<std::uint64_t>(entry.localOffset) + 30u + localName + localExtra;
+    if (dataOffset + entry.compressed > length) {
+        error = "zip entry data is out of range (" + entry.name + ")";
+        return false;
+    }
+    std::vector<std::uint8_t> compressed(entry.compressed);
+    in.seekg(static_cast<std::streamoff>(dataOffset), std::ios::beg);
+    if (entry.compressed > 0) {
+        in.read(reinterpret_cast<char*>(compressed.data()), static_cast<std::streamsize>(entry.compressed));
+    }
+    if (!in) {
+        error = "failed reading " + entry.name;
+        return false;
+    }
+    if (entry.uncompressed == 0) {
+        data.clear();
+        error.clear();
+        return true;
+    }
+    data.assign(entry.uncompressed, 0);
+    if (entry.method == 0) {
+        if (entry.compressed != entry.uncompressed) {
+            error = "stored zip entry has inconsistent sizes (" + entry.name + ")";
+            return false;
+        }
+        data = std::move(compressed);
+    } else if (!inflateZip(compressed.data(), compressed.size(), data, error)) {
+        if (error.empty()) {
+            error = "deflate failed for " + entry.name;
+        }
+        return false;
+    }
+    if (crc32(data.data(), data.size()) != entry.crc) {
+        error = "crc mismatch for " + entry.name;
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+bool ZipArchive::read(const std::string& path, std::vector<ZipEntry>& entries, std::string& error) {
+    std::vector<ZipIndexEntry> indexed;
+    if (!index(path, indexed, error)) {
+        return false;
+    }
+    entries.clear();
+    entries.reserve(indexed.size());
+    for (const ZipIndexEntry& item : indexed) {
+        ZipEntry entry;
+        entry.name = item.name;
+        if (!readEntry(path, item, entry.data, error)) {
+            return false;
+        }
+        entries.push_back(std::move(entry));
+    }
     return true;
 }
 
