@@ -1225,6 +1225,57 @@ TEST_CASE("commission gantt shows the pick and the zone block", "[plc]") {
     REQUIRE_FALSE(scene.findSignal("r1_start")->flag);
 }
 
+TEST_CASE("mcd compat line extends the cylinder and turns the suction on", "[plc]") {
+    sim::Scene scene;
+    sim::buildMcdCompatLine(scene);
+    REQUIRE(scene.softPlc.cycles.size() == 3);
+    const auto suction = scene.findByName("Suction");
+    REQUIRE(suction != nullptr);
+    const auto suctionParent = suction->parent.lock();
+    REQUIRE(suctionParent != nullptr);
+    REQUIRE(suctionParent->name == "Cylinder");
+    auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
+    sim::Simulation simulation(scene, *engine);
+    sim::SoftPlcRuntime plc;
+    sim::LogicMachine logic;
+    std::string error;
+    simulation.setHooks([&] { REQUIRE(plc.start(scene.softPlc, error)); },
+                        [&](double dt) {
+                            plc.scan(scene, simulation.time(), dt);
+                            logic.step(scene, dt);
+                        },
+                        [] {});
+    simulation.play();
+    for (int i = 0; i < 80 && simulation.time() < 1.0; ++i) {
+        simulation.tick(0.02);
+    }
+    REQUIRE(simulation.time() >= 0.95);
+    REQUIRE(scene.findSignal("photo")->flag);
+    REQUIRE(scene.findSignal("extend")->flag);
+    REQUIRE(scene.findSignal("vacuum")->flag);
+    REQUIRE_FALSE(scene.findSignal("belt_run")->flag);
+    const auto cylinder = scene.findByName("Cylinder");
+    REQUIRE(cylinder->mech.command > 40);
+    const sim::Operation* stroke = nullptr;
+    const sim::Operation* vacuum = nullptr;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.kind != sim::OpKind::Task) {
+            continue;
+        }
+        if (operation.name == "伸出") {
+            stroke = &operation;
+        } else if (operation.name == "吸取") {
+            vacuum = &operation;
+        }
+    }
+    REQUIRE(stroke != nullptr);
+    REQUIRE(stroke->station == "气缸");
+    REQUIRE(stroke->seconds > 0.1);
+    REQUIRE(vacuum != nullptr);
+    REQUIRE(vacuum->station == "吸盘");
+    REQUIRE(vacuum->seconds > 0.2);
+}
+
 TEST_CASE("scan log exports time, scan number, and signals", "[plc]") {
     const std::string csv = sim::softPlcScanCsv(
         {"softplc started", "t=0.000 #1 Z1_Occupied=0", "t=0.350 #36 R1_Start=0 Z1_Occupied=1", "t=0.400 #40 D0=1,2"});

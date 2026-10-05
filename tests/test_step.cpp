@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 
 using Catch::Approx;
@@ -108,4 +109,52 @@ TEST_CASE("optional local robot STEP exposes the NX assembly") {
     REQUIRE(findName(rootProduct, "394.088-10.105.40"));
     REQUIRE(findName(rootProduct, "394.088-10.104.50"));
     REQUIRE(result.triangleCount > 1000);
+}
+
+TEST_CASE("nx prt teaching parts are not step files", "[mcd]") {
+    const auto root = std::filesystem::path(SIM_SOURCE_DIR) / "testdata/local/mcd";
+    const auto lift = root / "cylinder" / "气缸举升.prt";
+    const auto blank = root / "stamping" / "工件.prt";
+    const auto cup = root / "suction" / "使用吸盘吸取产品.prt";
+    const auto eye = root / "stamping" / "光电传感器.prt";
+    if (!std::filesystem::exists(lift) || !std::filesystem::exists(cup)) {
+        SKIP("testdata/local/mcd is not present");
+    }
+    auto head = [](const std::filesystem::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        std::string bytes(16, '\0');
+        input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        bytes.resize(static_cast<std::size_t>(input.gcount()));
+        return bytes;
+    };
+    REQUIRE(head(lift).rfind("SPLMSSTR", 0) == 0);
+    REQUIRE(head(cup).rfind("SPLMSSTR", 0) == 0);
+    const std::string compound = head(blank);
+    REQUIRE(static_cast<unsigned char>(compound[0]) == 0xD0);
+    REQUIRE(static_cast<unsigned char>(compound[1]) == 0xCF);
+    const std::string sensor = head(eye);
+    REQUIRE(sensor.find("ISO-10303-21") == std::string::npos);
+    sim::Scene scene;
+    sim::StepImporter importer;
+    const sim::ImportResult result = importer.importFile(cup.string(), scene);
+    REQUIRE_FALSE(result.ok);
+    REQUIRE(result.triangleCount == 0);
+    REQUIRE(result.meshCount == 0);
+}
+
+TEST_CASE("cartesian gantry step imports a real mesh", "[mcd]") {
+    const auto path = std::filesystem::path(SIM_SOURCE_DIR) / "testdata/local/mcd/palletizer" / "Cartesian Gantry Palletizing.stp";
+    if (!std::filesystem::exists(path)) {
+        SKIP("testdata/local/mcd gantry step is not present");
+    }
+    sim::Scene scene;
+    sim::StepImporter importer;
+    const sim::ImportResult result = importer.importFile(path.string(), scene);
+    std::cout << "gantry nodes=" << result.nodeCount << " meshes=" << result.meshCount
+              << " triangles=" << result.triangleCount << " ms=" << result.elapsedMs << "\n";
+    INFO(result.message);
+    REQUIRE(result.ok);
+    REQUIRE(result.meshCount > 0);
+    REQUIRE(result.triangleCount > 1000);
+    REQUIRE(result.nodeCount > 1);
 }
