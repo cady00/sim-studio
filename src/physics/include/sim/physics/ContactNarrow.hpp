@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sim/collision/Likelihood.hpp"
 #include "sim/core/Math.hpp"
 #include "sim/core/Mesh.hpp"
 
@@ -32,7 +33,29 @@ TriangleBvh buildTriangleBvh(const MeshData& mesh);
 
 // World-space axis-aligned box against a mesh. `world` maps mesh-local points into the scene.
 // Up to `limit` contacts. Parallel triangles are kept when their points are spatially apart.
-std::vector<NarrowContact> queryBoxMesh(const TriangleBvh& bvh, const Mat4& world, Vec3 boxCenter, Vec3 boxHalf, int limit);
+// The walk order is part of the greedy merge, so this function stays exhaustive.
+// `satTests`, when set, counts separating-axis tests.
+std::vector<NarrowContact> queryBoxMesh(const TriangleBvh& bvh, const Mat4& world, Vec3 boxCenter, Vec3 boxHalf, int limit,
+                                       int* satTests = nullptr);
+
+// Last confirmed triangle. -1 means the previous query missed.
+struct NarrowMemory {
+    int triangle = -1;
+};
+
+struct NarrowDetectStats {
+    int candidates = 0;
+    int tested = 0;
+    bool hit = false;
+    int triangle = -1;
+};
+
+// Same candidate set and the same separating-axis test as `queryBoxMesh`.
+// Leaves are ordered by `model` (distance, then the previous hit) and the walk
+// returns at the first confirmed overlap. A null model uses distance-and-previous.
+// The boolean matches `queryBoxMesh` being non-empty for any positive limit.
+bool detectBoxMesh(const TriangleBvh& bvh, const Mat4& world, Vec3 boxCenter, Vec3 boxHalf, const ICollisionLikelihood* model,
+                   NarrowMemory& memory, NarrowDetectStats* stats = nullptr);
 
 // Both meshes carry a BVH. Even entries push the first mesh out of the second.
 // The following entry is the same point with the opposite normal.
