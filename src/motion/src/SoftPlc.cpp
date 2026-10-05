@@ -24,7 +24,7 @@ bool tagBool(const PlcTag* tag) {
     if (tag->forced) {
         return forcedBool(*tag);
     }
-    if (tag->kind == PlcValueKind::Timer) {
+    if (tag->kind == PlcValueKind::Timer || tag->kind == PlcValueKind::Counter) {
         return tag->done;
     }
     if (tag->kind == PlcValueKind::Int) {
@@ -42,13 +42,20 @@ const char* bit(bool value) { return value ? "1" : "0"; }
 
 void resetSoftPlcTimers(SoftPlcDocument& doc) {
     for (PlcTag& tag : doc.tags) {
-        if (tag.kind != PlcValueKind::Timer) {
+        if (tag.kind == PlcValueKind::Timer) {
+            tag.elapsed = 0;
+            tag.done = false;
+            if (!tag.forced) {
+                tag.flag = false;
+            }
             continue;
         }
-        tag.elapsed = 0;
-        tag.done = false;
-        if (!tag.forced) {
-            tag.flag = false;
+        if (tag.kind == PlcValueKind::Counter) {
+            tag.integer = 0;
+            tag.done = false;
+            if (!tag.forced) {
+                tag.flag = false;
+            }
         }
     }
 }
@@ -63,6 +70,7 @@ bool SoftPlcRuntime::start(const SoftPlcDocument& doc, std::string& error) {
     log_.clear();
     opcWarned_.clear();
     previous_.clear();
+    rungPower_.clear();
     error.clear();
     note("softplc started");
     return true;
@@ -75,6 +83,7 @@ void SoftPlcRuntime::stop() {
     log_.clear();
     opcWarned_.clear();
     previous_.clear();
+    rungPower_.clear();
 }
 
 void SoftPlcRuntime::note(const std::string& line) {
@@ -125,7 +134,7 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
             continue;
         }
         PlcTag* tag = findPlcTag(doc, binding.address);
-        if (tag == nullptr || tag->forced || tag->kind == PlcValueKind::Timer) {
+        if (tag == nullptr || tag->forced || tag->kind == PlcValueKind::Timer || tag->kind == PlcValueKind::Counter) {
             continue;
         }
         bool got = false;
@@ -162,14 +171,78 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
         }
     }
 
-    for (const PlcRung& rung : doc.rungs) {
-        bool power = true;
-        for (const PlcContact& contact : rung.series) {
-            const bool on = tagBool(findPlcTag(doc, contact.address));
-            power = power && (contact.normallyOpen ? on : !on);
+    auto previousLevel = [this](const std::string& address) {
+        const Image* image = previous(address);
+        return image != nullptr && image->flag;
+    };
+    auto contactOn = [&](const PlcContact& contact) {
+        const bool now = tagBool(findPlcTag(doc, contact.address));
+        const bool was = previousLevel(contact.address);
+        if (contact.edge == "rising") {
+            return !was && now;
         }
+        if (contact.edge == "falling") {
+            return was && !now;
+        }
+        return contact.normallyOpen ? now : !now;
+    };
+    auto branchOn = [&](const std::vector<PlcContact>& series) {
+        for (const PlcContact& contact : series) {
+            if (!contactOn(contact)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    auto rungOn = [&](const PlcRung& rung) {
+        if (rung.parallel.empty()) {
+            return branchOn(rung.series);
+        }
+        bool any = false;
+        bool saw = false;
+        if (!rung.series.empty()) {
+            any = branchOn(rung.series);
+            saw = true;
+        }
+        for (const std::vector<PlcContact>& branch : rung.parallel) {
+            if (branch.empty()) {
+                continue;
+            }
+            any = any || branchOn(branch);
+            saw = true;
+        }
+        return saw ? any : true;
+    };
+
+    std::size_t rungIndex = 0;
+    for (const PlcRung& rung : doc.rungs) {
+        const bool power = rungOn(rung);
+        const bool wasPower = rungIndex < rungPower_.size() && rungPower_[rungIndex] != 0;
+        if (rungPower_.size() <= rungIndex) {
+            rungPower_.resize(rungIndex + 1, 0);
+        }
+        rungPower_[rungIndex] = power ? 1 : 0;
+        ++rungIndex;
         PlcTag* coil = findPlcTag(doc, rung.coil);
         if (coil == nullptr || coil->forced) {
+            continue;
+        }
+        if (rung.action == "ctu" && coil->kind == PlcValueKind::Counter) {
+            if (power && !wasPower) {
+                coil->integer += 1;
+            }
+            const auto preset = static_cast<std::int64_t>(std::llround(std::max(coil->preset, 0.0)));
+            coil->done = coil->integer >= preset;
+            coil->flag = coil->done;
+            continue;
+        }
+        if (rung.action == "ctr" && coil->kind == PlcValueKind::Counter) {
+            if (power) {
+                coil->integer = 0;
+                const auto preset = static_cast<std::int64_t>(std::llround(std::max(coil->preset, 0.0)));
+                coil->done = coil->integer >= preset;
+                coil->flag = coil->done;
+            }
             continue;
         }
         if (rung.action == "ton" && coil->kind == PlcValueKind::Timer) {
@@ -226,6 +299,8 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
                 changed = std::abs(before->real - real) > 1e-9;
             } else if (tag.kind == PlcValueKind::Timer) {
                 changed = before->done != tag.done;
+            } else if (tag.kind == PlcValueKind::Counter) {
+                changed = before->integer != integer || before->done != tag.done;
             } else {
                 changed = before->flag != now;
             }
@@ -238,7 +313,7 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
         }
         changes += tag.address;
         changes += '=';
-        if (tag.kind == PlcValueKind::Int) {
+        if (tag.kind == PlcValueKind::Int || tag.kind == PlcValueKind::Counter) {
             changes += std::to_string(integer);
         } else if (tag.kind == PlcValueKind::Real) {
             char buf[32];
@@ -258,8 +333,8 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
     for (const PlcTag& tag : doc.tags) {
         Image image;
         image.address = tag.address;
-        image.flag = tag.kind == PlcValueKind::Bool ? (tag.forced ? tag.forceFlag : tag.flag) : tag.flag;
-        image.integer = tag.forced ? tag.forceInteger : tag.integer;
+        image.flag = tagBool(&tag);
+        image.integer = tag.forced && tag.kind != PlcValueKind::Bool ? tag.forceInteger : tag.integer;
         image.real = tag.forced ? tag.forceReal : tag.real;
         image.done = tag.done;
         previous_.push_back(std::move(image));
@@ -274,7 +349,7 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
             continue;
         }
         if (!binding.device.empty()) {
-            if (tag->kind == PlcValueKind::Int) {
+            if (tag->kind == PlcValueKind::Int || tag->kind == PlcValueKind::Counter) {
                 scene.upsertSignal(binding.device, SignalType::Int).integer = tag->forced ? tag->forceInteger : tag->integer;
             } else if (tag->kind == PlcValueKind::Real) {
                 scene.upsertSignal(binding.device, SignalType::Real).real = tag->forced ? tag->forceReal : tag->real;
@@ -282,13 +357,14 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
                 scene.upsertSignal(binding.device, SignalType::Bool).flag = tagBool(tag);
             }
         }
-        if (!binding.opcNode.empty() && (tag->kind == PlcValueKind::Bool || tag->kind == PlcValueKind::Timer)) {
+        if (!binding.opcNode.empty() &&
+            (tag->kind == PlcValueKind::Bool || tag->kind == PlcValueKind::Timer || tag->kind == PlcValueKind::Counter)) {
             const bool value = tagBool(tag);
             writeOpc(binding.opcNode, value);
         }
     }
     for (const PlcTag& tag : doc.tags) {
-        if (tag.kind != PlcValueKind::Timer) {
+        if (tag.kind != PlcValueKind::Timer && tag.kind != PlcValueKind::Counter) {
             continue;
         }
         scene.upsertSignal("plc_" + tag.address, SignalType::Bool).flag = tagBool(&tag);

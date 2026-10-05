@@ -65,6 +65,8 @@ private:
     std::vector<std::string> log_;
     std::vector<std::string> opcWarned_;
     std::vector<Image> previous_;
+    // Rung power from the previous scan, so CTU sees one rising edge per pulse.
+    std::vector<unsigned char> rungPower_;
 };
 
 // Reserved adapter. available() is false and start() fails. scan() does nothing

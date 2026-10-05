@@ -24,6 +24,13 @@ sim::PlcTag* addTag(sim::SoftPlcDocument& doc, const char* address, sim::PlcValu
     return &doc.tags.back();
 }
 
+sim::PlcContact levelContact(const char* address, bool normallyOpen) {
+    sim::PlcContact contact;
+    contact.address = address;
+    contact.normallyOpen = normallyOpen;
+    return contact;
+}
+
 void bind(sim::SoftPlcDocument& doc, const char* device, const char* address, const char* direction) {
     sim::PlcBinding binding;
     binding.device = device;
@@ -54,15 +61,15 @@ TEST_CASE("soft plc scans bool int real and timer on the simulation clock") {
     bind(doc, "gap", "D1", "out");
 
     sim::PlcRung ton;
-    ton.series.push_back({"I0.0", true});
+    ton.series.push_back(levelContact("I0.0", true));
     ton.coil = "T0";
     ton.action = "ton";
     sim::PlcRung extend;
-    extend.series.push_back({"T0", true});
+    extend.series.push_back(levelContact("T0", true));
     extend.coil = "Q0.0";
     extend.action = "out";
     sim::PlcRung belt;
-    belt.series.push_back({"I0.0", false});
+    belt.series.push_back(levelContact("I0.0", false));
     belt.coil = "Q0.1";
     belt.action = "out";
     sim::PlcRung moveInt;
@@ -70,7 +77,7 @@ TEST_CASE("soft plc scans bool int real and timer on the simulation clock") {
     moveInt.action = "move";
     moveInt.literal = 42;
     sim::PlcRung moveReal;
-    moveReal.series.push_back({"Q0.0", true});
+    moveReal.series.push_back(levelContact("Q0.0", true));
     moveReal.coil = "D1";
     moveReal.action = "move";
     moveReal.literal = 12.5;
@@ -146,7 +153,7 @@ TEST_CASE("soft plc opc exchange is optional and logged when disconnected") {
     output.opcNode = "10002";
     scene.softPlc.bindings = {input, output};
     sim::PlcRung rung;
-    rung.series.push_back({"I0.0", true});
+    rung.series.push_back(levelContact("I0.0", true));
     rung.coil = "Q0.0";
     rung.action = "out";
     scene.softPlc.rungs.push_back(rung);
@@ -202,7 +209,7 @@ TEST_CASE("soft plc document round trips through the project file") {
     bind(scene.softPlc, "photo", "I0.0", "in");
     scene.softPlc.bindings.back().opcNode = "10001";
     sim::PlcRung rung;
-    rung.series.push_back({"I0.0", false});
+    rung.series.push_back(levelContact("I0.0", false));
     rung.coil = "T0";
     rung.action = "ton";
     scene.softPlc.rungs.push_back(rung);
@@ -308,4 +315,127 @@ TEST_CASE("commission line runs the soft plc ahead of the logic block") {
     REQUIRE_FALSE(gripper->mech.held.empty());
     REQUIRE_FALSE(plc.log().empty());
     REQUIRE(plc.scans() > 8);
+    const sim::PlcTag* counter = sim::findPlcTag(scene.softPlc, "C0");
+    const sim::PlcTag* latch = sim::findPlcTag(scene.softPlc, "M0.0");
+    REQUIRE(counter != nullptr);
+    REQUIRE(counter->integer == 1);
+    REQUIRE(counter->done);
+    REQUIRE(latch != nullptr);
+    REQUIRE(latch->flag);
+    REQUIRE(scene.findSignal("seen")->flag);
+    REQUIRE(scene.findSignal("parts")->integer == 1);
+}
+
+TEST_CASE("soft plc or branches edges and count up") {
+    sim::Scene scene;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    doc.backend = "softplc";
+    addTag(doc, "I0.0", sim::PlcValueKind::Bool);
+    addTag(doc, "I0.1", sim::PlcValueKind::Bool);
+    addTag(doc, "I0.2", sim::PlcValueKind::Bool);
+    addTag(doc, "I0.3", sim::PlcValueKind::Bool);
+    addTag(doc, "Q0.0", sim::PlcValueKind::Bool);
+    addTag(doc, "M0.0", sim::PlcValueKind::Bool);
+    sim::PlcTag* counter = addTag(doc, "C0", sim::PlcValueKind::Counter);
+    counter->preset = 3;
+    bind(doc, "extend", "Q0.0", "out");
+    bind(doc, "parts", "C0", "out");
+
+    sim::PlcRung gate;
+    gate.series.push_back(levelContact("I0.0", true));
+    gate.series.push_back(levelContact("I0.1", true));
+    sim::PlcContact side;
+    side.address = "I0.2";
+    gate.parallel.push_back({side});
+    gate.coil = "Q0.0";
+    gate.action = "out";
+
+    sim::PlcContact rising;
+    rising.address = "I0.0";
+    rising.edge = "rising";
+    sim::PlcContact falling;
+    falling.address = "I0.0";
+    falling.edge = "falling";
+
+    sim::PlcRung arrive;
+    arrive.series.push_back(rising);
+    arrive.coil = "M0.0";
+    arrive.action = "set";
+    sim::PlcRung leave;
+    leave.series.push_back(falling);
+    leave.coil = "M0.0";
+    leave.action = "reset";
+    sim::PlcRung count;
+    count.series.push_back(rising);
+    count.coil = "C0";
+    count.action = "ctu";
+    sim::PlcRung clear;
+    clear.series.push_back(levelContact("I0.3", true));
+    clear.coil = "C0";
+    clear.action = "ctr";
+    doc.rungs = {gate, arrive, leave, count, clear};
+
+    sim::SoftPlcRuntime runtime;
+    std::string error;
+    REQUIRE(runtime.start(doc, error));
+    auto setPhoto = [&](bool on) {
+        sim::findPlcTag(doc, "I0.0")->flag = on;
+        runtime.scan(scene, 0.0, 0.01);
+    };
+
+    setPhoto(false);
+    REQUIRE_FALSE(scene.findSignal("extend")->flag);
+    REQUIRE(counter->integer == 0);
+
+    sim::findPlcTag(doc, "I0.2")->flag = true;
+    runtime.scan(scene, 0.0, 0.01);
+    REQUIRE(scene.findSignal("extend")->flag);
+
+    sim::findPlcTag(doc, "I0.2")->flag = false;
+    sim::findPlcTag(doc, "I0.1")->flag = true;
+    setPhoto(true);
+    REQUIRE(scene.findSignal("extend")->flag);
+    REQUIRE(sim::findPlcTag(doc, "M0.0")->flag);
+    REQUIRE(counter->integer == 1);
+    REQUIRE_FALSE(counter->done);
+
+    runtime.scan(scene, 0.0, 0.01);
+    REQUIRE(counter->integer == 1);
+
+    setPhoto(false);
+    REQUIRE_FALSE(sim::findPlcTag(doc, "M0.0")->flag);
+    REQUIRE(counter->integer == 1);
+    REQUIRE_FALSE(scene.findSignal("extend")->flag);
+
+    setPhoto(true);
+    setPhoto(false);
+    setPhoto(true);
+    REQUIRE(counter->integer == 3);
+    REQUIRE(counter->done);
+    REQUIRE(scene.findSignal("parts")->integer == 3);
+    REQUIRE(scene.findSignal("plc_C0")->flag);
+
+    sim::findPlcTag(doc, "I0.3")->flag = true;
+    runtime.scan(scene, 0.0, 0.01);
+    REQUIRE(counter->integer == 0);
+    REQUIRE_FALSE(counter->done);
+
+    const nlohmann::json json = sim::softPlcToJson(doc);
+    sim::SoftPlcDocument loaded;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.rungs[0].parallel.size() == 1);
+    REQUIRE(loaded.rungs[1].series[0].edge == "rising");
+    REQUIRE(loaded.rungs[2].series[0].edge == "falling");
+    REQUIRE(loaded.tags.back().kind == sim::PlcValueKind::Counter);
+
+    sim::SoftPlcDocument rejected;
+    nlohmann::json badEdge;
+    nlohmann::json badRung;
+    badRung["coil"] = "Q0.0";
+    badRung["series"] = nlohmann::json::array({nlohmann::json{{"address", "I0.0"}, {"edge", "pulse"}}});
+    badEdge["rungs"] = nlohmann::json::array({badRung});
+    REQUIRE_FALSE(sim::softPlcFromJson(badEdge, rejected, error));
+    REQUIRE(error == "unknown plc contact edge");
 }

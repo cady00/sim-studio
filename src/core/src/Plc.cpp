@@ -27,12 +27,32 @@ nlohmann::json bindingToJson(const PlcBinding& binding) {
                           {"opcNode", binding.opcNode}};
 }
 
+nlohmann::json contactToJson(const PlcContact& contact) {
+    nlohmann::json json{{"address", contact.address}, {"normallyOpen", contact.normallyOpen}};
+    if (!contact.edge.empty()) {
+        json["edge"] = contact.edge;
+    }
+    return json;
+}
+
 nlohmann::json rungToJson(const PlcRung& rung) {
     nlohmann::json series = nlohmann::json::array();
     for (const PlcContact& contact : rung.series) {
-        series.push_back(nlohmann::json{{"address", contact.address}, {"normallyOpen", contact.normallyOpen}});
+        series.push_back(contactToJson(contact));
     }
-    return nlohmann::json{{"series", std::move(series)}, {"coil", rung.coil}, {"action", rung.action}, {"literal", rung.literal}};
+    nlohmann::json json{{"series", std::move(series)}, {"coil", rung.coil}, {"action", rung.action}, {"literal", rung.literal}};
+    if (!rung.parallel.empty()) {
+        nlohmann::json parallel = nlohmann::json::array();
+        for (const std::vector<PlcContact>& branch : rung.parallel) {
+            nlohmann::json contacts = nlohmann::json::array();
+            for (const PlcContact& contact : branch) {
+                contacts.push_back(contactToJson(contact));
+            }
+            parallel.push_back(std::move(contacts));
+        }
+        json["parallel"] = std::move(parallel);
+    }
+    return json;
 }
 
 }  // namespace
@@ -47,6 +67,8 @@ const char* plcValueKindName(PlcValueKind kind) {
             return "real";
         case PlcValueKind::Timer:
             return "timer";
+        case PlcValueKind::Counter:
+            return "counter";
     }
     return "bool";
 }
@@ -66,6 +88,10 @@ bool plcValueKindFromName(const std::string& name, PlcValueKind& out) {
     }
     if (name == "timer") {
         out = PlcValueKind::Timer;
+        return true;
+    }
+    if (name == "counter") {
+        out = PlcValueKind::Counter;
         return true;
     }
     return false;
@@ -179,20 +205,44 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
             rung.action = item.value("action", std::string("out"));
             rung.literal = item.value("literal", 0.0);
             if (rung.action != "out" && rung.action != "set" && rung.action != "reset" && rung.action != "ton" &&
-                rung.action != "move") {
+                rung.action != "move" && rung.action != "ctu" && rung.action != "ctr") {
                 error = "unknown plc rung action";
                 return false;
             }
-            if (item.contains("series") && item.at("series").is_array()) {
-                for (const auto& contactJson : item.at("series")) {
+            auto readContacts = [&](const nlohmann::json& list, std::vector<PlcContact>& out) {
+                if (!list.is_array()) {
+                    error = "plc contact list is not an array";
+                    return false;
+                }
+                for (const auto& contactJson : list) {
                     if (!contactJson.is_object()) {
                         continue;
                     }
                     PlcContact contact;
                     contact.address = contactJson.value("address", std::string{});
                     contact.normallyOpen = contactJson.value("normallyOpen", true);
+                    contact.edge = contactJson.value("edge", std::string{});
+                    if (!contact.edge.empty() && contact.edge != "rising" && contact.edge != "falling") {
+                        error = "unknown plc contact edge";
+                        return false;
+                    }
                     if (!contact.address.empty()) {
-                        rung.series.push_back(std::move(contact));
+                        out.push_back(std::move(contact));
+                    }
+                }
+                return true;
+            };
+            if (item.contains("series") && !readContacts(item.at("series"), rung.series)) {
+                return false;
+            }
+            if (item.contains("parallel") && item.at("parallel").is_array()) {
+                for (const auto& branchJson : item.at("parallel")) {
+                    std::vector<PlcContact> branch;
+                    if (!readContacts(branchJson, branch)) {
+                        return false;
+                    }
+                    if (!branch.empty()) {
+                        rung.parallel.push_back(std::move(branch));
                     }
                 }
             }

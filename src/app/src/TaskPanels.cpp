@@ -917,14 +917,39 @@ void PlcCards::reload() {
         backendBox_->setCurrentIndex(index < 0 ? 0 : index);
     }
     QString ladder;
-    for (const PlcRung& rung : scene_.softPlc.rungs) {
-        QStringList contacts;
-        if (rung.series.empty()) {
-            contacts << QStringLiteral("1");
+    auto contactText = [](const PlcContact& contact) {
+        const QString address = QString::fromStdString(contact.address);
+        if (contact.edge == "rising") {
+            return address + QStringLiteral("↑");
         }
-        for (const PlcContact& contact : rung.series) {
-            const QString address = QString::fromStdString(contact.address);
-            contacts << (contact.normallyOpen ? address : QStringLiteral("/") + address);
+        if (contact.edge == "falling") {
+            return address + QStringLiteral("↓");
+        }
+        return contact.normallyOpen ? address : QStringLiteral("/") + address;
+    };
+    auto branchText = [&](const std::vector<PlcContact>& series) {
+        if (series.empty()) {
+            return QStringLiteral("1");
+        }
+        QStringList contacts;
+        for (const PlcContact& contact : series) {
+            contacts << contactText(contact);
+        }
+        return contacts.join(QStringLiteral(" & "));
+    };
+    for (const PlcRung& rung : scene_.softPlc.rungs) {
+        QStringList branches;
+        if (rung.parallel.empty()) {
+            branches << branchText(rung.series);
+        } else {
+            if (!rung.series.empty()) {
+                branches << branchText(rung.series);
+            }
+            for (const std::vector<PlcContact>& branch : rung.parallel) {
+                if (!branch.empty()) {
+                    branches << branchText(branch);
+                }
+            }
         }
         QString action = QStringLiteral("输出");
         if (rung.action == "set") {
@@ -935,8 +960,12 @@ void PlcCards::reload() {
             action = QStringLiteral("定时");
         } else if (rung.action == "move") {
             action = QStringLiteral("传送 ") + QString::number(rung.literal);
+        } else if (rung.action == "ctu") {
+            action = QStringLiteral("计数");
+        } else if (rung.action == "ctr") {
+            action = QStringLiteral("计数复位");
         }
-        ladder += contacts.join(QStringLiteral(" & ")) + QStringLiteral(" → ") + action + QStringLiteral(" ") +
+        ladder += branches.join(QStringLiteral(" | ")) + QStringLiteral(" → ") + action + QStringLiteral(" ") +
                   QString::fromStdString(rung.coil) + QStringLiteral("\n");
     }
     if (ladderLabel_ != nullptr) {
@@ -964,7 +993,7 @@ void PlcCards::reload() {
         QString current = tag.flag ? QStringLiteral("1") : QStringLiteral("0");
         if (tag.kind == PlcValueKind::Timer) {
             current = tag.done ? QStringLiteral("1") : QString::number(tag.elapsed, 'f', 3);
-        } else if (tag.kind == PlcValueKind::Int) {
+        } else if (tag.kind == PlcValueKind::Int || tag.kind == PlcValueKind::Counter) {
             current = QString::number(tag.integer);
         } else if (tag.kind == PlcValueKind::Real) {
             current = QString::number(tag.real, 'f', 3);
@@ -1002,7 +1031,7 @@ void PlcCards::showRuntime(const std::vector<std::string>& log) {
         QString current = tag.flag ? QStringLiteral("1") : QStringLiteral("0");
         if (tag.kind == PlcValueKind::Timer) {
             current = tag.done ? QStringLiteral("1") : QString::number(tag.elapsed, 'f', 3);
-        } else if (tag.kind == PlcValueKind::Int) {
+        } else if (tag.kind == PlcValueKind::Int || tag.kind == PlcValueKind::Counter) {
             current = QString::number(tag.integer);
         } else if (tag.kind == PlcValueKind::Real) {
             current = QString::number(tag.real, 'f', 3);

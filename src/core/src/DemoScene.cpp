@@ -822,7 +822,13 @@ void buildCommissionLine(Scene& scene) {
     scene.signals.push_back(flag("extend"));
     scene.signals.push_back(flag("belt_run"));
     scene.signals.push_back(flag("grip"));
+    scene.signals.push_back(flag("seen"));
+    Signal parts;
+    parts.name = "parts";
+    parts.type = SignalType::Int;
+    scene.signals.push_back(parts);
     scene.signals.push_back(flag("plc_T0"));
+    scene.signals.push_back(flag("plc_C0"));
 
     auto tag = [](const char* address, PlcValueKind kind) {
         PlcTag item;
@@ -839,6 +845,10 @@ void buildCommissionLine(Scene& scene) {
     PlcTag timer = tag("T0", PlcValueKind::Timer);
     timer.preset = 0.02;
     scene.softPlc.tags.push_back(timer);
+    scene.softPlc.tags.push_back(tag("M0.0", PlcValueKind::Bool));
+    PlcTag counter = tag("C0", PlcValueKind::Counter);
+    counter.preset = 1;
+    scene.softPlc.tags.push_back(counter);
 
     auto bind = [](const char* device, const char* address, const char* direction) {
         PlcBinding item;
@@ -850,19 +860,53 @@ void buildCommissionLine(Scene& scene) {
     scene.softPlc.bindings.push_back(bind("photo", "I0.0", "in"));
     scene.softPlc.bindings.push_back(bind("extend", "Q0.0", "out"));
     scene.softPlc.bindings.push_back(bind("belt_run", "Q0.1", "out"));
+    scene.softPlc.bindings.push_back(bind("seen", "M0.0", "out"));
+    scene.softPlc.bindings.push_back(bind("parts", "C0", "out"));
 
+    auto level = [](const char* address, bool normallyOpen) {
+        PlcContact contact;
+        contact.address = address;
+        contact.normallyOpen = normallyOpen;
+        return contact;
+    };
+    auto edge = [](const char* address, const char* which) {
+        PlcContact contact;
+        contact.address = address;
+        contact.edge = which;
+        return contact;
+    };
+    PlcRung arrive;
+    arrive.series.push_back(edge("I0.0", "rising"));
+    arrive.coil = "M0.0";
+    arrive.action = "set";
+    PlcRung leave;
+    leave.series.push_back(edge("I0.0", "falling"));
+    leave.coil = "M0.0";
+    leave.action = "reset";
+    PlcRung count;
+    count.series.push_back(edge("I0.0", "rising"));
+    count.coil = "C0";
+    count.action = "ctu";
     PlcRung ton;
-    ton.series.push_back(PlcContact{"I0.0", true});
+    ton.series.push_back(level("I0.0", true));
     ton.coil = "T0";
     ton.action = "ton";
+    // Extend when the timer and the arrival latch are both on, or when the
+    // counter has seen the part and the photoeye is still blocked.
     PlcRung extendRung;
-    extendRung.series.push_back(PlcContact{"T0", true});
+    extendRung.series.push_back(level("T0", true));
+    extendRung.series.push_back(level("M0.0", true));
+    extendRung.parallel.push_back({level("C0", true), level("I0.0", true)});
     extendRung.coil = "Q0.0";
     extendRung.action = "out";
     PlcRung beltRung;
-    beltRung.series.push_back(PlcContact{"I0.0", false});
+    beltRung.series.push_back(level("I0.0", false));
+    beltRung.series.push_back(level("M0.0", false));
     beltRung.coil = "Q0.1";
     beltRung.action = "out";
+    scene.softPlc.rungs.push_back(std::move(arrive));
+    scene.softPlc.rungs.push_back(std::move(leave));
+    scene.softPlc.rungs.push_back(std::move(count));
     scene.softPlc.rungs.push_back(std::move(ton));
     scene.softPlc.rungs.push_back(std::move(extendRung));
     scene.softPlc.rungs.push_back(std::move(beltRung));

@@ -2775,12 +2775,15 @@ void MainWindow::beginHeadlessPlayback() {
             const Signal* grip = scene_.findSignal("grip");
             const auto cylinder = scene_.findByName("Cylinder");
             const double stroke = cylinder ? cylinder->mech.command : 0;
-            viewport_->setCallout(QStringLiteral("光电 %1 · 气缸 %2 mm · 输送 %3 · 吸盘 %4 · 扫描 %5")
+            const PlcTag* counter = findPlcTag(scene_.softPlc, "C0");
+            const PlcTag* latch = findPlcTag(scene_.softPlc, "M0.0");
+            viewport_->setCallout(QStringLiteral("光电 %1 · 气缸 %2 mm · 输送 %3 · 吸盘 %4 · 计数 %5 · 锁存 %6")
                                       .arg(photo != nullptr && photo->flag ? QStringLiteral("通") : QStringLiteral("断"))
                                       .arg(stroke, 0, 'f', 0)
                                       .arg(belt != nullptr && belt->flag ? QStringLiteral("运行") : QStringLiteral("停"))
                                       .arg(grip != nullptr && grip->flag ? QStringLiteral("合") : QStringLiteral("开"))
-                                      .arg(softPlc_.scans()));
+                                      .arg(counter != nullptr ? static_cast<int>(counter->integer) : 0)
+                                      .arg(latch != nullptr && latch->flag ? QStringLiteral("合") : QStringLiteral("开")));
             viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
             viewport_->fitAll();
         }

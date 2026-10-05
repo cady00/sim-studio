@@ -9,7 +9,7 @@
 namespace sim {
 
 // Process image of the built-in soft PLC. Addresses are names such as I0.0, Q0.0, M0.0, T0, D0.
-enum class PlcValueKind { Bool, Int, Real, Timer };
+enum class PlcValueKind { Bool, Int, Real, Timer, Counter };
 
 struct PlcTag {
     std::string address;
@@ -39,12 +39,20 @@ struct PlcBinding {
 struct PlcContact {
     std::string address;
     bool normallyOpen = true;
+    // empty is a level contact. rising is false-to-true since the previous scan.
+    // falling is true-to-false. An edge ignores normallyOpen.
+    std::string edge;
 };
 
-// One rung. series contacts are AND. An empty series is always true.
-// action: out, set, reset, ton, move. move writes literal into an int or real tag.
+// One rung. Contacts in one branch are AND. branches are OR.
+// series is the first branch. parallel holds the other branches.
+// With no parallel branches, an empty series is always true.
+// action: out, set, reset, ton, move, ctu, ctr.
+// move writes literal into an int or real tag.
+// ctu counts up on the rising edge of the rung. ctr clears the count while the rung is true.
 struct PlcRung {
     std::vector<PlcContact> series;
+    std::vector<std::vector<PlcContact>> parallel;
     std::string coil;
     std::string action = "out";
     double literal = 0;
