@@ -2300,6 +2300,7 @@ void MainWindow::loadDemo(const QString& name) {
     slipDemo_ = name == QStringLiteral("slip");
     mcdDemo_ = name == QStringLiteral("mcd");
     commissionDemo_ = name == QStringLiteral("commission") || name == QStringLiteral("commission-force");
+    mcdCompatDemo_ = name == QStringLiteral("mcd-compat");
     lineDemo_ = name == QStringLiteral("line") || name.startsWith(QStringLiteral("line-"));
     lineFocus_ = QStringLiteral("floor");
     if (name.endsWith(QStringLiteral("ops"))) {
@@ -2470,6 +2471,25 @@ void MainWindow::loadDemo(const QString& name) {
         }
         if (gantt_ != nullptr) {
             gantt_->reload();
+        }
+    } else if (mcdCompatDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildMcdCompatLine(scene_);
+        demoPath_.clear();
+        logic_.reset();
+        viewport_->setCallout(QStringLiteral("MCD 兼容 · 光电 I0.0 · 气缸 Q0.0 · 吸盘 Q0.2"));
+        applyTaskMode(5);
+        refreshSignals();
+        if (plc_ != nullptr) {
+            plc_->reload();
+        }
+        if (plcDock_ != nullptr) {
+            plcDock_->show();
+            plcDock_->raise();
+            resizeDocks({plcDock_}, {460}, Qt::Horizontal);
+        }
+        if (const auto cylinder = scene_.findByName("Cylinder")) {
+            scene_.setSelected(cylinder->id);
         }
     } else if (name == QStringLiteral("plc")) {
         demoPath_.clear();
@@ -3091,6 +3111,48 @@ void MainWindow::beginHeadlessPlayback() {
             if (gantt_ != nullptr) {
                 gantt_->reload();
             }
+            viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
+            viewport_->fitAll();
+        }
+        if (mcdCompatDemo_) {
+            const Signal* photo = scene_.findSignal("photo");
+            const Signal* vacuum = scene_.findSignal("vacuum");
+            const Signal* belt = scene_.findSignal("belt_run");
+            const auto cylinder = scene_.findByName("Cylinder");
+            const double stroke = cylinder ? cylinder->mech.command : 0;
+            viewport_->setCallout(QStringLiteral("光电 %1 · 气缸 %2 mm · 吸盘 %3 · 输送 %4")
+                                      .arg(photo != nullptr && photo->flag ? QStringLiteral("开") : QStringLiteral("关"))
+                                      .arg(stroke, 0, 'f', 0)
+                                      .arg(vacuum != nullptr && vacuum->flag ? QStringLiteral("开") : QStringLiteral("关"))
+                                      .arg(belt != nullptr && belt->flag ? QStringLiteral("走") : QStringLiteral("停")));
+            if (sequenceDock_ != nullptr) {
+                sequenceDock_->hide();
+            }
+            if (scopeDock_ != nullptr) {
+                scopeDock_->hide();
+            }
+            if (scriptDock_ != nullptr) {
+                scriptDock_->hide();
+            }
+            if (collisionDock_ != nullptr) {
+                collisionDock_->hide();
+            }
+            if (ganttDock_ != nullptr) {
+                ganttDock_->hide();
+            }
+            if (propertyDock_ != nullptr) {
+                propertyDock_->hide();
+            }
+            if (plcDock_ != nullptr) {
+                plcDock_->show();
+                plcDock_->raise();
+                resizeDocks({plcDock_}, {480}, Qt::Horizontal);
+            }
+            if (plc_ != nullptr) {
+                plc_->showRuntime(softPlc_.log());
+                plc_->reload();
+            }
+            refreshSignals();
             viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
             viewport_->fitAll();
         }

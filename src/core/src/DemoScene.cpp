@@ -926,6 +926,227 @@ void buildCommissionLine(Scene& scene) {
     scene.markClean();
 }
 
+void buildMcdCompatLine(Scene& scene) {
+    scene.clear();
+    scene.name = "mcd_compat";
+    scene.physicsDoc.engine = "builtin";
+
+    Mech floor;
+    floor.kind = MechKind::Collision;
+    floor.motion = BodyMotion::Anchored;
+    floor.kinematic = true;
+    floor.halfExtents = {360, 220, 8};
+    addBox(scene, "Floor", floor.halfExtents, {40, 0, -8}, {0.12, 0.14, 0.20}, floor);
+
+    Mech belt;
+    belt.kind = MechKind::Conveyor;
+    belt.motion = BodyMotion::Driven;
+    belt.kinematic = true;
+    belt.halfExtents = {320, 70, 16};
+    belt.direction = {1, 0, 0};
+    belt.speed = 180;
+    belt.signal = "belt_run";
+    addBox(scene, "Conveyor", belt.halfExtents, {40, 0, 16}, {0.18, 0.36, 0.72}, belt);
+
+    Mech part;
+    part.kind = MechKind::Rigid;
+    part.motion = BodyMotion::Surface;
+    part.surfaceRide = true;
+    part.kinematic = true;
+    // Bottom sits 4 mm into the belt (belt top is z = 32). A flush box is not
+    // a supporting contact, so the part would drop out of the light barrier.
+    part.halfExtents = {22, 22, 18};
+    addBox(scene, "Product", part.halfExtents, {80, 0, 46}, {0.93, 0.78, 0.22}, part);
+
+    Mech barrier;
+    barrier.kind = MechKind::LightBarrier;
+    barrier.axis = {0, 1, 0};
+    barrier.range = 220;
+    barrier.signal = "photo";
+    barrier.halfExtents = {8, 10, 24};
+    addBox(scene, "Photoeye", barrier.halfExtents, {80, -120, 58}, {0.95, 0.78, 0.22}, barrier);
+
+    Mech cylinder;
+    cylinder.kind = MechKind::Cylinder;
+    cylinder.axis = {0, 0, -1};
+    cylinder.lower = 0;
+    cylinder.upper = 70;
+    cylinder.maxSpeed = 350;
+    cylinder.throttle = 1;
+    cylinder.cushion = 0.04;
+    cylinder.signal = "extend";
+    cylinder.halfExtents = {16, 16, 28};
+    addBox(scene, "Cylinder", cylinder.halfExtents, {80, 0, 168}, {0.86, 0.42, 0.16}, cylinder);
+
+    Mech suction;
+    suction.kind = MechKind::Gripper;
+    suction.graspSignal = "vacuum";
+    suction.graspRadius = 36;
+    suction.direction = {0, 0, 0};
+    suction.halfExtents = {18, 18, 8};
+    addBox(scene, "Suction", suction.halfExtents, {80, 0, 120}, {0.45, 0.72, 0.86}, suction);
+    if (const auto cup = scene.findByName("Suction")) {
+        if (const auto rod = scene.findByName("Cylinder")) {
+            scene.reparent(cup->id, rod->id, false);
+            cup->local.translation = {0, 0, -40};
+        }
+    }
+
+    auto flag = [](const char* name) {
+        Signal signal;
+        signal.name = name;
+        signal.type = SignalType::Bool;
+        return signal;
+    };
+    scene.signals.push_back(flag("photo"));
+    scene.signals.push_back(flag("extend"));
+    scene.signals.push_back(flag("belt_run"));
+    scene.signals.push_back(flag("vacuum"));
+    scene.signals.push_back(flag("seen"));
+    Signal parts;
+    parts.name = "parts";
+    parts.type = SignalType::Int;
+    scene.signals.push_back(parts);
+    scene.signals.push_back(flag("plc_T0"));
+    scene.signals.push_back(flag("plc_T1"));
+    scene.signals.push_back(flag("plc_C0"));
+
+    auto tag = [](const char* address, PlcValueKind kind) {
+        PlcTag item;
+        item.address = address;
+        item.kind = kind;
+        return item;
+    };
+    scene.softPlc.enabled = true;
+    scene.softPlc.scanSeconds = 0.01;
+    scene.softPlc.backend = "softplc";
+    scene.softPlc.tags.push_back(tag("I0.0", PlcValueKind::Bool));
+    scene.softPlc.tags.push_back(tag("Q0.0", PlcValueKind::Bool));
+    scene.softPlc.tags.push_back(tag("Q0.1", PlcValueKind::Bool));
+    scene.softPlc.tags.push_back(tag("Q0.2", PlcValueKind::Bool));
+    PlcTag debounce = tag("T0", PlcValueKind::Timer);
+    debounce.preset = 0.02;
+    scene.softPlc.tags.push_back(debounce);
+    PlcTag settle = tag("T1", PlcValueKind::Timer);
+    settle.preset = 0.25;
+    scene.softPlc.tags.push_back(settle);
+    scene.softPlc.tags.push_back(tag("M0.0", PlcValueKind::Bool));
+    PlcTag counter = tag("C0", PlcValueKind::Counter);
+    counter.preset = 1;
+    scene.softPlc.tags.push_back(counter);
+    scene.softPlc.tags.push_back(tag("气缸_Extending", PlcValueKind::Bool));
+
+    auto bind = [](const char* device, const char* address, const char* direction) {
+        PlcBinding item;
+        item.device = device;
+        item.address = address;
+        item.direction = direction;
+        return item;
+    };
+    scene.softPlc.bindings.push_back(bind("photo", "I0.0", "in"));
+    scene.softPlc.bindings.push_back(bind("extend", "Q0.0", "out"));
+    scene.softPlc.bindings.push_back(bind("belt_run", "Q0.1", "out"));
+    scene.softPlc.bindings.push_back(bind("vacuum", "Q0.2", "out"));
+    scene.softPlc.bindings.push_back(bind("seen", "M0.0", "out"));
+    scene.softPlc.bindings.push_back(bind("parts", "C0", "out"));
+
+    auto level = [](const char* address, bool normallyOpen) {
+        PlcContact contact;
+        contact.address = address;
+        contact.normallyOpen = normallyOpen;
+        return contact;
+    };
+    auto edge = [](const char* address, const char* which) {
+        PlcContact contact;
+        contact.address = address;
+        contact.edge = which;
+        return contact;
+    };
+    PlcRung arrive;
+    arrive.series.push_back(edge("I0.0", "rising"));
+    arrive.coil = "M0.0";
+    arrive.action = "set";
+    PlcRung leave;
+    leave.series.push_back(edge("I0.0", "falling"));
+    leave.coil = "M0.0";
+    leave.action = "reset";
+    PlcRung count;
+    count.series.push_back(edge("I0.0", "rising"));
+    count.coil = "C0";
+    count.action = "ctu";
+    PlcRung ton;
+    ton.series.push_back(level("I0.0", true));
+    ton.coil = "T0";
+    ton.action = "ton";
+    PlcRung extendRung;
+    extendRung.series.push_back(level("T0", true));
+    extendRung.series.push_back(level("M0.0", true));
+    extendRung.coil = "Q0.0";
+    extendRung.action = "out";
+    PlcRung settleRung;
+    settleRung.series.push_back(level("Q0.0", true));
+    settleRung.coil = "T1";
+    settleRung.action = "ton";
+    PlcRung vacuumRung;
+    vacuumRung.series.push_back(level("T1", true));
+    vacuumRung.coil = "Q0.2";
+    vacuumRung.action = "out";
+    PlcRung beltRung;
+    beltRung.series.push_back(level("I0.0", false));
+    beltRung.series.push_back(level("M0.0", false));
+    beltRung.coil = "Q0.1";
+    beltRung.action = "out";
+    scene.softPlc.rungs.push_back(std::move(arrive));
+    scene.softPlc.rungs.push_back(std::move(leave));
+    scene.softPlc.rungs.push_back(std::move(count));
+    scene.softPlc.rungs.push_back(std::move(ton));
+    scene.softPlc.rungs.push_back(std::move(extendRung));
+    scene.softPlc.rungs.push_back(std::move(settleRung));
+    scene.softPlc.rungs.push_back(std::move(vacuumRung));
+    scene.softPlc.rungs.push_back(std::move(beltRung));
+
+    auto addRow = [&](const char* id, StationKind kind) {
+        Station station;
+        station.id = id;
+        station.name = id;
+        station.kind = kind;
+        station.resource = id;
+        scene.layout.stations.push_back(std::move(station));
+    };
+    addRow("输送", StationKind::Conveyor);
+    addRow("气缸", StationKind::Manual);
+    addRow("吸盘", StationKind::Manual);
+    PlcCycleRule beltCycle;
+    beltCycle.id = "belt_hold";
+    beltCycle.name = "锁存";
+    beltCycle.resource = "输送";
+    beltCycle.stationName = "输送";
+    beltCycle.startSignal = "M0.0";
+    beltCycle.endSignal = "M0.0";
+    beltCycle.endEdge = "falling";
+    PlcCycleRule strokeCycle;
+    strokeCycle.id = "cyl_extend";
+    strokeCycle.name = "伸出";
+    strokeCycle.resource = "气缸";
+    strokeCycle.stationName = "气缸";
+    strokeCycle.startSignal = "气缸_Extending";
+    strokeCycle.endSignal = "气缸_Extending";
+    strokeCycle.endEdge = "falling";
+    PlcCycleRule vacuumCycle;
+    vacuumCycle.id = "vacuum_on";
+    vacuumCycle.name = "吸取";
+    vacuumCycle.resource = "吸盘";
+    vacuumCycle.stationName = "吸盘";
+    vacuumCycle.startSignal = "Q0.2";
+    vacuumCycle.endSignal = "Q0.2";
+    vacuumCycle.endEdge = "falling";
+    scene.softPlc.cycles.push_back(std::move(beltCycle));
+    scene.softPlc.cycles.push_back(std::move(strokeCycle));
+    scene.softPlc.cycles.push_back(std::move(vacuumCycle));
+    scene.layout.title = "MCD 兼容";
+    scene.markClean();
+}
+
 void buildLargeField(Scene& scene, int parts, int triangles) {
     scene.clear();
     scene.name = "large_field";

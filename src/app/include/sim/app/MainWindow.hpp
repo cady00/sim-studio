@@ -154,6 +154,7 @@ private:
     bool slipDemo_ = false;
     bool mcdDemo_ = false;
     bool commissionDemo_ = false;
+    bool mcdCompatDemo_ = false;
     bool shelfReload_ = true;
     std::string demoPath_;
     std::string pendingPath_;
