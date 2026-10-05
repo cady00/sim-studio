@@ -34,6 +34,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -715,7 +716,13 @@ void PathTimeline::paintEvent(QPaintEvent*) {
 }
 
 PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
-    auto* layout = new QVBoxLayout(this);
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    scroll_ = new QScrollArea;
+    scroll_->setWidgetResizable(true);
+    scroll_->setFrameShape(QFrame::NoFrame);
+    auto* inner = new QWidget;
+    auto* layout = new QVBoxLayout(inner);
     auto* note = new QLabel("内置软 PLC 按仿真时钟扫描梯形图。映射表、扫描周期和强制写进工程。PLCSIM Advanced 只有适配器，启动会失败，不打开套接字。OPC UA 仍走现有客户端，节点号用十进制，只交换布尔。");
     note->setWordWrap(true);
     layout->addWidget(note);
@@ -837,7 +844,16 @@ PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scen
     logView_->setMinimumHeight(90);
     layout->addWidget(logView_);
     layout->addStretch(1);
+    scroll_->setWidget(inner);
+    outer->addWidget(scroll_);
     reload();
+}
+
+void PlcCards::revealMappings() {
+    reload();
+    if (scroll_ != nullptr && mapTable_ != nullptr) {
+        scroll_->ensureWidgetVisible(mapTable_, 0, 80);
+    }
 }
 
 void PlcCards::commit() {
@@ -927,13 +943,23 @@ void PlcCards::reload() {
         }
         return contact.normallyOpen ? address : QStringLiteral("/") + address;
     };
+    auto termText = [&](const PlcContact& contact) {
+        if (contact.alternatives.empty()) {
+            return contactText(contact);
+        }
+        QStringList terms{contactText(contact)};
+        for (const PlcContact& alternative : contact.alternatives) {
+            terms << contactText(alternative);
+        }
+        return QStringLiteral("(") + terms.join(QStringLiteral(" | ")) + QStringLiteral(")");
+    };
     auto branchText = [&](const std::vector<PlcContact>& series) {
         if (series.empty()) {
             return QStringLiteral("1");
         }
         QStringList contacts;
         for (const PlcContact& contact : series) {
-            contacts << contactText(contact);
+            contacts << termText(contact);
         }
         return contacts.join(QStringLiteral(" & "));
     };
@@ -982,6 +1008,7 @@ void PlcCards::reload() {
         table->item(row, column)->setText(text);
     };
     mapTable_->setRowCount(static_cast<int>(scene_.softPlc.bindings.size()));
+    mapTable_->setMinimumHeight(std::min(280, 36 + mapTable_->rowCount() * 26));
     for (int row = 0; row < mapTable_->rowCount(); ++row) {
         const PlcBinding& binding = scene_.softPlc.bindings[static_cast<std::size_t>(row)];
         ensure(mapTable_, row, 0, QString::fromStdString(binding.device));

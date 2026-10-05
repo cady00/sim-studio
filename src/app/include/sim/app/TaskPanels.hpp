@@ -17,6 +17,7 @@ class QGraphicsView;
 class QLabel;
 class QListWidget;
 class QPlainTextEdit;
+class QScrollArea;
 class QPushButton;
 class QTableWidget;
 
@@ -145,6 +146,8 @@ public:
     void commit();
     // Fills the debug cards from the scene document.
     void reload();
+    // Scrolls the mapping table into view after a robot import.
+    void revealMappings();
     // Refreshes the monitor column and the scan log without rewriting edits.
     void showRuntime(const std::vector<std::string>& log);
     // Decimal node id, bool only. False when the client has no session.
@@ -164,6 +167,7 @@ private:
     QCheckBox* enabledBox_ = nullptr;
     QDoubleSpinBox* scanSpin_ = nullptr;
     QComboBox* backendBox_ = nullptr;
+    QScrollArea* scroll_ = nullptr;
     QTableWidget* mapTable_ = nullptr;
     QTableWidget* forceTable_ = nullptr;
     QPlainTextEdit* logView_ = nullptr;

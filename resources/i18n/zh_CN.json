@@ -179,6 +179,7 @@
   "welcome.title": "应点仿真",
   "welcome.body": "从一个公开参数机器人的焊装单元开始：布局、焊点、路径、夹具、OPC UA 信号和节拍。",
   "welcome.openExample": "打开示例工程",
+  "welcome.commission": "虚拟调试演示",
   "dock.sequence": "序列",
   "motion.newResource": "新建设备",
   "motion.link": "连杆名",

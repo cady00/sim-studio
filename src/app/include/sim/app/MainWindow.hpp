@@ -71,6 +71,7 @@ public:
     void showCommandPalette();
     void showIntentBar();
     void showPlcConnection();
+    void showImportedPlc();
     void showAbout();
 
 protected:

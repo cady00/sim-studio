@@ -518,3 +518,109 @@ TEST_CASE("soft plc ctd counts down and tof holds after power drops") {
     REQUIRE(loaded.rungs[0].action == "ctd");
     REQUIRE(loaded.rungs[1].action == "tof");
 }
+
+TEST_CASE("soft plc or sits inside an and branch", "[plc]") {
+    sim::Scene scene;
+    sim::SoftPlcRuntime plc;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    auto tag = [&](const char* address) {
+        sim::PlcTag item;
+        item.address = address;
+        item.kind = sim::PlcValueKind::Bool;
+        doc.tags.push_back(item);
+    };
+    tag("I0.0");
+    tag("I0.1");
+    tag("I0.2");
+    tag("Q0.0");
+    sim::PlcContact gate = levelContact("I0.0", true);
+    sim::PlcContact either = levelContact("I0.1", true);
+    either.alternatives.push_back(levelContact("I0.2", true));
+    sim::PlcRung rung;
+    rung.series.push_back(gate);
+    rung.series.push_back(either);
+    rung.coil = "Q0.0";
+    rung.action = "out";
+    doc.rungs.push_back(rung);
+
+    auto pulse = [&](bool a, bool b, bool c) {
+        sim::findPlcTag(doc, "I0.0")->flag = a;
+        sim::findPlcTag(doc, "I0.1")->flag = b;
+        sim::findPlcTag(doc, "I0.2")->flag = c;
+        std::string error;
+        REQUIRE(plc.start(doc, error));
+        plc.scan(scene, 0.01, 0.01);
+    };
+    pulse(false, true, true);
+    REQUIRE_FALSE(sim::findPlcTag(doc, "Q0.0")->flag);
+    pulse(true, false, false);
+    REQUIRE_FALSE(sim::findPlcTag(doc, "Q0.0")->flag);
+    pulse(true, true, false);
+    REQUIRE(sim::findPlcTag(doc, "Q0.0")->flag);
+    pulse(true, false, true);
+    REQUIRE(sim::findPlcTag(doc, "Q0.0")->flag);
+
+    const nlohmann::json json = sim::softPlcToJson(doc);
+    sim::SoftPlcDocument loaded;
+    std::string error;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.rungs[0].series[1].alternatives.size() == 1);
+    REQUIRE(loaded.rungs[0].series[1].alternatives[0].address == "I0.2");
+
+    nlohmann::json nested = json;
+    nested["rungs"][0]["series"][1]["or"][0]["or"] = nlohmann::json::array({nlohmann::json{{"address", "I0.3"}}});
+    REQUIRE_FALSE(sim::softPlcFromJson(nested, loaded, error));
+    REQUIRE(error == "plc contact or does not nest");
+}
+
+TEST_CASE("imported robot drafts unwired plc tags", "[plc]") {
+    sim::SoftPlcDocument doc;
+    sim::KinematicResource robot;
+    robot.name = "kr420r3080_4";
+    sim::appendRobotPlcDraft(doc, robot);
+
+    auto bound = [&](const char* address) -> const sim::PlcBinding* {
+        for (const sim::PlcBinding& binding : doc.bindings) {
+            if (binding.address == address) {
+                return &binding;
+            }
+        }
+        return nullptr;
+    };
+    for (const char* address : {"R1_AtHome", "R1_Busy", "R1_Fault"}) {
+        const sim::PlcTag* tag = sim::findPlcTag(doc, address);
+        REQUIRE(tag != nullptr);
+        REQUIRE_FALSE(tag->forced);
+        const sim::PlcBinding* binding = bound(address);
+        REQUIRE(binding != nullptr);
+        REQUIRE(binding->device.empty());
+        REQUIRE(binding->direction == "in");
+    }
+    for (const char* address : {"R1_Start", "R1_Grip"}) {
+        const sim::PlcBinding* binding = bound(address);
+        REQUIRE(binding != nullptr);
+        REQUIRE(binding->device.empty());
+        REQUIRE(binding->direction == "out");
+    }
+
+    sim::KinematicResource track;
+    track.name = "irbt6004_0_d_10m_01";
+    sim::KinJoint axis;
+    axis.externalName = "E1";
+    axis.externalKind = "track";
+    axis.motion = sim::JointMotion::Prismatic;
+    track.joints.push_back(axis);
+    sim::appendRobotPlcDraft(doc, track);
+    REQUIRE(sim::findPlcTag(doc, "E1_InPos") != nullptr);
+    REQUIRE(bound("E1_InPos")->direction == "in");
+    REQUIRE(bound("E1_InPos")->device.empty());
+    REQUIRE(sim::findPlcTag(doc, "R2_AtHome") == nullptr);
+
+    sim::KinematicResource second;
+    second.name = "kr6";
+    sim::appendRobotPlcDraft(doc, second);
+    REQUIRE(sim::findPlcTag(doc, "R2_Start") != nullptr);
+    REQUIRE(sim::findPlcTag(doc, "R3_Start") == nullptr);
+}

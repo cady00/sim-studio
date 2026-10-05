@@ -179,6 +179,7 @@
   "welcome.title": "Ondot Sim",
   "welcome.body": "Open a weld cell built from a public-parameter robot: layout, welds, path, clamp, OPC UA signals, and cycle time.",
   "welcome.openExample": "Open example project",
+  "welcome.commission": "Virtual commissioning demo",
   "dock.sequence": "Sequence",
   "motion.newResource": "New resource",
   "motion.link": "Link name",

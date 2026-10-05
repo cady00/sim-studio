@@ -437,9 +437,13 @@ void MainWindow::buildUi() {
     auto* welcomeOpen = new QPushButton(welcome_);
     welcomeOpen->setObjectName("welcome.openExample");
     connect(welcomeOpen, &QPushButton::clicked, this, [this] { loadDemo(QStringLiteral("cell")); });
+    auto* welcomeCommission = new QPushButton(welcome_);
+    welcomeCommission->setObjectName("welcome.commission");
+    connect(welcomeCommission, &QPushButton::clicked, this, [this] { loadDemo(QStringLiteral("commission")); });
     welcomeLayout->addWidget(welcomeTitle);
     welcomeLayout->addWidget(welcomeBody);
     welcomeLayout->addWidget(welcomeOpen);
+    welcomeLayout->addWidget(welcomeCommission);
     welcome_->setStyleSheet(QStringLiteral("QFrame#welcome { background: #1b2133; border: 1px solid #2a3550; border-radius: 8px; }"));
 
     tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
@@ -923,6 +927,9 @@ void MainWindow::retranslate() {
     }
     if (auto* open = findChild<QPushButton*>("welcome.openExample")) {
         open->setText(trk("welcome.openExample"));
+    }
+    if (auto* commission = findChild<QPushButton*>("welcome.commission")) {
+        commission->setText(trk("welcome.commission"));
     }
     const bool zh = i18n_.locale() == "zh_CN";
     if (floor_ != nullptr) {
@@ -1441,6 +1448,12 @@ void MainWindow::importJt(const QString& path) {
         status += QString::fromStdString(result.message.substr(cojt));
     }
     statusLabel_->setText(status);
+    for (const KinematicResource& resource : scene_.resources) {
+        appendRobotPlcDraft(scene_.softPlc, resource);
+    }
+    if (plc_ != nullptr) {
+        plc_->reload();
+    }
     if (!screenshotPath_.isEmpty()) {
         resizeDocks({treeDock_, propertyDock_}, {460, 280}, Qt::Horizontal);
         QTimer::singleShot(1000, this, &MainWindow::captureScreenshot);
@@ -1552,6 +1565,7 @@ QString MainWindow::importLibraryEntries(const std::vector<RobotLibraryEntry>& e
                 }
             }
             if (!replaced) {
+                appendRobotPlcDraft(scene_.softPlc, resource);
                 scene_.resources.push_back(std::move(resource));
             }
         }
@@ -3028,7 +3042,7 @@ void MainWindow::updateWelcome() {
         return;
     }
     const int boxWidth = std::min(520, std::max(280, viewport_->width() - 48));
-    const int boxHeight = std::min(240, std::max(180, viewport_->height() / 3));
+    const int boxHeight = std::min(320, std::max(240, viewport_->height() / 3));
     const QPoint origin = viewport_->mapTo(this, QPoint(0, 0));
     welcome_->setGeometry(origin.x() + std::max(12, (viewport_->width() - boxWidth) / 2),
                           origin.y() + std::max(12, (viewport_->height() - boxHeight) / 2), boxWidth, boxHeight);
@@ -3139,6 +3153,26 @@ void MainWindow::showCommandPalette() {
     }
     positionFloaters();
     palette_->openFor(&scene_);
+}
+
+void MainWindow::showImportedPlc() {
+    applyTaskMode(5);
+    for (QDockWidget* dock : {treeDock_, propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_,
+                              pathDock_, scopeDock_, physicsDock_, floorDock_, operationDock_, ganttDock_, sequenceDock_}) {
+        if (dock != nullptr) {
+            dock->hide();
+        }
+    }
+    if (plcDock_ != nullptr) {
+        plcDock_->show();
+        plcDock_->raise();
+        resizeDocks({plcDock_}, {720}, Qt::Horizontal);
+    }
+    QTimer::singleShot(300, this, [this] {
+        if (plc_ != nullptr) {
+            plc_->revealMappings();
+        }
+    });
 }
 
 void MainWindow::showPlcConnection() {
