@@ -1422,7 +1422,7 @@ void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int 
         return;
     }
     projectPath_.clear();
-    viewport_->setStandardView(StandardView::Iso);
+    viewport_->setStandardView(startupView_);
     viewport_->fitAll();
     QString status = trk("msg.importOk").arg(nodes).arg(meshes).arg(triangles).arg(QString::number(elapsedMs, 'f', 0));
     if (!report.isEmpty()) {
@@ -1725,6 +1725,8 @@ void MainWindow::showScripting() {
 }
 
 void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path; }
+
+void MainWindow::setStartupView(StandardView view) { startupView_ = view; }
 
 void MainWindow::arrangeLineDocks() {
     if (floorDock_ == nullptr || operationDock_ == nullptr || ganttDock_ == nullptr) {

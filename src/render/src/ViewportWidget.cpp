@@ -145,27 +145,55 @@ void ViewportWidget::drawGrid() {
         bounds = scene_->worldBounds();
     }
     double step = 100.0;
-    double half = 1000.0;
+    double centerX = 0;
+    double centerY = 0;
+    double halfX = step * 16.0;
+    double halfY = step * 16.0;
+    double z = 0;
     if (bounds.valid) {
-        const double extent = std::max({std::abs(bounds.min.x), std::abs(bounds.max.x), std::abs(bounds.min.y),
-                                        std::abs(bounds.max.y), bounds.diagonal(), 10.0});
-        const double raw = std::pow(10.0, std::floor(std::log10(extent / 8.0)));
+        const double spanX = std::max(bounds.max.x - bounds.min.x, 10.0);
+        const double spanY = std::max(bounds.max.y - bounds.min.y, 10.0);
+        const double extent = std::max({spanX, spanY, 10.0});
+        const double raw = std::pow(10.0, std::floor(std::log10(std::max(extent / 8.0, 1e-6))));
         step = std::clamp(raw, 1.0, 1000.0);
-        half = step * 16.0;
+        centerX = std::round(((bounds.min.x + bounds.max.x) * 0.5) / step) * step;
+        centerY = std::round(((bounds.min.y + bounds.max.y) * 0.5) / step) * step;
+        const double margin = step * 2.0;
+        halfX = std::max(std::abs(bounds.max.x - centerX), std::abs(bounds.min.x - centerX)) + margin;
+        halfY = std::max(std::abs(bounds.max.y - centerY), std::abs(bounds.min.y - centerY)) + margin;
+        halfX = std::ceil(halfX / step) * step;
+        halfY = std::ceil(halfY / step) * step;
+        // A cell whose lowest solid sits clearly above z=0 keeps file coordinates.
+        // The grid moves to that floor so the machine is not drawn over an origin patch.
+        if (bounds.min.z > step) {
+            z = bounds.min.z - std::min(step * 0.02, 2.0);
+        }
     }
     LineBatch lines;
     const Vec3 minor{0.22f, 0.24f, 0.28f};
     const Vec3 major{0.34f, 0.37f, 0.44f};
-    const int count = static_cast<int>(std::round(half / step));
-    for (int i = -count; i <= count; ++i) {
-        const double coordinate = i * step;
-        const Vec3 color = (i % 5 == 0) ? major : minor;
-        pushLine(lines, {coordinate, -half, 0}, color);
-        pushLine(lines, {coordinate, half, 0}, color);
-        pushLine(lines, {-half, coordinate, 0}, color);
-        pushLine(lines, {half, coordinate, 0}, color);
+    const auto majorAt = [](double coordinate, double spacing) {
+        long index = std::lround(coordinate / spacing) % 5;
+        if (index < 0) {
+            index += 5;
+        }
+        return index == 0;
+    };
+    const int countX = static_cast<int>(std::round(halfX / step));
+    const int countY = static_cast<int>(std::round(halfY / step));
+    for (int i = -countX; i <= countX; ++i) {
+        const double x = centerX + static_cast<double>(i) * step;
+        const Vec3 color = majorAt(x, step) ? major : minor;
+        pushLine(lines, {x, centerY - halfY, z}, color);
+        pushLine(lines, {x, centerY + halfY, z}, color);
     }
-    const double axis = half * 0.35;
+    for (int j = -countY; j <= countY; ++j) {
+        const double y = centerY + static_cast<double>(j) * step;
+        const Vec3 color = majorAt(y, step) ? major : minor;
+        pushLine(lines, {centerX - halfX, y, z}, color);
+        pushLine(lines, {centerX + halfX, y, z}, color);
+    }
+    const double axis = std::clamp(std::min(halfX, halfY) * 0.28, step * 3.0, step * 12.0);
     pushLine(lines, {0, 0, 0}, {0.85, 0.28, 0.30});
     pushLine(lines, {axis, 0, 0}, {0.85, 0.28, 0.30});
     pushLine(lines, {0, 0, 0}, {0.30, 0.75, 0.42});

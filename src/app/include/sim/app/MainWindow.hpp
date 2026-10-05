@@ -2,6 +2,7 @@
 
 #include "sim/core/I18n.hpp"
 #include "sim/core/Scene.hpp"
+#include "sim/render/Camera.hpp"
 #include "sim/io/EditHistory.hpp"
 #include "sim/io/RobotLibrary.hpp"
 #include "sim/motion/Motion.hpp"
@@ -58,6 +59,7 @@ public:
     const Scene& document() const { return scene_; }
     bool importing() const { return importing_; }
     void setScreenshotPath(const QString& path);
+    void setStartupView(StandardView view);
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
@@ -217,6 +219,7 @@ private:
     QPushButton* cancelButton_ = nullptr;
     QString projectPath_;
     QString screenshotPath_;
+    StandardView startupView_ = StandardView::Iso;
     QString benchShot_;
     int benchTries_ = 0;
     int benchPhase_ = 0;
