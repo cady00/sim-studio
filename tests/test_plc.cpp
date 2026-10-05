@@ -994,6 +994,7 @@ TEST_CASE("cycle edges refresh a pick bar and a blocking bar", "[plc]") {
     REQUIRE(loaded.cycles[0].endSignal == "R1_AtHome");
     REQUIRE(loaded.cycles[0].busySignal == "R1_Busy");
     REQUIRE(loaded.cycles[0].blockSignal == "Z1_Occupied");
+    REQUIRE(loaded.cycles[0].resource.empty());
     json["cycles"][0]["endEdge"] = "falling";
     json["cycles"][0]["startEdge"] = "nope";
     sim::SoftPlcDocument edges;
@@ -1006,14 +1007,146 @@ TEST_CASE("cycle edges refresh a pick bar and a blocking bar", "[plc]") {
     REQUIRE(legacy.cycles.empty());
 }
 
+TEST_CASE("cycle resources share a row and the busiest resource is the bottleneck", "[plc]") {
+    sim::Scene scene;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    for (const char* address : {"A", "B", "C"}) {
+        sim::PlcTag tag;
+        tag.address = address;
+        doc.tags.push_back(std::move(tag));
+    }
+    auto rule = [](const char* id, const char* name, const char* resource, const char* signal) {
+        sim::PlcCycleRule item;
+        item.id = id;
+        item.name = name;
+        item.resource = resource;
+        item.stationName = resource;
+        item.startSignal = signal;
+        item.startEdge = "rising";
+        item.endSignal = signal;
+        item.endEdge = "falling";
+        return item;
+    };
+    doc.cycles.push_back(rule("belt", "锁存", "输送", "A"));
+    doc.cycles.push_back(rule("release", "放行", "输送", "C"));
+    doc.cycles.push_back(rule("stroke", "伸出", "气缸", "B"));
+
+    auto set = [&](const char* address, bool flag) { sim::findPlcTag(doc, address)->flag = flag; };
+    sim::SoftPlcRuntime plc;
+    std::string error;
+    REQUIRE(plc.start(doc, error));
+    plc.scan(scene, 0.00, 0.01);
+    set("A", true);
+    plc.scan(scene, 0.10, 0.01);
+    set("B", true);
+    plc.scan(scene, 0.20, 0.01);
+    set("C", true);
+    plc.scan(scene, 0.30, 0.01);
+    set("C", false);
+    plc.scan(scene, 0.40, 0.01);
+    set("B", false);
+    plc.scan(scene, 0.50, 0.01);
+    set("A", false);
+    plc.scan(scene, 1.00, 0.01);
+
+    double belt = 0;
+    double stroke = 0;
+    int beltTasks = 0;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.kind != sim::OpKind::Task) {
+            continue;
+        }
+        if (operation.station == "输送") {
+            belt += operation.seconds;
+            ++beltTasks;
+        } else if (operation.station == "气缸") {
+            stroke += operation.seconds;
+        }
+    }
+    REQUIRE(beltTasks == 2);
+    REQUIRE(belt == Approx(1.00));
+    REQUIRE(stroke == Approx(0.30));
+    REQUIRE(sim::findStation(scene.layout, "输送")->resource == "输送");
+    REQUIRE(sim::findStation(scene.layout, "气缸")->name == "气缸");
+    const sim::ScheduleReport report = sim::scheduleOperations(scene.operations, scene.layout);
+    REQUIRE(report.error.empty());
+    REQUIRE(report.bottleneck == "输送");
+    REQUIRE(report.bottleneckName == "输送");
+
+    nlohmann::json json = sim::softPlcToJson(scene.softPlc);
+    sim::SoftPlcDocument loaded;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.cycles[0].resource == "输送");
+    json["cycles"][0].erase("resource");
+    sim::SoftPlcDocument legacy;
+    REQUIRE(sim::softPlcFromJson(json, legacy, error));
+    REQUIRE(legacy.cycles[0].resource.empty());
+}
+
+TEST_CASE("a cylinder resource writes the extending bit for the stroke", "[plc]") {
+    sim::Scene scene;
+    auto cylinder = scene.makeNode(sim::NodeKind::Part, "Cylinder");
+    cylinder->mech.kind = sim::MechKind::Cylinder;
+    cylinder->mech.signal = "extend";
+    cylinder->mech.lower = 0;
+    cylinder->mech.upper = 80;
+    cylinder->mech.command = 0;
+    scene.addChild(scene.root(), cylinder);
+    scene.upsertSignal("extend", sim::SignalType::Bool).flag = false;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    sim::PlcCycleRule rule;
+    rule.id = "stroke";
+    rule.name = "伸出";
+    rule.resource = "气缸";
+    rule.stationName = "气缸";
+    rule.startSignal = "气缸_Extending";
+    rule.endSignal = "气缸_Extending";
+    rule.endEdge = "falling";
+    doc.cycles.push_back(rule);
+
+    sim::SoftPlcRuntime plc;
+    std::string error;
+    REQUIRE(plc.start(doc, error));
+    plc.scan(scene, 0.00, 0.01);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "气缸_Extending") != nullptr);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "气缸_Extending")->flag);
+
+    scene.findSignal("extend")->flag = true;
+    plc.scan(scene, 0.10, 0.01);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "气缸_Extending")->flag);
+    cylinder->mech.command = 40;
+    plc.scan(scene, 0.40, 0.01);
+    cylinder->mech.command = 79.2;
+    plc.scan(scene, 0.50, 0.01);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "气缸_Extending")->flag);
+    const sim::Operation* stroke = nullptr;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.kind == sim::OpKind::Task && operation.name == "伸出") {
+            stroke = &operation;
+        }
+    }
+    REQUIRE(stroke != nullptr);
+    REQUIRE(stroke->seconds == Approx(0.40));
+    REQUIRE(stroke->station == "气缸");
+}
+
 TEST_CASE("commission gantt shows the pick and the zone block", "[plc]") {
     sim::Scene scene;
     sim::buildCommissionLine(scene);
     sim::attachCommissionRobot(scene);
-    REQUIRE(scene.softPlc.cycles.size() == 1);
-    REQUIRE(scene.softPlc.cycles[0].startSignal == "R1_Start");
-    REQUIRE(scene.softPlc.cycles[0].blockSignal == "Z1_Occupied");
+    REQUIRE(scene.softPlc.cycles.size() == 3);
+    REQUIRE(scene.softPlc.cycles[0].resource == "输送");
+    REQUIRE(scene.softPlc.cycles[1].resource == "气缸");
+    REQUIRE(scene.softPlc.cycles[2].resource == "机器人");
+    REQUIRE(scene.softPlc.cycles[2].blockSignal == "Z1_Occupied");
     REQUIRE(scene.layout.title == "虚拟调试");
+    REQUIRE(sim::findStation(scene.layout, "输送") != nullptr);
+    REQUIRE(sim::findStation(scene.layout, "气缸") != nullptr);
+    REQUIRE(sim::findStation(scene.layout, "机器人") != nullptr);
     auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
     sim::Simulation simulation(scene, *engine);
     sim::SoftPlcRuntime plc;
@@ -1047,11 +1180,47 @@ TEST_CASE("commission gantt shows the pick and the zone block", "[plc]") {
     REQUIRE(pick->seconds > 0.15);
     REQUIRE(pick->seconds < 0.8);
     REQUIRE(block->seconds > 0.4);
-    REQUIRE(pick->station == "st_r1");
-    REQUIRE(sim::findStation(scene.layout, "st_r1")->name == "机器人");
+    REQUIRE(pick->station == "机器人");
+    const sim::Operation* latch = nullptr;
+    const sim::Operation* stroke = nullptr;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.kind != sim::OpKind::Task) {
+            continue;
+        }
+        if (operation.name == "锁存") {
+            latch = &operation;
+        } else if (operation.name == "伸出") {
+            stroke = &operation;
+        }
+    }
+    REQUIRE(latch != nullptr);
+    REQUIRE(stroke != nullptr);
+    REQUIRE(latch->station == "输送");
+    REQUIRE(latch->seconds > 0.7);
+    REQUIRE(stroke->station == "气缸");
+    REQUIRE(stroke->seconds > 0.12);
+    REQUIRE(stroke->seconds < 0.8);
     const sim::ScheduleReport report = sim::scheduleOperations(scene.operations, scene.layout);
     REQUIRE(report.error.empty());
     REQUIRE(report.makespan > pick->seconds + block->seconds - 0.05);
+    double busiest = -1;
+    for (const char* id : {"输送", "气缸", "机器人"}) {
+        double seconds = 0;
+        for (const sim::Operation& operation : scene.operations) {
+            if (operation.kind == sim::OpKind::Task && operation.station == id) {
+                seconds += operation.seconds;
+            }
+        }
+        busiest = std::max(busiest, seconds);
+    }
+    double marked = 0;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.kind == sim::OpKind::Task && operation.station == report.bottleneck) {
+            marked += operation.seconds;
+        }
+    }
+    REQUIRE(marked == Approx(busiest));
+    REQUIRE(report.bottleneckName == sim::findStation(scene.layout, report.bottleneck)->name);
     REQUIRE(scene.findSignal("Z1_Occupied")->flag);
     REQUIRE_FALSE(scene.findSignal("r1_start")->flag);
 }

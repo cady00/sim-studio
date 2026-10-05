@@ -2463,7 +2463,7 @@ void MainWindow::loadDemo(const QString& name) {
         if (ganttDock_ != nullptr) {
             ganttDock_->show();
             ganttDock_->raise();
-            resizeDocks({ganttDock_}, {280}, Qt::Vertical);
+            resizeDocks({ganttDock_}, {320}, Qt::Vertical);
         }
         if (operations_ != nullptr) {
             operations_->reload();
@@ -3032,22 +3032,28 @@ void MainWindow::beginHeadlessPlayback() {
             }
             const KinematicResource* robot = findResource(scene_.resources, "r1");
             const double shoulder = robot != nullptr && !robot->joints.empty() ? robot->joints.front().position : 0;
-            double pickSeconds = 0;
-            double blockSeconds = 0;
-            for (const Operation& operation : scene_.operations) {
-                if (operation.kind != OpKind::Task) {
+            const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+            QStringList rows;
+            for (const Station& station : scene_.layout.stations) {
+                double seconds = 0;
+                for (const Operation& operation : scene_.operations) {
+                    if (operation.kind != OpKind::Task || operation.timeSource != "plc" || operation.station != station.id) {
+                        continue;
+                    }
+                    seconds += operation.seconds;
+                }
+                if (seconds <= 1e-4) {
                     continue;
                 }
-                if (operation.timeNote == "干涉阻塞") {
-                    blockSeconds += operation.seconds;
-                } else if (operation.timeSource == "plc") {
-                    pickSeconds += operation.seconds;
-                }
+                const QString name = QString::fromStdString(station.name.empty() ? station.id : station.name);
+                rows << QStringLiteral("%1 %2 s").arg(name).arg(seconds, 0, 'f', 2);
             }
-            viewport_->setCallout(QStringLiteral("取放 %1 s · 干涉阻塞 %2 s · A1 %3°")
-                                      .arg(pickSeconds, 0, 'f', 2)
-                                      .arg(blockSeconds, 0, 'f', 2)
-                                      .arg(shoulder, 0, 'f', 0));
+            const QString busyName = QString::fromStdString(report.bottleneckName.empty() ? report.bottleneck : report.bottleneckName);
+            if (!busyName.isEmpty()) {
+                rows << QStringLiteral("瓶颈 %1").arg(busyName);
+            }
+            rows << QStringLiteral("A1 %1°").arg(shoulder, 0, 'f', 0);
+            viewport_->setCallout(rows.join(QStringLiteral(" · ")));
             if (sequenceDock_ != nullptr) {
                 sequenceDock_->hide();
             }
@@ -3077,7 +3083,7 @@ void MainWindow::beginHeadlessPlayback() {
             if (ganttDock_ != nullptr) {
                 ganttDock_->show();
                 ganttDock_->raise();
-                resizeDocks({ganttDock_}, {360}, Qt::Vertical);
+                resizeDocks({ganttDock_}, {420}, Qt::Vertical);
             }
             if (operations_ != nullptr) {
                 operations_->reload();

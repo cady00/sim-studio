@@ -581,10 +581,42 @@ void attachCommissionRobot(Scene& scene) {
     collision.address = "R1_Collision";
     collision.resource = resource.name;
     scene.softPlc.collisions.push_back(std::move(collision));
+    auto addRow = [&](const char* id, StationKind kind) {
+        if (findStation(scene.layout, id) != nullptr) {
+            return;
+        }
+        Station station;
+        station.id = id;
+        station.name = id;
+        station.kind = kind;
+        station.resource = id;
+        scene.layout.stations.push_back(std::move(station));
+    };
+    addRow("输送", StationKind::Conveyor);
+    addRow("气缸", StationKind::Manual);
+    addRow("机器人", StationKind::Robot);
+    PlcCycleRule beltCycle;
+    beltCycle.id = "belt_hold";
+    beltCycle.name = "锁存";
+    beltCycle.resource = "输送";
+    beltCycle.stationName = "输送";
+    beltCycle.startSignal = "M0.0";
+    beltCycle.startEdge = "rising";
+    beltCycle.endSignal = "M0.0";
+    beltCycle.endEdge = "falling";
+    PlcCycleRule strokeCycle;
+    strokeCycle.id = "cyl_extend";
+    strokeCycle.name = "伸出";
+    strokeCycle.resource = "气缸";
+    strokeCycle.stationName = "气缸";
+    strokeCycle.startSignal = "气缸_Extending";
+    strokeCycle.startEdge = "rising";
+    strokeCycle.endSignal = "气缸_Extending";
+    strokeCycle.endEdge = "falling";
     PlcCycleRule pickCycle;
     pickCycle.id = "r1_pick";
     pickCycle.name = "取放";
-    pickCycle.station = "st_r1";
+    pickCycle.resource = "机器人";
     pickCycle.stationName = "机器人";
     pickCycle.startSignal = "R1_Start";
     pickCycle.startEdge = "rising";
@@ -592,6 +624,8 @@ void attachCommissionRobot(Scene& scene) {
     pickCycle.endEdge = "rising";
     pickCycle.busySignal = "R1_Busy";
     pickCycle.blockSignal = "Z1_Occupied";
+    scene.softPlc.cycles.push_back(std::move(beltCycle));
+    scene.softPlc.cycles.push_back(std::move(strokeCycle));
     scene.softPlc.cycles.push_back(std::move(pickCycle));
     if (scene.layout.title.empty()) {
         scene.layout.title = "虚拟调试";
@@ -615,6 +649,7 @@ void attachCommissionRobot(Scene& scene) {
     ensureTag("M2.0");
     ensureTag("Z1_Occupied");
     ensureTag("R1_Collision");
+    ensureTag("气缸_Extending");
     if (PlcTag* home = findPlcTag(scene.softPlc, "R1_AtHome")) {
         home->flag = true;
     }

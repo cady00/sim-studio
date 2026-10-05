@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFontMetrics>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -682,7 +683,9 @@ void ViewportWidget::paintOverlay() {
     painter.drawText(faceRight_, Qt::AlignCenter, "右");
 
     if (!callout_.isEmpty()) {
-        const QRect box(24, 56, std::min(width() - 48, 460), 32);
+        const int textWidth = QFontMetrics(painter.font()).horizontalAdvance(callout_) + 24;
+        const int cap = std::max(180, width() - 48);
+        const QRect box(24, 56, std::clamp(textWidth, 180, cap), 32);
         painter.setPen(QColor(255, 178, 36));
         painter.setBrush(QColor(42, 32, 8, 210));
         painter.drawRoundedRect(box, 8, 8);

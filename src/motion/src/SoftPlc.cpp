@@ -452,6 +452,7 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
         note(changes.empty() ? std::string(buf) : std::string(buf) + " " + changes);
     }
 
+    noteResourceMotion(scene);
     trackCycles(scene, simTime);
 
     previous_.clear();
@@ -496,6 +497,82 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
     }
 }
 
+namespace {
+
+std::shared_ptr<SceneNode> cylinderForResource(Scene& scene, const std::string& name) {
+    if (name.empty()) {
+        return nullptr;
+    }
+    if (const auto named = scene.findByName(name)) {
+        return named->mech.kind == MechKind::Cylinder ? named : nullptr;
+    }
+    std::shared_ptr<SceneNode> found;
+    int cylinders = 0;
+    std::vector<std::shared_ptr<SceneNode>> stack{scene.root()};
+    while (!stack.empty()) {
+        const auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+        if (node->mech.kind == MechKind::Cylinder) {
+            ++cylinders;
+            found = node;
+        }
+    }
+    return cylinders == 1 ? found : nullptr;
+}
+
+}  // namespace
+
+void SoftPlcRuntime::noteResourceMotion(Scene& scene) {
+    for (const PlcCycleRule& rule : scene.softPlc.cycles) {
+        if (rule.resource.empty()) {
+            continue;
+        }
+        const std::string address = rule.resource + "_Extending";
+        const bool used = rule.startSignal == address || rule.endSignal == address || rule.busySignal == address ||
+                          rule.blockSignal == address;
+        if (!used) {
+            continue;
+        }
+        const auto node = cylinderForResource(scene, rule.resource);
+        if (!node) {
+            continue;
+        }
+        PlcTag* tag = findPlcTag(scene.softPlc, address);
+        if (tag == nullptr) {
+            PlcTag created;
+            created.address = address;
+            scene.softPlc.tags.push_back(std::move(created));
+            tag = findPlcTag(scene.softPlc, address);
+        }
+        if (tag == nullptr || tag->forced) {
+            continue;
+        }
+        bool commanded = false;
+        bool sawBinding = false;
+        for (const PlcBinding& binding : scene.softPlc.bindings) {
+            if (binding.direction == "out" && binding.device == node->mech.signal && !binding.address.empty()) {
+                commanded = tagBool(findPlcTag(scene.softPlc, binding.address));
+                sawBinding = true;
+                break;
+            }
+        }
+        if (!sawBinding && !node->mech.signal.empty()) {
+            if (const Signal* extend = scene.findSignal(node->mech.signal)) {
+                commanded = extend->flag;
+            }
+        }
+        const double goal = commanded ? node->mech.upper : node->mech.lower;
+        const bool shortOfGoal = std::abs(goal - node->mech.command) > 1.0;
+        tag->flag = commanded && shortOfGoal;
+    }
+}
+
 void SoftPlcRuntime::trackCycles(Scene& scene, double simTime) {
     auto level = [&](const std::string& address) { return tagBool(findPlcTag(scene.softPlc, address)); };
     auto edged = [&](const std::string& address, const std::string& which) {
@@ -522,12 +599,22 @@ void SoftPlcRuntime::trackCycles(Scene& scene, double simTime) {
         if (!trace.open && !trace.finished) {
             return;
         }
-        const std::string stationId = rule.station.empty() ? "st_plc" : rule.station;
+        const std::string stationId = !rule.resource.empty() ? rule.resource
+                                      : (rule.station.empty() ? std::string("st_plc") : rule.station);
         if (findStation(scene.layout, stationId) == nullptr) {
             Station station;
             station.id = stationId;
+            station.resource = rule.resource;
             station.name = rule.stationName.empty() ? (rule.name.empty() ? stationId : rule.name) : rule.stationName;
-            station.kind = StationKind::Robot;
+            station.kind = StationKind::Manual;
+            if (const auto node = scene.findByName(stationId)) {
+                if (node->mech.kind == MechKind::Conveyor) {
+                    station.kind = StationKind::Conveyor;
+                }
+            }
+            if (findResource(scene.resources, stationId) != nullptr) {
+                station.kind = StationKind::Robot;
+            }
             scene.layout.stations.push_back(std::move(station));
         }
         if (scene.layout.title.empty()) {
