@@ -14,7 +14,7 @@
 | 图片 | 自写 | PNG/JPEG 字节写入项目 ZIP |
 | URDF | 自写 | 连杆、转动/移动/固定/连续关节、盒子、圆柱、球体、STL/OBJ 网格视觉、惯性（质量、质心、惯量张量，千克和千克·米²）。网格按米再乘 scale 换成毫米。`package://` 不解析 |
 | XML | 自写 | 本地名 product/part/component/item、process/operation/task/activity、plant/resource/station/robot/equipment。这不是某家产线软件的完整模式 |
-| JT | 自写 | 8.x/9.x/10.x 文件头、TOC、zlib 与 XZ/LZMA 段、LSG 装配/变换/材质、量化 Tri-Strip，JT 9 拓扑压缩网格，以及 JT 10.0/10.5 带本地 GUID 头的拓扑 Tri-Strip（第 4 代 Int32 包、Lag1 量化或无损坐标、打包 Deering 或无损法向）。高度数面掩码、颜色和纹理绑定不解码。JT 9.1 的 Part 在计数前多一个 0 字节，读对之后 Range LOD 挂进装配树，场景留最细的一级。XT B-rep 不解码。不链接 JT Open Toolkit，也不链接 GPL/LGPL JT 库。父目录是 `.cojt` 时顺带挂上组件运动学 |
+| JT | 自写 | 8.x/9.x/10.x 文件头、TOC、zlib 与 XZ/LZMA 段、LSG 装配/变换/材质、量化 Tri-Strip，JT 9 拓扑压缩网格，以及 JT 10.0/10.5 带本地 GUID 头的拓扑 Tri-Strip（第 4 代 Int32 包、Lag1 量化或无损坐标、打包 Deering 或无损法向）。度数超过 64 的面掩码按字对齐的 UInt32 解开。颜色和纹理绑定不解码。JT 9.1 的 Part 在计数前多一个 0 字节，读对之后 Range LOD 挂进装配树，场景留最细的一级。XT B-rep 不解码。不链接 JT Open Toolkit，也不链接 GPL/LGPL JT 库。父目录是 `.cojt` 时顺带挂上组件运动学 |
 | COJT | 自写 | Process Simulate 组件目录。`kin_graph.xml` 的连杆和边，`motionparameters.e` 的速度、加速时间和区域，KUKA `$machine.dat` 的软限位、减速比速度、单主动轴耦合和 DH，以及 `.info` 限位。JT 实体按连杆名挂上。没有测得轴向时用 +Z，并写明。地轨做成外部轴 E1。不链接 Process Simulate |
 | USDA | 自写 | ASCII `.usda`。层级、局部变换、三角形网格、UsdPreviewSurface（基色、金属度、粗糙度）、UsdPhysics 刚体/碰撞/质量/关节，以及路径的时间采样。坐标保持毫米，`metersPerUnit = 0.001`。不链接 OpenUSD。二进制 crate 不读 |
 
