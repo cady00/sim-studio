@@ -8,7 +8,7 @@ inline constexpr const char* kVersion = "0.7.0";
 // QSettings and the crash-recovery directory keep this string so an existing
 // session still restores. It is not the window title.
 inline constexpr const char* kSettingsName = "Sim Studio";
-inline constexpr int kProjectFormatVersion = 10;
+inline constexpr int kProjectFormatVersion = 11;
 inline constexpr const char* kProjectFormatId = "simstudio.project";
 
 }  // namespace sim

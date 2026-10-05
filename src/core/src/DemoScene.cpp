@@ -746,6 +746,142 @@ void buildDeviceDemo(Scene& scene) {
     scene.markClean();
 }
 
+void buildCommissionLine(Scene& scene) {
+    scene.clear();
+    scene.name = "commission_line";
+    scene.physicsDoc.engine = "builtin";
+
+    Mech floor;
+    floor.kind = MechKind::Collision;
+    floor.motion = BodyMotion::Anchored;
+    floor.kinematic = true;
+    floor.halfExtents = {420, 280, 8};
+    addBox(scene, "Floor", floor.halfExtents, {40, -40, -8}, {0.12, 0.14, 0.20}, floor);
+
+    Mech belt;
+    belt.kind = MechKind::Conveyor;
+    belt.motion = BodyMotion::Driven;
+    belt.kinematic = true;
+    belt.halfExtents = {360, 70, 16};
+    belt.direction = {1, 0, 0};
+    belt.speed = 200;
+    belt.signal = "belt_run";
+    addBox(scene, "Conveyor", belt.halfExtents, {40, 0, 16}, {0.18, 0.36, 0.72}, belt);
+
+    Mech part;
+    part.kind = MechKind::Rigid;
+    part.motion = BodyMotion::Surface;
+    part.surfaceRide = true;
+    part.kinematic = true;
+    part.halfExtents = {24, 24, 18};
+    addBox(scene, "Part", part.halfExtents, {80, 0, 46}, {0.93, 0.78, 0.22}, part);
+
+    Mech barrier;
+    barrier.kind = MechKind::LightBarrier;
+    barrier.axis = {0, 1, 0};
+    barrier.range = 220;
+    barrier.signal = "photo";
+    barrier.halfExtents = {8, 10, 28};
+    addBox(scene, "Photoeye", barrier.halfExtents, {80, -130, 55}, {0.95, 0.78, 0.22}, barrier);
+
+    Mech cylinder;
+    cylinder.kind = MechKind::Cylinder;
+    cylinder.axis = {0, 1, 0};
+    cylinder.lower = 0;
+    cylinder.upper = 80;
+    cylinder.maxSpeed = 400;
+    cylinder.throttle = 1;
+    cylinder.cushion = 0.05;
+    cylinder.signal = "extend";
+    cylinder.halfExtents = {18, 36, 16};
+    addBox(scene, "Cylinder", cylinder.halfExtents, {80, -200, 48}, {0.86, 0.42, 0.16}, cylinder);
+
+    Mech gripper;
+    gripper.kind = MechKind::Gripper;
+    gripper.graspSignal = "grip";
+    gripper.graspRadius = 80;
+    gripper.halfExtents = {16, 22, 10};
+    addBox(scene, "Gripper", gripper.halfExtents, {240, -170, 88}, {0.72, 0.76, 0.82}, gripper);
+
+    Mech cup;
+    cup.kind = MechKind::Rigid;
+    cup.motion = BodyMotion::Free;
+    cup.autoMass = false;
+    cup.mass = 0.25;
+    cup.allowSleep = false;
+    cup.halfExtents = {14, 14, 12};
+    addBox(scene, "Cup", cup.halfExtents, {240, -170, 58}, {0.35, 0.72, 0.48}, cup);
+
+    auto flag = [](const char* name) {
+        Signal signal;
+        signal.name = name;
+        signal.type = SignalType::Bool;
+        return signal;
+    };
+    scene.signals.push_back(flag("photo"));
+    scene.signals.push_back(flag("extend"));
+    scene.signals.push_back(flag("belt_run"));
+    scene.signals.push_back(flag("grip"));
+    scene.signals.push_back(flag("plc_T0"));
+
+    auto tag = [](const char* address, PlcValueKind kind) {
+        PlcTag item;
+        item.address = address;
+        item.kind = kind;
+        return item;
+    };
+    scene.softPlc.enabled = true;
+    scene.softPlc.scanSeconds = 0.01;
+    scene.softPlc.backend = "softplc";
+    scene.softPlc.tags.push_back(tag("I0.0", PlcValueKind::Bool));
+    scene.softPlc.tags.push_back(tag("Q0.0", PlcValueKind::Bool));
+    scene.softPlc.tags.push_back(tag("Q0.1", PlcValueKind::Bool));
+    PlcTag timer = tag("T0", PlcValueKind::Timer);
+    timer.preset = 0.02;
+    scene.softPlc.tags.push_back(timer);
+
+    auto bind = [](const char* device, const char* address, const char* direction) {
+        PlcBinding item;
+        item.device = device;
+        item.address = address;
+        item.direction = direction;
+        return item;
+    };
+    scene.softPlc.bindings.push_back(bind("photo", "I0.0", "in"));
+    scene.softPlc.bindings.push_back(bind("extend", "Q0.0", "out"));
+    scene.softPlc.bindings.push_back(bind("belt_run", "Q0.1", "out"));
+
+    PlcRung ton;
+    ton.series.push_back(PlcContact{"I0.0", true});
+    ton.coil = "T0";
+    ton.action = "ton";
+    PlcRung extendRung;
+    extendRung.series.push_back(PlcContact{"T0", true});
+    extendRung.coil = "Q0.0";
+    extendRung.action = "out";
+    PlcRung beltRung;
+    beltRung.series.push_back(PlcContact{"I0.0", false});
+    beltRung.coil = "Q0.1";
+    beltRung.action = "out";
+    scene.softPlc.rungs.push_back(std::move(ton));
+    scene.softPlc.rungs.push_back(std::move(extendRung));
+    scene.softPlc.rungs.push_back(std::move(beltRung));
+
+    LogicBlock gripOn;
+    gripOn.name = "grip_on";
+    gripOn.runSignal = "extend";
+    gripOn.inputs.push_back("extend");
+    gripOn.outputs.push_back("grip");
+    LogicStep step;
+    LogicAction action;
+    action.kind = "set_output";
+    action.signal = "grip";
+    step.actions.push_back(action);
+    gripOn.steps.push_back(std::move(step));
+    scene.logicBlocks.push_back(std::move(gripOn));
+    scene.markClean();
+}
+
 void buildLargeField(Scene& scene, int parts, int triangles) {
     scene.clear();
     scene.name = "large_field";

@@ -371,6 +371,13 @@ void MainWindow::buildUi() {
 
     plc_ = new PlcCards(scene_, this);
     connect(plc_, &PlcCards::signalsImported, this, [this] { refreshSignals(); });
+    softPlc_.setOpcExchange([this](const std::string& node, bool write, bool& value, std::string& error) {
+        if (plc_ == nullptr) {
+            error = "OPC UA node is not connected";
+            return false;
+        }
+        return plc_->exchangeOpc(node, write, value, error);
+    });
     plcDock_ = new QDockWidget(this);
     plcDock_->setObjectName("dock.plc");
     plcDock_->setWidget(plc_);
@@ -1243,6 +1250,9 @@ void MainWindow::openProject(const QString& path) {
     }
     projectPath_ = path;
     scene_.markClean();
+    if (plc_ != nullptr) {
+        plc_->reload();
+    }
     viewport_->fitAll();
     refreshStatus();
     applyTaskMode(taskMode_);
@@ -1756,6 +1766,19 @@ void MainWindow::playSimulation() {
     }
     simulation_->setHooks([this] {
                               scripting_->onStart();
+                              if (plc_ != nullptr) {
+                                  plc_->commit();
+                              }
+                              resetSoftPlcTimers(scene_.softPlc);
+                              plcActive_ = scene_.softPlc.enabled;
+                              plcBackend_ = scene_.softPlc.backend == "plcsim" ? static_cast<IPlcBackend*>(&plcSim_)
+                                                                               : static_cast<IPlcBackend*>(&softPlc_);
+                              if (plcActive_) {
+                                  std::string plcError;
+                                  if (!plcBackend_->start(scene_.softPlc, plcError) && statusLabel_ != nullptr) {
+                                      statusLabel_->setText(QString::fromStdString(plcError));
+                                  }
+                              }
                               if (scope_ != nullptr) {
                                   scope_->clearTrace();
                                   scope_->sample(0);
@@ -1763,6 +1786,9 @@ void MainWindow::playSimulation() {
                           },
                           [this](double dt) {
                               scripting_->onStep(dt);
+                              if (plcActive_ && plcBackend_ != nullptr) {
+                                  plcBackend_->scan(scene_, simulation_->time(), dt);
+                              }
                               logic_.step(scene_, dt);
                               if (robot_ != nullptr) {
                                   robot_->step(dt);
@@ -1815,6 +1841,13 @@ void MainWindow::stopSimulation() {
         }
     }
     logic_.reset();
+    softPlc_.stop();
+    plcSim_.stop();
+    plcActive_ = false;
+    resetSoftPlcTimers(scene_.softPlc);
+    if (plc_ != nullptr) {
+        plc_->showRuntime(softPlc_.log());
+    }
     if (timeLabel_ != nullptr) {
         timeLabel_->setText(trk("status.simTime").arg(0.0, 0, 'f', 2));
     }
@@ -1868,6 +1901,10 @@ void MainWindow::onSimTick() {
     }
     if (scope_ != nullptr) {
         scope_->update();
+    }
+    if (plcActive_ && plc_ != nullptr) {
+        plc_->showRuntime(plcBackend_ != nullptr ? plcBackend_->log() : softPlc_.log());
+        refreshSignals();
     }
     const std::string log = scripting_->takeLog();
     if (!log.empty() && scriptLog_ != nullptr) {
@@ -2029,6 +2066,7 @@ void MainWindow::loadDemo(const QString& name) {
     meshDemo_ = name == QStringLiteral("mesh");
     slipDemo_ = name == QStringLiteral("slip");
     mcdDemo_ = name == QStringLiteral("mcd");
+    commissionDemo_ = name == QStringLiteral("commission");
     lineDemo_ = name == QStringLiteral("line") || name.startsWith(QStringLiteral("line-"));
     lineFocus_ = QStringLiteral("floor");
     if (name.endsWith(QStringLiteral("ops"))) {
@@ -2150,6 +2188,29 @@ void MainWindow::loadDemo(const QString& name) {
         }
         if (physicsDock_ != nullptr) {
             physicsDock_->raise();
+        }
+    } else if (commissionDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildCommissionLine(scene_);
+        demoPath_.clear();
+        logic_.reset();
+        viewport_->setCallout(QStringLiteral("软 PLC · 光电 I0.0 · 定时 T0 · 气缸 Q0.0 · 输送 Q0.1 · 吸盘 grip"));
+        applyTaskMode(5);
+        refreshSignals();
+        if (plc_ != nullptr) {
+            plc_->reload();
+        }
+        if (scope_ != nullptr) {
+            scope_->reload();
+        }
+        if (plcDock_ != nullptr) {
+            plcDock_->show();
+            plcDock_->raise();
+            resizeDocks({plcDock_}, {460}, Qt::Horizontal);
+        }
+        if (signalDock_ != nullptr) {
+            signalDock_->show();
+            signalDock_->raise();
         }
     } else if (name == QStringLiteral("plc")) {
         demoPath_.clear();
@@ -2623,6 +2684,34 @@ void MainWindow::beginHeadlessPlayback() {
         }
         viewport_->setStandardView(kr420TrackDemo_ ? StandardView::Front : StandardView::Iso);
         viewport_->fitAll();
+        if (commissionDemo_) {
+            if (propertyDock_ != nullptr) {
+                propertyDock_->hide();
+            }
+            if (scriptDock_ != nullptr) {
+                scriptDock_->hide();
+            }
+            if (collisionDock_ != nullptr) {
+                collisionDock_->hide();
+            }
+            if (plcDock_ != nullptr) {
+                plcDock_->show();
+                plcDock_->raise();
+                resizeDocks({plcDock_}, {480}, Qt::Horizontal);
+            }
+            if (scopeDock_ != nullptr) {
+                scopeDock_->show();
+                scopeDock_->raise();
+                resizeDocks({scopeDock_}, {220}, Qt::Vertical);
+            }
+            if (signalDock_ != nullptr) {
+                signalDock_->show();
+                resizeDocks({signalDock_}, {260}, Qt::Vertical);
+            }
+            if (scope_ != nullptr) {
+                scope_->reload();
+            }
+        }
         if (collisionDemo_ && collision_ != nullptr) {
             if (auto* dock = findChild<QDockWidget*>("dock.collision")) {
                 if (auto* signals = findChild<QDockWidget*>("dock.signals")) {
@@ -2672,6 +2761,28 @@ void MainWindow::beginHeadlessPlayback() {
                                           .arg(stats.solveMs, 0, 'f', 3)
                                           .arg(stats.continuous)
                                           .arg(QString::fromLatin1(physics_ ? physics_->backendName() : "")));
+        }
+        if (commissionDemo_) {
+            if (plc_ != nullptr) {
+                plc_->showRuntime(softPlc_.log());
+            }
+            refreshSignals();
+            if (scope_ != nullptr) {
+                scope_->update();
+            }
+            const Signal* photo = scene_.findSignal("photo");
+            const Signal* belt = scene_.findSignal("belt_run");
+            const Signal* grip = scene_.findSignal("grip");
+            const auto cylinder = scene_.findByName("Cylinder");
+            const double stroke = cylinder ? cylinder->mech.command : 0;
+            viewport_->setCallout(QStringLiteral("光电 %1 · 气缸 %2 mm · 输送 %3 · 吸盘 %4 · 扫描 %5")
+                                      .arg(photo != nullptr && photo->flag ? QStringLiteral("通") : QStringLiteral("断"))
+                                      .arg(stroke, 0, 'f', 0)
+                                      .arg(belt != nullptr && belt->flag ? QStringLiteral("运行") : QStringLiteral("停"))
+                                      .arg(grip != nullptr && grip->flag ? QStringLiteral("合") : QStringLiteral("开"))
+                                      .arg(softPlc_.scans()));
+            viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
+            viewport_->fitAll();
         }
         QTimer::singleShot(0, this, &MainWindow::captureScreenshot);
     });

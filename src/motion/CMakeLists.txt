@@ -3,6 +3,7 @@ add_library(sim_motion
     src/Solve.cpp
     src/Editor.cpp
     src/LogicMachine.cpp
+    src/SoftPlc.cpp
     src/RobotPlan.cpp
     src/Demos.cpp
     src/LinkSuggest.cpp

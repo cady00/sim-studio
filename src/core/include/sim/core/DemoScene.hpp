@@ -14,6 +14,8 @@ void buildMeshGapDemo(Scene& scene);
 void buildSlipDemo(Scene& scene);
 // Gear, cam, cylinder, gripper, sensors, and a source/sink. Logic writes the signals.
 void buildDeviceDemo(Scene& scene);
+// Photoeye, conveyor, cylinder, and gripper. The soft PLC ladder runs the line.
+void buildCommissionLine(Scene& scene);
 // Four-station example line. layout.example and ppr.example are true. The KR420 is a named proxy
 // unless a caller replaces the node with an imported model.
 void buildExampleLine(Scene& scene);
