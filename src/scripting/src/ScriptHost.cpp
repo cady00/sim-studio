@@ -325,8 +325,12 @@ PYBIND11_EMBEDDED_MODULE(simstudio, module) {
             ok = exportSceneStl(*scene, path, error);
         } else if (format == "gltf" || format == "glb") {
             ok = exportSceneGltf(*scene, path, error);
+        } else if (format == "usda" || format == "usd") {
+            const UsdIoResult written = exportSceneUsda(*scene, path);
+            ok = written.ok;
+            error = written.message;
         } else {
-            throw std::runtime_error("export format is gltf, glb, or stl");
+            throw std::runtime_error("export format is gltf, glb, stl, or usda");
         }
         if (!ok) {
             throw std::runtime_error(error.empty() ? "export failed" : error);

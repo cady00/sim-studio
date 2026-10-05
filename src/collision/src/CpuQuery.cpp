@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace sim {
 namespace {
@@ -265,6 +267,7 @@ public:
     void rebuild(const Scene& scene) override {
         parts_.clear();
         sdf_.clear();
+        previousHits_.clear();
         ready_ = true;
         if (!scene.root()) {
             bvh_.clear();
@@ -439,6 +442,63 @@ public:
         }
         return hits;
     }
+
+    bool overlaps(const Scene& scene, double clearanceMm) override {
+        if (!ready_) {
+            rebuild(scene);
+        } else {
+            refit(scene);
+        }
+        if (parts_.size() < 2) {
+            previousHits_.clear();
+            return false;
+        }
+        std::vector<std::pair<int, int>> pairs;
+        collectPairs(clearanceMm, pairs);
+        struct Ranked {
+            int i = 0;
+            int j = 0;
+            double score = 0;
+            std::uint64_t key = 0;
+        };
+        std::vector<Ranked> ranked;
+        ranked.reserve(pairs.size());
+        DistancePreviousLikelihood fallback;
+        ICollisionLikelihood& model = likelihood_ ? *likelihood_ : static_cast<ICollisionLikelihood&>(fallback);
+        for (const auto& [i, j] : pairs) {
+            if (!allowed(scene, parts_[static_cast<std::size_t>(i)].name, parts_[static_cast<std::size_t>(j)].name)) {
+                continue;
+            }
+            const std::uint64_t key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(i)) << 32) |
+                                      static_cast<std::uint32_t>(j);
+            const double gap = aabbSeparation(parts_[static_cast<std::size_t>(i)].bounds, parts_[static_cast<std::size_t>(j)].bounds);
+            ranked.push_back(Ranked{i, j, model.score(gap, previousHits_.count(key) != 0), key});
+        }
+        std::sort(ranked.begin(), ranked.end(), [](const Ranked& left, const Ranked& right) {
+            if (left.score < right.score) {
+                return true;
+            }
+            if (right.score < left.score) {
+                return false;
+            }
+            if (left.i != right.i) {
+                return left.i < right.i;
+            }
+            return left.j < right.j;
+        });
+        previousHits_.clear();
+        for (const Ranked& item : ranked) {
+            const ContactHit hit = evaluate(parts_[static_cast<std::size_t>(item.i)], parts_[static_cast<std::size_t>(item.j)]);
+            if (hit.distance > clearanceMm) {
+                continue;
+            }
+            previousHits_.insert(item.key);
+            return true;
+        }
+        return false;
+    }
+
+    void setLikelihood(std::shared_ptr<ICollisionLikelihood> model) override { likelihood_ = std::move(model); }
 
     DistanceResult minDistance(const Scene& scene, const std::string& a, const std::string& b) override {
         DistanceResult result;
@@ -845,6 +905,8 @@ private:
     std::vector<Part> parts_;
     std::vector<ConvexCacheEntry> pending_;
     std::unordered_map<std::string, SdfGrid> sdf_;
+    std::unordered_set<std::uint64_t> previousHits_;
+    std::shared_ptr<ICollisionLikelihood> likelihood_;
     Bvh bvh_;
     bool ready_ = false;
 };

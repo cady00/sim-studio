@@ -2,6 +2,11 @@
 
 这份清单来自一次全仓检索：空函数体、`TODO` / `FIXME`、`not implemented`、`placeholder`、导入器直接失败、以及会把通用数字当成数据表的路径。能接上真实行为的已经接上。其余条目保持失败或明确拒绝，不返回假数据。
 
+## USDA 与窄相提前结束
+
+- USDA 由仓库自己写 ASCII。层级、局部变换、三角形、UsdPreviewSurface、UsdPhysics 刚体/碰撞/质量/关节，以及机器人路径的时间采样会写出再读回。坐标是毫米，`metersPerUnit` 是 0.001，Z 轴向上。不链接 OpenUSD。二进制 crate、引用、payload、变体集不展开；`upAxis = Y` 不旋转；多于三条边的面扇形剖成三角形。结构校验是 `validateUsdaText`。`usd-core` 26.8 能打开写出的舞台并认出预览表面、刚体、质量和转动关节；该包没有 `usdchecker` 命令。
+- 碰撞全量查询仍返回原来的接触列表。`overlaps` 和 `detectBoxMesh` 按距离和上一帧命中排序，分离轴确认到一次命中就停。布尔值和全量结果非空一致。`rankLearned` 没有权重。1600 三角形的命中检测加速比 1080，脱靶约 1.04。同一谓词下 RRT-Connect 加速比 835，路径与调用次数不变。数字来自一次 RelWithDebInfo 全量测试。
+
 ## 这次补上的空路径
 
 - `MainWindow::runScriptSnippet` 原先是空函数，脚本停靠栏也没有入口。现在「运行片段」把编辑器里的源码交给 `IScriptHost::execute`，标准输出和异常写进脚本日志。场景里还没有脚本时会先建一条名为 `snippet` 的脚本。

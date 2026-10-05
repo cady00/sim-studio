@@ -1,20 +1,18 @@
 #include "sim/io/ProjectStore.hpp"
 
+#include "sim/core/Process.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ZipArchive.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <atomic>
-#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <unordered_map>
 
-#include <signal.h>
-#include <unistd.h>
 
 namespace sim {
 namespace {
@@ -478,7 +476,7 @@ std::filesystem::path historyTempPath() {
     static std::atomic<unsigned> sequence{0};
     const unsigned id = sequence.fetch_add(1);
     return std::filesystem::temp_directory_path() /
-           ("simstudio-hist-" + std::to_string(static_cast<long>(::getpid())) + "-" + std::to_string(id) + ".simproj");
+           ("simstudio-hist-" + std::to_string(currentProcessId()) + "-" + std::to_string(id) + ".simproj");
 }
 
 struct TempProject {
@@ -557,7 +555,7 @@ void ProjectStore::markSession(const std::string& directory) {
     std::filesystem::create_directories(directory, error);
     std::ofstream out(recoveryFile(directory, "session.pid"));
     if (out) {
-        out << static_cast<long>(getpid());
+        out << currentProcessId();
     }
 }
 
@@ -574,13 +572,10 @@ bool ProjectStore::sessionInterrupted(const std::string& directory) {
     }
     long pid = 0;
     in >> pid;
-    if (pid <= 0 || pid == static_cast<long>(getpid())) {
+    if (pid <= 0 || pid == currentProcessId()) {
         return false;
     }
-    if (kill(static_cast<pid_t>(pid), 0) == 0) {
-        return false;
-    }
-    return errno == ESRCH;
+    return processHasExited(pid);
 }
 
 ProjectResult ProjectStore::restoreAutosave(const std::string& directory, Scene& scene) {

@@ -167,7 +167,9 @@ int main(int argc, char* argv[]) {
     }
     if (parser.isSet(importStep)) {
         const QString path = parser.value(importStep);
-        if (path.endsWith(QStringLiteral(".jt"), Qt::CaseInsensitive)) {
+        if (path.endsWith(QStringLiteral(".jt"), Qt::CaseInsensitive) ||
+            path.endsWith(QStringLiteral(".usda"), Qt::CaseInsensitive) ||
+            path.endsWith(QStringLiteral(".usd"), Qt::CaseInsensitive)) {
             window.importJt(path);
         } else {
             window.importStepAsync(path);
