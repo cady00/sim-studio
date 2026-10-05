@@ -94,7 +94,7 @@ Qt Advanced Docking System 是 LGPL-2.1。闭源产品可以动态链接它，�
 
 GJK 和 ZIP 记录布局是公开规格，实现是这里写的。没有发现需要整段换掉的拷贝。
 
-STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、data URI 与 GLB）、ASCII/二进制 DXF 常用实体、URDF 连杆关节、通用 PPR XML、XLSX 的 ZIP 打包、OPC UA 二进制客户端，以及 JT 文件头、TOC、段和 LSG，都是本仓库写的，没有再引入 DXF、glTF、表格库、OPC UA 协议栈或 JT 解析库。open62541 是 MPL-2.0，本构建没有链接它。IGES 与 BREP 使用已经链接的 OCCT（LGPL-2.1 加例外），没有新增库。JT 不链接 Siemens JT Open Toolkit，也不链接 GPL/LGPL 的 JT 库（包括 OpenCascade TKJT）。实现对照的是公开的 ISO 14306 文件布局，没有把规范原文抄进源码。
+STL、PLY、glTF 2.0 子集（float/VEC3、uint 索引、节点矩阵或 TRS、data URI 与 GLB）、ASCII/二进制 DXF 常用实体、URDF 连杆关节、通用 PPR XML、XLSX 的 ZIP 打包、OPC UA 二进制客户端，以及 JT 文件头、TOC、段、LSG、Int32 压缩包（算术编码、Bitlength、Chopper）和 JT 9 拓扑网格，都是本仓库写的，没有再引入 DXF、glTF、表格库、OPC UA 协议栈或 JT 解析库。open62541 是 MPL-2.0，本构建没有链接它。IGES 与 BREP 使用已经链接的 OCCT（LGPL-2.1 加例外），没有新增库。JT 不链接 Siemens JT Open Toolkit，也不链接 GPL/LGPL 的 JT 库（包括 OpenCascade TKJT）。实现对照的是公开的 ISO 14306 文件布局，没有把规范原文抄进源码。
 
 ## 目录机器人网格
 

@@ -166,7 +166,12 @@ int main(int argc, char* argv[]) {
         window.showPlcConnection();
     }
     if (parser.isSet(importStep)) {
-        window.importStepAsync(parser.value(importStep));
+        const QString path = parser.value(importStep);
+        if (path.endsWith(QStringLiteral(".jt"), Qt::CaseInsensitive)) {
+            window.importJt(path);
+        } else {
+            window.importStepAsync(path);
+        }
     } else if (parser.isSet(play)) {
         window.beginHeadlessPlayback();
     } else if (parser.isSet(screenshot)) {

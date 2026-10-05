@@ -17,6 +17,7 @@
 #include "sim/motion/WeldPlan.hpp"
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
+#include "sim/io/AssetImport.hpp"
 #include "sim/io/ObjImporter.hpp"
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/StepImporter.hpp"
@@ -1391,6 +1392,27 @@ void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int 
 }
 
 void MainWindow::cancelImport() { cancelImport_.store(true); }
+
+void MainWindow::importJt(const QString& path) {
+    scene_.clear();
+    const auto registry = createBuiltinRegistry();
+    const AssetImportResult result = registry->importPath(path.toStdString(), scene_);
+    if (!result.ok) {
+        statusLabel_->setText(trk("msg.importFail").arg(QString::fromStdString(result.message)));
+        if (!screenshotPath_.isEmpty()) {
+            QTimer::singleShot(0, qApp, [] { QApplication::exit(2); });
+        }
+        return;
+    }
+    projectPath_.clear();
+    viewport_->setStandardView(StandardView::Iso);
+    viewport_->fitAll();
+    statusLabel_->setText(trk("msg.importOk").arg(result.nodeCount).arg(result.meshCount).arg(result.triangleCount).arg(0));
+    if (!screenshotPath_.isEmpty()) {
+        resizeDocks({treeDock_, propertyDock_}, {460, 280}, Qt::Horizontal);
+        QTimer::singleShot(1000, this, &MainWindow::captureScreenshot);
+    }
+}
 
 void MainWindow::importObj(const QString& path) {
     ObjImporter importer;

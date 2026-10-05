@@ -1,6 +1,7 @@
 #include "JtImporter.hpp"
 
 #include "sim/core/Mesh.hpp"
+#include "sim/io/JtCodec.hpp"
 
 #include <lzma.h>
 #include <zlib.h>
@@ -611,6 +612,20 @@ void deeringNormal(std::uint32_t code, int bits, float& x, float& y, float& z) {
 bool decodeQuantizedStrips(const std::uint8_t* data, std::size_t size, bool big, std::shared_ptr<MeshData>& mesh,
                            std::string& error) {
     Reader reader{data, data + size, big, true};
+    // Version 10.5 writes I8, I8, U64 bindings, then a U32 byte count equal to
+    // the payload size minus that 15-byte prefix and a trailing marker. That
+    // count is not a quantization bit width.
+    if (size >= 15 && data[0] == 1 && data[1] == 1) {
+        std::uint32_t framed = 0;
+        std::memcpy(&framed, data + 10, 4);
+        if (big) {
+            framed = (framed >> 24) | ((framed >> 8) & 0xff00u) | ((framed << 8) & 0xff0000u) | (framed << 24);
+        }
+        if (framed == static_cast<std::uint32_t>(size - 15)) {
+            error = "JT 10.5 tri-strip LOD uses a local layout that is not in the published reference";
+            return false;
+        }
+    }
     const int baseVersion = reader.u8();
     const int vertexVersion = reader.u8();
     const std::uint64_t bindings = reader.u64();
@@ -928,15 +943,18 @@ bool readStringAtom(const std::uint8_t* data, std::size_t size, bool big, std::s
 bool readLateAtom(const std::uint8_t* data, std::size_t size, bool big, LateRef& late) {
     const int offsets[] = {8, 6, 5};
     for (int offset : offsets) {
-        if (static_cast<std::size_t>(offset) + 28 > size) {
+        if (static_cast<std::size_t>(offset) + 24 > size) {
             continue;
         }
         Reader reader{data + offset, data + size, big, true};
         late.segment = reader.guid();
         late.type = reader.i32();
         late.payloadId = reader.i32();
-        reader.i32();
-        if (reader.ok && late.type >= 0 && late.type < 64) {
+        // Version 9 writes one more I32. Version 10.5 atoms end after the payload id.
+        if (reader.left() >= 4) {
+            reader.i32();
+        }
+        if (reader.ok && reader.left() == 0 && late.type >= 0 && late.type < 64) {
             return true;
         }
     }
@@ -1317,6 +1335,8 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
     }
     bool arithmetic = false;
     bool decodedMesh = false;
+    bool decodedTopo = false;
+    bool decodedQuant = false;
     for (auto& entry : model.nodes) {
         GraphObject& node = entry.second;
         if (node.role != NodeRole::Shape) {
@@ -1364,13 +1384,19 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
             body.i32();
             if (type == kTriStripLod) {
                 std::string meshError;
-                if (decodeQuantizedStrips(body.cur, static_cast<std::size_t>(body.end - body.cur), header.big, node.mesh,
-                                           meshError)) {
+                const std::size_t bodySize = static_cast<std::size_t>(body.end - body.cur);
+                if (decodeQuantizedStrips(body.cur, bodySize, header.big, node.mesh, meshError)) {
                     decodedMesh = true;
+                    decodedQuant = true;
+                } else if (meshError.find("JT 10.5") != std::string::npos) {
+                    model.meshNote = meshError + "; no triangles were invented";
+                } else if (decodeTopologicalTriStrip(body.cur, bodySize, model.major, node.mesh, meshError)) {
+                    decodedMesh = true;
+                    decodedTopo = true;
                 } else {
                     const std::string codec = meshError.find("codec") != std::string::npos
                                                   ? meshError
-                                                  : firstCodec(body.cur, static_cast<std::size_t>(body.end - body.cur), header.big);
+                                                  : firstCodec(body.cur, bodySize, header.big);
                     const std::string label = codec.find("arithmetic") != std::string::npos   ? "arithmetic"
                                               : codec.find("chopper") != std::string::npos     ? "chopper"
                                               : codec.find("move-to-front") != std::string::npos ? "move-to-front"
@@ -1383,7 +1409,13 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
         }
     }
     if (decodedMesh) {
-        model.meshNote = "decoded quantized tri-strips";
+        if (decodedTopo && decodedQuant) {
+            model.meshNote = "decoded quantized and topologically compressed tri-strips";
+        } else if (decodedTopo) {
+            model.meshNote = "decoded topologically compressed tri-strips";
+        } else {
+            model.meshNote = "decoded quantized tri-strips";
+        }
     } else if (model.meshNote.empty() && arithmetic) {
         model.meshNote = "tri-strip LOD uses arithmetic Int32 codec and topological compression; no triangles were invented";
     }

@@ -11,7 +11,7 @@
 
 | 路径 | 实际行为 |
 | --- | --- |
-| JT（`JtImporter`） | 按公开的文件布局自写，不链接 Siemens JT Open Toolkit，也不使用 GPL/LGPL 的 JT 库。能读 8.x/9.x/10.x 的文件头、TOC 和段，zlib 与 XZ/LZMA 段，LSG 装配、几何变换和材质，以及量化 Tri-Strip（Null 与 Bitlength，Deering 法向）。算术编码和拓扑压缩的 Tri-Strip 不造三角形。XT B-rep 只跳过 Parasolid 字节并回退到网格。 |
+| JT（`JtImporter`） | 按公开的 ISO 14306 布局自写，不链接 Siemens JT Open Toolkit，也不使用 GPL/LGPL 的 JT 库。能读 8.x/9.x/10.x 的文件头、TOC 和段，zlib 与 XZ/LZMA 段，LSG 装配、几何变换和材质。量化 Tri-Strip（Null、半字节 Bitlength、Deering）和 JT 9 拓扑压缩网格都能出三角形：算术编码、6 比特 Bitlength、Chopper、Lag1/Lag2/Stride/StripIndex/Ramp/Xor，以及无损或均匀量化的顶点、Deering 或无损法向。公开预测器表里没有几何 “moving frame”，没有另造一个。第一代 Huffman/前缀 Bitlength 有解码和测试，这三份样件不用它。无损坐标的存储哈希对不上重建后的 IEEE 字，改用量化盒范围和单位法向核对；量化码的哈希必须相符。JT 10.5 的 Tri-Strip 在绑定之后多了一段公开参考里没有的 GUID 本地头，后续字节也不是已发布的 Int32 包，`boxasm.jt` 只显示装配，不造三角形。XT B-rep 仍跳过 Parasolid 字节。没有单位字符串的文件保持文件单位（螺钉和 CTC 样件是米）。 |
 | IGES | `createImporter("iges")` 和资源注册表都走 OCCT `IGESControl_Reader`，读入后做三角化。读失败时返回错误，不造网格。 |
 | 二进制 DXF | 读到二进制头时返回 `binary DXF is not supported`。 |
 | 压缩 ZIP | 工程包只接受存储法（method 0）。压缩条目报错，不假装解压成功。 |

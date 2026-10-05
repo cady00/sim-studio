@@ -8,6 +8,7 @@ add_library(sim_io
     src/ObjImporter.cpp
     src/AssetImport.cpp
     src/JtImporter.cpp
+    src/JtTopo.cpp
     src/Xacro.cpp
     src/OcctCadImport.cpp
     src/OpcUa.cpp

@@ -1,5 +1,6 @@
 #include "sim/core/Scene.hpp"
 #include "sim/io/AssetImport.hpp"
+#include "sim/io/JtCodec.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -7,6 +8,8 @@
 #include <lzma.h>
 #include <zlib.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -619,9 +622,34 @@ TEST_CASE("public jt samples open with an honest mesh fallback", "[jt]") {
                           screwResult.message.find("7,") != std::string::npos;
     REQUIRE(listsLod);
     REQUIRE(screw.findByName("zink0B08A7219cph") != nullptr);
-    REQUIRE(screwResult.triangleCount == 0);
-    REQUIRE(screwResult.message.find("arithmetic") != std::string::npos);
+    REQUIRE(screwResult.triangleCount == 6450);
+    REQUIRE(screwResult.meshCount == 1);
+    REQUIRE(screwResult.message.find("decoded topologically compressed tri-strips") != std::string::npos);
     REQUIRE(screwResult.message.find("xt=no") != std::string::npos);
+    const sim::MeshData* screwMesh = nullptr;
+    for (const auto& entry : screw.meshes()) {
+        if (entry.second && entry.second->triangleCount() == 6450) {
+            screwMesh = entry.second.get();
+        }
+    }
+    REQUIRE(screwMesh != nullptr);
+    REQUIRE(screwMesh->bounds.min.x == Catch::Approx(-0.005).margin(1e-6));
+    REQUIRE(screwMesh->bounds.max.x == Catch::Approx(0.005).margin(1e-6));
+    REQUIRE(screwMesh->bounds.min.y == Catch::Approx(-0.00497867).margin(1e-5));
+    REQUIRE(screwMesh->bounds.max.y == Catch::Approx(0.00497867).margin(1e-5));
+    REQUIRE(screwMesh->bounds.min.z == Catch::Approx(-0.02).margin(1e-6));
+    REQUIRE(screwMesh->bounds.max.z == Catch::Approx(0.006).margin(1e-6));
+    int screwNormals = 0;
+    for (std::size_t i = 0; i + 2 < screwMesh->normals.size(); i += 3) {
+        const float x = screwMesh->normals[i];
+        const float y = screwMesh->normals[i + 1];
+        const float z = screwMesh->normals[i + 2];
+        const float length = std::sqrt(x * x + y * y + z * z);
+        if (std::fabs(length - 1.f) < 0.02f) {
+            ++screwNormals;
+        }
+    }
+    REQUIRE(screwNormals == 6450 * 3);
 
     sim::Scene ctc;
     const sim::AssetImportResult ctcResult = registry->importPath((root / "ctc02.jt").string(), ctc);
@@ -629,7 +657,21 @@ TEST_CASE("public jt samples open with an honest mesh fallback", "[jt]") {
     REQUIRE(ctcResult.ok);
     REQUIRE(ctcResult.message.find("Version 9.4") != std::string::npos);
     REQUIRE(ctcResult.message.find("segments=7") != std::string::npos);
-    REQUIRE(ctcResult.triangleCount == 0);
+    REQUIRE(ctcResult.triangleCount == 6842);
+    REQUIRE(ctcResult.message.find("decoded topologically compressed tri-strips") != std::string::npos);
+    const sim::MeshData* ctcMesh = nullptr;
+    for (const auto& entry : ctc.meshes()) {
+        if (entry.second && entry.second->triangleCount() == 6842) {
+            ctcMesh = entry.second.get();
+        }
+    }
+    REQUIRE(ctcMesh != nullptr);
+    REQUIRE(ctcMesh->bounds.min.x == Catch::Approx(-0.340).margin(1e-3));
+    REQUIRE(ctcMesh->bounds.max.x == Catch::Approx(0.340).margin(1e-3));
+    REQUIRE(ctcMesh->bounds.min.y == Catch::Approx(-0.040).margin(1e-3));
+    REQUIRE(ctcMesh->bounds.max.y == Catch::Approx(0.820).margin(1e-3));
+    REQUIRE(ctcMesh->bounds.min.z == Catch::Approx(-0.360).margin(1e-3));
+    REQUIRE(ctcMesh->bounds.max.z == Catch::Approx(0.040).margin(1e-3));
 
     sim::Scene box;
     const sim::AssetImportResult boxResult = registry->importPath((root / "boxasm.jt").string(), box);
@@ -659,4 +701,113 @@ TEST_CASE("public jt samples open with an honest mesh fallback", "[jt]") {
     REQUIRE(nut->local.translation.x == Catch::Approx(57.350284576416016));
     REQUIRE(nut->local.translation.y == Catch::Approx(75.38778686523438));
     REQUIRE(nut->local.translation.z == Catch::Approx(88.875));
+    REQUIRE(boxResult.triangleCount == 0);
+    REQUIRE(boxResult.message.find("JT 10.5 tri-strip LOD uses a local layout") != std::string::npos);
+    REQUIRE(boxResult.message.find("no triangles were invented") != std::string::npos);
+}
+
+std::vector<std::uint8_t> hexBytes(const char* text) {
+    std::vector<std::uint8_t> out;
+    int nibble = -1;
+    for (const char* cursor = text; *cursor != '\0'; ++cursor) {
+        const char letter = *cursor;
+        int value = -1;
+        if (letter >= '0' && letter <= '9') {
+            value = letter - '0';
+        } else if (letter >= 'a' && letter <= 'f') {
+            value = letter - 'a' + 10;
+        } else if (letter >= 'A' && letter <= 'F') {
+            value = letter - 'A' + 10;
+        }
+        if (value < 0) {
+            continue;
+        }
+        if (nibble < 0) {
+            nibble = value;
+        } else {
+            out.push_back(static_cast<std::uint8_t>((nibble << 4) | value));
+            nibble = -1;
+        }
+    }
+    return out;
+}
+
+TEST_CASE("jt int32 codecs and predictors round-trip published layouts", "[jt]") {
+    std::string error;
+    const auto arithmetic = hexBytes(
+        "be00000003de010000dfc114b2855be8bfd042745121a78816368570895e7e682ac2ad90585048be68e9d156751f9e66cdad5235a123cb084197b779ef71f6cdcc000020bc000a0871000000001020834542b3593ce91845ca1a905683c000000000");
+    std::vector<std::int32_t> degrees;
+    REQUIRE(sim::jtReadInt32Cdp(arithmetic.data(), arithmetic.size(), 2, degrees, error));
+    REQUIRE(degrees.size() == 190);
+    const std::int32_t firstDegrees[30] = {7, 6, 6, 6, 5, 6, 7, 7, 6, 8, 7, 6, 7, 6, 6, 6, 4, 6, 7, 8, 7, 6, 9, 7, 7, 7, 8, 6, 4, 7};
+    for (int i = 0; i < 30; ++i) {
+        REQUIRE(degrees[static_cast<std::size_t>(i)] == firstDegrees[i]);
+    }
+
+    const auto constants = hexBytes("80040000011300000000601b06");
+    std::vector<std::int32_t> threes;
+    REQUIRE(sim::jtReadInt32Cdp(constants.data(), constants.size(), 2, threes, error));
+    REQUIRE(threes.size() == 1152);
+    REQUIRE(threes.front() == 3);
+    REQUIRE(threes.back() == 3);
+
+    const auto chopped = hexBytes(
+        "8300000004008300000001f8010000030000801bf27e4880ff39f00007f8ed7b45fc0134d1c1c40fff6e21bc017df03fbdabc4ff9344c9f21cb8807ffde178c8033cc13e7ee10f48003021003d8e07");
+    std::vector<std::int32_t> variable;
+    REQUIRE(sim::jtReadInt32Cdp(chopped.data(), chopped.size(), 2, variable, error));
+    REQUIRE(variable.size() == 131);
+    REQUIRE(*std::min_element(variable.begin(), variable.end()) == 3);
+    REQUIRE(*std::max_element(variable.begin(), variable.end()) == 12);
+
+    std::vector<std::uint8_t> moved;
+    auto putI32 = [&](std::int32_t value) {
+        const auto bits = static_cast<std::uint32_t>(value);
+        moved.push_back(static_cast<std::uint8_t>(bits));
+        moved.push_back(static_cast<std::uint8_t>(bits >> 8));
+        moved.push_back(static_cast<std::uint8_t>(bits >> 16));
+        moved.push_back(static_cast<std::uint8_t>(bits >> 24));
+    };
+    putI32(3);
+    moved.push_back(5);
+    putI32(2);
+    moved.push_back(0);
+    putI32(10);
+    putI32(20);
+    putI32(3);
+    moved.push_back(0);
+    putI32(-1);
+    putI32(-1);
+    putI32(0);
+    std::vector<std::int32_t> front;
+    REQUIRE(sim::jtReadInt32Cdp(moved.data(), moved.size(), 3, front, error));
+    REQUIRE(front == std::vector<std::int32_t>{10, 20, 20});
+
+    const std::vector<std::int32_t> residual{1, 2, 3, 4, 1, 1};
+    REQUIRE(sim::jtUnpackPredictor(residual, 0) == std::vector<std::int32_t>{1, 2, 3, 4, 5, 6});
+    REQUIRE(sim::jtUnpackPredictor(residual, 1) == std::vector<std::int32_t>{1, 2, 3, 4, 4, 5});
+    REQUIRE(sim::jtUnpackPredictor(residual, 2) == std::vector<std::int32_t>{1, 2, 3, 4, 6, 9});
+    REQUIRE(sim::jtUnpackPredictor(residual, 8) == residual);
+    const auto xor1 = sim::jtUnpackPredictor(residual, 6);
+    REQUIRE(xor1[4] == (1 ^ 4));
+    REQUIRE(xor1[5] == (1 ^ xor1[4]));
+
+    auto prefix = [](const char* bits) {
+        std::uint32_t word = 0;
+        int count = 0;
+        for (const char* cursor = bits; *cursor != '\0'; ++cursor) {
+            word = (word << 1) | static_cast<std::uint32_t>(*cursor == '1');
+            ++count;
+        }
+        word <<= (32 - count);
+        std::string local;
+        return sim::jtDecodePrefixBitlength(&word, 1, count, local);
+    };
+    REQUIRE(prefix("11001") == std::vector<std::int32_t>{1});
+    REQUIRE(prefix("11011") == std::vector<std::int32_t>{-1});
+    REQUIRE(prefix("11001000") == std::vector<std::int32_t>{1, 0});
+    REQUIRE(prefix("0") == std::vector<std::int32_t>{0});
+    std::uint32_t invalid = 0x80000000u;
+    std::string prefixError;
+    REQUIRE(sim::jtDecodePrefixBitlength(&invalid, 1, 2, prefixError).empty());
+    REQUIRE_FALSE(prefixError.empty());
 }
