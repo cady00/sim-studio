@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
+
 namespace sim {
 namespace {
 
@@ -31,6 +33,17 @@ nlohmann::json contactToJson(const PlcContact& contact) {
     nlohmann::json json{{"address", contact.address}, {"normallyOpen", contact.normallyOpen}};
     if (!contact.edge.empty()) {
         json["edge"] = contact.edge;
+    }
+    if (!contact.alternatives.empty()) {
+        nlohmann::json any = nlohmann::json::array();
+        for (const PlcContact& alternative : contact.alternatives) {
+            nlohmann::json item{{"address", alternative.address}, {"normallyOpen", alternative.normallyOpen}};
+            if (!alternative.edge.empty()) {
+                item["edge"] = alternative.edge;
+            }
+            any.push_back(std::move(item));
+        }
+        json["or"] = std::move(any);
     }
     return json;
 }
@@ -210,6 +223,40 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
                 error = "unknown plc rung action";
                 return false;
             }
+            std::function<bool(const nlohmann::json&, PlcContact&, bool)> readOne;
+            readOne = [&](const nlohmann::json& contactJson, PlcContact& contact, bool allowOr) -> bool {
+                contact.address = contactJson.value("address", std::string{});
+                contact.normallyOpen = contactJson.value("normallyOpen", true);
+                contact.edge = contactJson.value("edge", std::string{});
+                if (!contact.edge.empty() && contact.edge != "rising" && contact.edge != "falling") {
+                    error = "unknown plc contact edge";
+                    return false;
+                }
+                if (!contactJson.contains("or")) {
+                    return true;
+                }
+                if (!allowOr) {
+                    error = "plc contact or does not nest";
+                    return false;
+                }
+                if (!contactJson.at("or").is_array()) {
+                    error = "plc contact or is not an array";
+                    return false;
+                }
+                for (const auto& alternativeJson : contactJson.at("or")) {
+                    if (!alternativeJson.is_object()) {
+                        continue;
+                    }
+                    PlcContact alternative;
+                    if (!readOne(alternativeJson, alternative, false)) {
+                        return false;
+                    }
+                    if (!alternative.address.empty()) {
+                        contact.alternatives.push_back(std::move(alternative));
+                    }
+                }
+                return true;
+            };
             auto readContacts = [&](const nlohmann::json& list, std::vector<PlcContact>& out) {
                 if (!list.is_array()) {
                     error = "plc contact list is not an array";
@@ -220,11 +267,7 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
                         continue;
                     }
                     PlcContact contact;
-                    contact.address = contactJson.value("address", std::string{});
-                    contact.normallyOpen = contactJson.value("normallyOpen", true);
-                    contact.edge = contactJson.value("edge", std::string{});
-                    if (!contact.edge.empty() && contact.edge != "rising" && contact.edge != "falling") {
-                        error = "unknown plc contact edge";
+                    if (!readOne(contactJson, contact, true)) {
                         return false;
                     }
                     if (!contact.address.empty()) {

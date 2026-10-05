@@ -29,6 +29,12 @@ public:
 // Clears timer elapsed time. The program, forces, and mappings stay.
 void resetSoftPlcTimers(SoftPlcDocument& doc);
 
+// Unwired boolean drafts for an imported mechanism. An arm gets
+// Rn_AtHome, Rn_Busy, Rn_Fault (in) and Rn_Start, Rn_Grip (out).
+// Each external axis gets Name_InPos (in). Device strings stay empty
+// and nothing is forced. A track does not take a robot number.
+void appendRobotPlcDraft(SoftPlcDocument& doc, const KinematicResource& resource);
+
 // Scans the ladder on the simulation clock. Sensors written during the physics
 // step are visible on the next scan. At most eight scans run in one step.
 class SoftPlcRuntime final : public IPlcBackend {

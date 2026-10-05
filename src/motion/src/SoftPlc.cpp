@@ -1,6 +1,7 @@
 #include "sim/motion/SoftPlc.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -186,9 +187,20 @@ void SoftPlcRuntime::oneScan(Scene& scene, double simTime, double period) {
         }
         return contact.normallyOpen ? now : !now;
     };
+    auto termOn = [&](const PlcContact& contact) {
+        if (contactOn(contact)) {
+            return true;
+        }
+        for (const PlcContact& alternative : contact.alternatives) {
+            if (contactOn(alternative)) {
+                return true;
+            }
+        }
+        return false;
+    };
     auto branchOn = [&](const std::vector<PlcContact>& series) {
         for (const PlcContact& contact : series) {
-            if (!contactOn(contact)) {
+            if (!termOn(contact)) {
                 return false;
             }
         }
@@ -416,5 +428,91 @@ bool PlcSimAdvancedBackend::start(const SoftPlcDocument&, std::string& error) {
 void PlcSimAdvancedBackend::stop() { log_.clear(); }
 
 void PlcSimAdvancedBackend::scan(Scene&, double, double) {}
+
+namespace {
+
+bool jointIsExternal(const KinJoint& joint) {
+    return !joint.externalName.empty() || joint.externalKind == "track" || joint.externalKind == "positioner";
+}
+
+int nextRobotIndex(const SoftPlcDocument& doc) {
+    int next = 1;
+    for (const PlcTag& tag : doc.tags) {
+        if (tag.address.size() < 4 || tag.address[0] != 'R') {
+            continue;
+        }
+        std::size_t cursor = 1;
+        int value = 0;
+        bool digits = false;
+        while (cursor < tag.address.size() && std::isdigit(static_cast<unsigned char>(tag.address[cursor]))) {
+            digits = true;
+            value = value * 10 + (tag.address[cursor] - '0');
+            ++cursor;
+        }
+        if (digits && cursor < tag.address.size() && tag.address[cursor] == '_') {
+            next = std::max(next, value + 1);
+        }
+    }
+    return next;
+}
+
+void ensureDraft(SoftPlcDocument& doc, const std::string& address, const std::string& direction) {
+    if (findPlcTag(doc, address) == nullptr) {
+        PlcTag tag;
+        tag.address = address;
+        tag.kind = PlcValueKind::Bool;
+        doc.tags.push_back(std::move(tag));
+    }
+    for (const PlcBinding& binding : doc.bindings) {
+        if (binding.address == address) {
+            return;
+        }
+    }
+    PlcBinding binding;
+    binding.address = address;
+    binding.direction = direction;
+    doc.bindings.push_back(std::move(binding));
+}
+
+std::string lowerName(std::string text) {
+    for (char& letter : text) {
+        letter = static_cast<char>(std::tolower(static_cast<unsigned char>(letter)));
+    }
+    return text;
+}
+
+}  // namespace
+
+void appendRobotPlcDraft(SoftPlcDocument& doc, const KinematicResource& resource) {
+    std::vector<std::string> axes;
+    bool arm = false;
+    for (const KinJoint& joint : resource.joints) {
+        if (!jointIsExternal(joint)) {
+            arm = true;
+            continue;
+        }
+        const std::string name = joint.externalName.empty() ? std::string("E1") : joint.externalName;
+        if (std::find(axes.begin(), axes.end(), name) == axes.end()) {
+            axes.push_back(name);
+        }
+    }
+    const std::string lower = lowerName(resource.name);
+    const bool namedTrack = lower.rfind("irbt", 0) == 0;
+    if (axes.empty() && namedTrack) {
+        axes.push_back("E1");
+    }
+    const bool externalOnly = !arm && !axes.empty();
+    if (!externalOnly) {
+        const std::string prefix = "R" + std::to_string(nextRobotIndex(doc)) + "_";
+        ensureDraft(doc, prefix + "AtHome", "in");
+        ensureDraft(doc, prefix + "Busy", "in");
+        ensureDraft(doc, prefix + "Fault", "in");
+        ensureDraft(doc, prefix + "Start", "out");
+        ensureDraft(doc, prefix + "Grip", "out");
+    }
+    for (const std::string& axis : axes) {
+        ensureDraft(doc, axis + "_InPos", "in");
+    }
+}
 
 }  // namespace sim

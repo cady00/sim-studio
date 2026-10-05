@@ -42,9 +42,11 @@ struct PlcContact {
     // empty is a level contact. rising is false-to-true since the previous scan.
     // falling is true-to-false. An edge ignores normallyOpen.
     std::string edge;
+    // Contacts ORed with this one inside the AND branch. One level only.
+    std::vector<PlcContact> alternatives;
 };
 
-// One rung. Contacts in one branch are AND. branches are OR.
+// One rung. Contacts in one branch are AND. A contact may OR its alternatives.
 // series is the first branch. parallel holds the other branches.
 // With no parallel branches, an empty series is always true.
 // action: out, set, reset, ton, tof, move, ctu, ctd, ctr.
