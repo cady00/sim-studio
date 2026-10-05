@@ -1337,6 +1337,9 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
     bool decodedMesh = false;
     bool decodedTopo = false;
     bool decodedQuant = false;
+    bool decoded105 = false;
+    int failedLods = 0;
+    std::string failNote;
     for (auto& entry : model.nodes) {
         GraphObject& node = entry.second;
         if (node.role != NodeRole::Shape) {
@@ -1349,7 +1352,8 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
             if (atom == model.atoms.end() || !atom->second.isLate) {
                 return;
             }
-            if (atom->second.late.type < 6 || atom->second.late.type > 16) {
+            // Type 6 is the shape segment. The tessellation lives in LOD segments 7..16.
+            if (atom->second.late.type < 7 || atom->second.late.type > 16) {
                 return;
             }
             const auto found = byGuid.find(guidKey(atom->second.late.segment));
@@ -1385,15 +1389,36 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
             if (type == kTriStripLod) {
                 std::string meshError;
                 const std::size_t bodySize = static_cast<std::size_t>(body.end - body.cur);
-                if (decodeQuantizedStrips(body.cur, bodySize, header.big, node.mesh, meshError)) {
+                const bool local105 = bodySize >= 15 && body.cur[0] == 1 && body.cur[1] == 1 && [&]() {
+                    std::uint32_t framed = 0;
+                    std::memcpy(&framed, body.cur + 10, 4);
+                    if (header.big) {
+                        framed = (framed >> 24) | ((framed >> 8) & 0xff00u) | ((framed << 8) & 0xff0000u) | (framed << 24);
+                    }
+                    return framed == static_cast<std::uint32_t>(bodySize - 15);
+                }();
+                std::shared_ptr<MeshData> decoded;
+                if (local105) {
+                    if (decodeJt105TriStrip(body.cur, bodySize, header.big, decoded, meshError)) {
+                        node.mesh = std::move(decoded);
+                        decodedMesh = true;
+                        decodedTopo = true;
+                        decoded105 = true;
+                    } else {
+                        ++failedLods;
+                        failNote = meshError;
+                        model.meshNote = meshError + "; no triangles were invented";
+                    }
+                } else if (decodeQuantizedStrips(body.cur, bodySize, header.big, decoded, meshError)) {
+                    node.mesh = std::move(decoded);
                     decodedMesh = true;
                     decodedQuant = true;
-                } else if (meshError.find("JT 10.5") != std::string::npos) {
-                    model.meshNote = meshError + "; no triangles were invented";
-                } else if (decodeTopologicalTriStrip(body.cur, bodySize, model.major, node.mesh, meshError)) {
+                } else if (decodeTopologicalTriStrip(body.cur, bodySize, model.major, decoded, meshError)) {
+                    node.mesh = std::move(decoded);
                     decodedMesh = true;
                     decodedTopo = true;
                 } else {
+                    ++failedLods;
                     const std::string codec = meshError.find("codec") != std::string::npos
                                                   ? meshError
                                                   : firstCodec(body.cur, bodySize, header.big);
@@ -1402,8 +1427,15 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
                                               : codec.find("move-to-front") != std::string::npos ? "move-to-front"
                                                                                                 : "topological";
                     arithmetic = label == "arithmetic";
-                    model.meshNote = "tri-strip LOD uses " + label +
-                                     " Int32 codec and topological compression; no triangles were invented";
+                    if (failNote.empty()) {
+                        failNote = meshError.empty() ? label : meshError;
+                    }
+                    if (model.meshNote.empty()) {
+                        model.meshNote = meshError.empty()
+                                             ? "tri-strip LOD uses " + label +
+                                                   " Int32 codec and topological compression; no triangles were invented"
+                                             : meshError + "; no triangles were invented";
+                    }
                 }
             }
         }
@@ -1411,10 +1443,15 @@ bool loadFile(const std::string& path, FileModel& model, std::string& error) {
     if (decodedMesh) {
         if (decodedTopo && decodedQuant) {
             model.meshNote = "decoded quantized and topologically compressed tri-strips";
+        } else if (decoded105) {
+            model.meshNote = "decoded JT 10.5 topologically compressed tri-strips";
         } else if (decodedTopo) {
             model.meshNote = "decoded topologically compressed tri-strips";
         } else {
             model.meshNote = "decoded quantized tri-strips";
+        }
+        if (failedLods > 0) {
+            model.meshNote += "; " + std::to_string(failedLods) + " tri-strip LOD(s) were not decoded (" + failNote + ")";
         }
     } else if (model.meshNote.empty() && arithmetic) {
         model.meshNote = "tri-strip LOD uses arithmetic Int32 codec and topological compression; no triangles were invented";
@@ -1476,16 +1513,35 @@ struct BuiltNode {
     std::shared_ptr<SceneNode> node;
 };
 
+int subtreeTriangles(const FileModel& model, int id, int depth) {
+    if (depth > 8) {
+        return 0;
+    }
+    const auto found = model.nodes.find(id);
+    if (found == model.nodes.end()) {
+        return 0;
+    }
+    int total = 0;
+    if (found->second.mesh && !found->second.mesh->empty()) {
+        total += static_cast<int>(found->second.mesh->triangleCount());
+    }
+    for (int child : found->second.children) {
+        total += subtreeTriangles(model, child, depth + 1);
+    }
+    return total;
+}
+
 void buildGraph(FileModel& model, Scene& scene, int objectId, const std::shared_ptr<SceneNode>& parent,
-                std::unordered_map<int, int>& visits, int depth, int& nodes, int& meshes, int& triangles) {
+                std::vector<int>& stack, std::unordered_map<int, std::string>& placedMeshes, int depth, int& nodes,
+                int& meshes, int& triangles) {
     if (depth > 64 || parent == nullptr) {
+        return;
+    }
+    if (std::find(stack.begin(), stack.end(), objectId) != stack.end()) {
         return;
     }
     auto found = model.nodes.find(objectId);
     if (found == model.nodes.end() || found->second.role == NodeRole::Other) {
-        return;
-    }
-    if (++visits[objectId] > 8) {
         return;
     }
     GraphObject& object = found->second;
@@ -1511,17 +1567,32 @@ void buildGraph(FileModel& model, Scene& scene, int objectId, const std::shared_
         }
     }
     if (object.mesh && !object.mesh->empty()) {
-        scaleMesh(*object.mesh, model.unitScale);
-        node->meshId = scene.addMesh(object.mesh);
+        const auto placed = placedMeshes.find(object.id);
+        if (placed == placedMeshes.end()) {
+            node->meshId = scene.addMesh(object.mesh);
+            placedMeshes.emplace(object.id, node->meshId);
+        } else {
+            node->meshId = placed->second;
+        }
         ++meshes;
         triangles += static_cast<int>(object.mesh->triangleCount());
-        object.mesh.reset();
     }
     scene.addChild(parent, node);
     ++nodes;
     std::vector<int> children = object.children;
     if (object.role == NodeRole::Lod || object.role == NodeRole::RangeLod) {
-        if (!children.empty()) {
+        int picked = -1;
+        int pickedTriangles = -1;
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            const int count = subtreeTriangles(model, children[i], 0);
+            if (count > pickedTriangles) {
+                pickedTriangles = count;
+                picked = static_cast<int>(i);
+            }
+        }
+        if (picked >= 0 && pickedTriangles > 0) {
+            children = {children[static_cast<std::size_t>(picked)]};
+        } else if (!children.empty()) {
             children.resize(1);
         }
     } else if (object.role == NodeRole::Switch) {
@@ -1531,9 +1602,11 @@ void buildGraph(FileModel& model, Scene& scene, int objectId, const std::shared_
             children.resize(1);
         }
     }
+    stack.push_back(objectId);
     for (int child : children) {
-        buildGraph(model, scene, child, node, visits, depth + 1, nodes, meshes, triangles);
+        buildGraph(model, scene, child, node, stack, placedMeshes, depth + 1, nodes, meshes, triangles);
     }
+    stack.pop_back();
 }
 
 }  // namespace
@@ -1551,13 +1624,21 @@ AssetImportResult JtImporter::importFile(const std::string& path, Scene& scene) 
         result.message = error.empty() ? "JT file was not read" : error;
         return result;
     }
+    int decodedTriangles = 0;
+    for (auto& entry : model.nodes) {
+        if (entry.second.mesh && !entry.second.mesh->empty()) {
+            decodedTriangles += static_cast<int>(entry.second.mesh->triangleCount());
+            scaleMesh(*entry.second.mesh, model.unitScale);
+        }
+    }
     scene.beginEdit();
     int nodes = 0;
     int meshes = 0;
     int triangles = 0;
-    std::unordered_map<int, int> visits;
+    std::vector<int> stack;
+    std::unordered_map<int, std::string> placedMeshes;
     if (model.rootId >= 0 && scene.root()) {
-        buildGraph(model, scene, model.rootId, scene.root(), visits, 0, nodes, meshes, triangles);
+        buildGraph(model, scene, model.rootId, scene.root(), stack, placedMeshes, 0, nodes, meshes, triangles);
     }
     scene.endEdit();
     std::vector<int> unique = model.types;
@@ -1581,6 +1662,10 @@ AssetImportResult JtImporter::importFile(const std::string& path, Scene& scene) 
     }
     if (!model.meshNote.empty()) {
         message << ". " << model.meshNote;
+    }
+    if (triangles == 0 && decodedTriangles > 0) {
+        message << ". " << decodedTriangles
+                << " decoded triangles are not reachable from the LSG; no triangles were invented";
     }
     result.ok = true;
     result.nodeCount = nodes;

@@ -701,9 +701,58 @@ TEST_CASE("public jt samples open with an honest mesh fallback", "[jt]") {
     REQUIRE(nut->local.translation.x == Catch::Approx(57.350284576416016));
     REQUIRE(nut->local.translation.y == Catch::Approx(75.38778686523438));
     REQUIRE(nut->local.translation.z == Catch::Approx(88.875));
-    REQUIRE(boxResult.triangleCount == 0);
-    REQUIRE(boxResult.message.find("JT 10.5 tri-strip LOD uses a local layout") != std::string::npos);
-    REQUIRE(boxResult.message.find("no triangles were invented") != std::string::npos);
+    REQUIRE(boxResult.triangleCount == 269304);
+    REQUIRE(boxResult.meshCount == 36);
+    REQUIRE(boxResult.message.find("decoded JT 10.5 topologically compressed tri-strips") != std::string::npos);
+    REQUIRE(boxResult.message.find("no triangles were invented") == std::string::npos);
+    REQUIRE(boxResult.message.find("were not decoded") == std::string::npos);
+    int nutCopies = 0;
+    std::vector<std::shared_ptr<sim::SceneNode>> pending{box.root()};
+    while (!pending.empty()) {
+        auto node = pending.back();
+        pending.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            pending.push_back(child);
+        }
+        if (node->meshId.empty()) {
+            continue;
+        }
+        const auto mesh = box.meshes().find(node->meshId);
+        if (mesh != box.meshes().end() && mesh->second && mesh->second->triangleCount() == 4010) {
+            ++nutCopies;
+        }
+    }
+    REQUIRE(nutCopies == 10);
+}
+
+TEST_CASE("private cojt jt files report version and triangles", "[jt]") {
+    const std::filesystem::path root = std::filesystem::path(SIM_SOURCE_DIR) / "testdata" / "local" / "cojt";
+    if (!std::filesystem::exists(root / "kr210_r2700_2.cojt" / "kr210_r2700_2.jt")) {
+        SKIP("testdata/local/cojt is not present");
+    }
+    auto registry = sim::createBuiltinRegistry();
+    const auto expect = [&](const std::filesystem::path& path, int triangles, const char* note) {
+        sim::Scene scene;
+        const sim::AssetImportResult result = registry->importPath(path.string(), scene);
+        INFO(result.message);
+        REQUIRE(result.ok);
+        REQUIRE(result.triangleCount == triangles);
+        REQUIRE(result.message.find(note) != std::string::npos);
+    };
+    expect(root / "kr210_r2700_2.cojt" / "kr210_r2700_2.jt", 387479, "decoded JT 10.5 topologically compressed tri-strips");
+    expect(root / "kr210_r2700_2.cojt" / "kr210_r2700_2.jt", 387479, "high-degree face masks are not used by this mesh");
+    expect(root / "kr6_r900sixx.cojt" / "kr6_r900sixx.jt", 0, "36904 decoded triangles are not reachable from the LSG");
+    expect(root / "kr420r3080_4.cojt" / "kr420r3080_4.jt", 0, "450830 decoded triangles are not reachable from the LSG");
+    expect(root / "kr280r3080_4.cojt" / "kr280r3080_4.jt", 0, "450812 decoded triangles are not reachable from the LSG");
+    expect(root / "irb120_3_0_58.cojt" / "irb120_3_0_58.jt", 0, "74248 decoded triangles are not reachable from the LSG");
+    expect(root / "irbt6004_0_d_10m_01.cojt" / "irbt6004_0_d_10m_01.jt", 0,
+           "49385 decoded triangles are not reachable from the LSG");
+    expect(root / "r2000ib210f.cojt" / "r2000ib210f.jt", 0, "50059 decoded triangles are not reachable from the LSG");
+    expect(root / "IRB6700_235-265_IRC5_Grey_Rev1.cojt" / "IRB6700_235-265_IRC5_Grey_Rev1.jt", 0,
+           "179857 decoded triangles are not reachable from the LSG");
 }
 
 std::vector<std::uint8_t> hexBytes(const char* text) {
