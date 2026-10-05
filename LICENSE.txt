@@ -1,0 +1,10 @@
+Sim Studio
+Copyright (c) 2026. All rights reserved.
+
+This software is proprietary. It is provided to authorized users only.
+Redistribution, publication, or sublicensing of the source or binaries
+is not permitted without a written license from the copyright holder.
+
+Third-party components are listed in THIRD_PARTY_LICENSES.md and remain
+under their own licenses. Linking Qt dynamically and using Open CASCADE
+under the LGPL Open CASCADE Exception does not relicense this project.

@@ -1,0 +1,13 @@
+out/
+build/
+cmake-build-*/
+.vs/
+.idea/
+CMakeUserPresets.json
+*.user
+compile_commands.json
+dist/
+testdata/local/
+models/
+*.simproj
+!samples/**
