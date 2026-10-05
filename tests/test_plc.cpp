@@ -629,6 +629,10 @@ TEST_CASE("commission robot cycle is started by the photoeye latch", "[plc]") {
     sim::Scene scene;
     sim::buildCommissionLine(scene);
     sim::attachCommissionRobot(scene);
+    REQUIRE(scene.softPlc.zones.size() == 1);
+    REQUIRE(scene.softPlc.zones[0].shape == "box");
+    REQUIRE(scene.softPlc.zones[0].size.x == Approx(100));
+    REQUIRE(scene.softPlc.zones[0].size.z == Approx(80));
     auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
     sim::Simulation simulation(scene, *engine);
     sim::SoftPlcRuntime plc;
@@ -745,13 +749,20 @@ TEST_CASE("a watched sphere writes Z1_Occupied and can reset start", "[plc]") {
     REQUIRE_FALSE(scene.findSignal("Z1_Occupied")->flag);
     REQUIRE(sim::findPlcTag(scene.softPlc, "R1_Start")->flag == false);
 
-    const nlohmann::json json = sim::softPlcToJson(scene.softPlc);
+    nlohmann::json json = sim::softPlcToJson(scene.softPlc);
     sim::SoftPlcDocument loaded;
     REQUIRE(sim::softPlcFromJson(json, loaded, error));
     REQUIRE(loaded.zones.size() == 1);
     REQUIRE(loaded.zones[0].name == "Z1");
+    REQUIRE(loaded.zones[0].shape == "sphere");
     REQUIRE(loaded.zones[0].radius == Approx(40));
     REQUIRE(loaded.zones[0].watch.size() == 1);
+    json["zones"][0].erase("shape");
+    json["zones"][0].erase("size");
+    sim::SoftPlcDocument legacy;
+    REQUIRE(sim::softPlcFromJson(json, legacy, error));
+    REQUIRE(legacy.zones[0].shape == "sphere");
+    REQUIRE(legacy.zones[0].radius == Approx(40));
 }
 
 TEST_CASE("mesh collision writes R1_Collision", "[plc]") {
@@ -797,4 +808,74 @@ TEST_CASE("mesh collision writes R1_Collision", "[plc]") {
     REQUIRE(sim::softPlcFromJson(json, loaded, error));
     REQUIRE(loaded.collisions.size() == 1);
     REQUIRE(loaded.collisions[0].resource == "r1");
+}
+
+TEST_CASE("a box and a vertical cylinder write occupied bits", "[plc]") {
+    sim::Scene scene;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    auto boxTip = scene.makeNode(sim::NodeKind::Part, "BoxTip");
+    boxTip->local.translation = {0, 0, 0};
+    scene.addChild(scene.root(), boxTip);
+    auto cylTip = scene.makeNode(sim::NodeKind::Part, "CylTip");
+    cylTip->local.translation = {0, 0, 0};
+    scene.addChild(scene.root(), cylTip);
+
+    sim::PlcZoneWatch box;
+    box.name = "ZB";
+    box.shape = "box";
+    box.center = {0, 0, 0};
+    box.size = {10, 20, 30};
+    box.watch = {"BoxTip"};
+    sim::PlcZoneWatch cylinder;
+    cylinder.name = "ZC";
+    cylinder.shape = "cylinder";
+    cylinder.center = {0, 0, 0};
+    cylinder.size = {10, 0, 20};
+    cylinder.watch = {"CylTip"};
+    doc.zones.push_back(box);
+    doc.zones.push_back(cylinder);
+
+    sim::SoftPlcRuntime plc;
+    std::string error;
+    REQUIRE(plc.start(doc, error));
+    plc.scan(scene, 0.01, 0.01);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "ZB_Occupied")->flag);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "ZC_Occupied")->flag);
+
+    boxTip->local.translation = {10.5, 0, 0};
+    cylTip->local.translation = {0, 11, 0};
+    plc.scan(scene, 0.02, 0.01);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "ZB_Occupied")->flag);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "ZC_Occupied")->flag);
+
+    boxTip->local.translation = {0, 20, 30};
+    cylTip->local.translation = {0, 0, 21};
+    plc.scan(scene, 0.03, 0.01);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "ZB_Occupied")->flag);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "ZC_Occupied")->flag);
+
+    cylTip->local.translation = {0, 0, 19};
+    plc.scan(scene, 0.04, 0.01);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "ZC_Occupied")->flag);
+
+    const nlohmann::json json = sim::softPlcToJson(scene.softPlc);
+    sim::SoftPlcDocument loaded;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.zones[0].shape == "box");
+    REQUIRE(loaded.zones[0].size.y == Approx(20));
+    REQUIRE(loaded.zones[1].shape == "cylinder");
+    REQUIRE(loaded.zones[1].size.z == Approx(20));
+}
+
+TEST_CASE("scan log exports time, scan number, and signals", "[plc]") {
+    const std::string csv = sim::softPlcScanCsv(
+        {"softplc started", "t=0.000 #1 Z1_Occupied=0", "t=0.350 #36 R1_Start=0 Z1_Occupied=1", "t=0.400 #40 D0=1,2"});
+    REQUIRE(csv.rfind("time,scan,signal,value\n", 0) == 0);
+    REQUIRE(csv.find("softplc") == std::string::npos);
+    REQUIRE(csv.find("0.000,1,Z1_Occupied,0\n") != std::string::npos);
+    REQUIRE(csv.find("0.350,36,R1_Start,0\n") != std::string::npos);
+    REQUIRE(csv.find("0.350,36,Z1_Occupied,1\n") != std::string::npos);
+    REQUIRE(csv.find("0.400,40,D0,\"1,2\"\n") != std::string::npos);
 }

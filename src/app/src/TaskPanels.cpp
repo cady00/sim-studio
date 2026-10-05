@@ -804,6 +804,67 @@ PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scen
     ladderLabel_->setWordWrap(true);
     layout->addWidget(ladderLabel_);
 
+    auto* zoneNote = new QLabel(
+        "干涉区。球写半径；包围盒写半长 X Y Z；竖直圆柱写半径和半高。监视用逗号分隔，地址留空则用名称_Occupied。");
+    zoneNote->setWordWrap(true);
+    layout->addWidget(zoneNote);
+    zoneTable_ = new QTableWidget(0, 6);
+    zoneTable_->setHorizontalHeaderLabels({"名称", "形状", "中心", "尺寸", "监视", "地址"});
+    zoneTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    zoneTable_->setMinimumHeight(96);
+    layout->addWidget(zoneTable_);
+    auto* zoneButtons = new QHBoxLayout;
+    auto* addZone = new QPushButton("添加干涉区");
+    auto* removeZone = new QPushButton("删除干涉区");
+    auto* exportScan = new QPushButton("导出扫描 CSV");
+    zoneButtons->addWidget(addZone);
+    zoneButtons->addWidget(removeZone);
+    zoneButtons->addWidget(exportScan);
+    layout->addLayout(zoneButtons);
+    connect(addZone, &QPushButton::clicked, this, [this] {
+        commitZones();
+        PlcZoneWatch zone;
+        zone.name = "Z" + std::to_string(scene_.softPlc.zones.size() + 1);
+        zone.shape = "box";
+        zone.center = {0, 0, 100};
+        zone.size = {150, 150, 80};
+        zone.radius = 150;
+        scene_.softPlc.zones.push_back(std::move(zone));
+        reload();
+        scene_.notify(ChangeKind::Transform);
+    });
+    connect(removeZone, &QPushButton::clicked, this, [this] {
+        commitZones();
+        const int row = zoneTable_ == nullptr ? -1 : zoneTable_->currentRow();
+        if (row >= 0 && row < static_cast<int>(scene_.softPlc.zones.size())) {
+            scene_.softPlc.zones.erase(scene_.softPlc.zones.begin() + row);
+        }
+        reload();
+        scene_.notify(ChangeKind::Transform);
+    });
+    connect(exportScan, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getSaveFileName(this, "导出扫描 CSV", QString(), "CSV (*.csv)");
+        if (path.isEmpty() || logView_ == nullptr) {
+            return;
+        }
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            return;
+        }
+        std::vector<std::string> lines;
+        const QStringList rows = logView_->toPlainText().split('\n');
+        lines.reserve(static_cast<std::size_t>(rows.size()));
+        for (const QString& row : rows) {
+            const QString trimmed = row.trimmed();
+            if (!trimmed.isEmpty()) {
+                lines.push_back(trimmed.toStdString());
+            }
+        }
+        const std::string csv = softPlcScanCsv(lines);
+        file.write(csv.data(), static_cast<qint64>(csv.size()));
+    });
+    connect(zoneTable_, &QTableWidget::itemChanged, this, [this] { commitZones(); });
+
     mapTable_ = new QTableWidget(0, 4);
     mapTable_->setHorizontalHeaderLabels({"设备信号", "地址", "方向", "OPC 节点"});
     mapTable_->horizontalHeader()->setStretchLastSection(true);
@@ -870,6 +931,12 @@ void PlcCards::revealLog() {
     }
 }
 
+void PlcCards::revealZones() {
+    if (scroll_ != nullptr && zoneTable_ != nullptr) {
+        scroll_->ensureWidgetVisible(zoneTable_, 0, 48);
+    }
+}
+
 void PlcCards::commit() {
     if (filling_) {
         return;
@@ -885,6 +952,7 @@ void PlcCards::commit() {
     }
     commitBindings();
     commitForces();
+    commitZones();
 }
 
 void PlcCards::commitBindings() {
@@ -1062,7 +1130,147 @@ void PlcCards::reload() {
         }
         ensure(forceTable_, row, 4, forceValue);
     }
+    if (zoneTable_ != nullptr) {
+        auto formatCenter = [](Vec3 value) {
+            return QStringLiteral("%1 %2 %3").arg(value.x, 0, 'f', 1).arg(value.y, 0, 'f', 1).arg(value.z, 0, 'f', 1);
+        };
+        auto formatSize = [](const PlcZoneWatch& zone) {
+            if (zone.shape == "box") {
+                return QStringLiteral("%1 %2 %3")
+                    .arg(zone.size.x, 0, 'f', 1)
+                    .arg(zone.size.y, 0, 'f', 1)
+                    .arg(zone.size.z, 0, 'f', 1);
+            }
+            if (zone.shape == "cylinder") {
+                return QStringLiteral("%1 %2").arg(zone.size.x, 0, 'f', 1).arg(zone.size.z, 0, 'f', 1);
+            }
+            return QString::number(zone.radius, 'f', 1);
+        };
+        zoneTable_->blockSignals(true);
+        zoneTable_->setRowCount(static_cast<int>(scene_.softPlc.zones.size()));
+        zoneTable_->setMinimumHeight(std::min(220, 36 + zoneTable_->rowCount() * 28));
+        for (int row = 0; row < zoneTable_->rowCount(); ++row) {
+            const PlcZoneWatch& zone = scene_.softPlc.zones[static_cast<std::size_t>(row)];
+            ensure(zoneTable_, row, 0, QString::fromStdString(zone.name));
+            ensure(zoneTable_, row, 2, formatCenter(zone.center));
+            ensure(zoneTable_, row, 3, formatSize(zone));
+            ensure(zoneTable_, row, 4, QString::fromStdString([&] {
+                       std::string joined;
+                       for (const std::string& name : zone.watch) {
+                           if (!joined.empty()) {
+                               joined += ", ";
+                           }
+                           joined += name;
+                       }
+                       return joined;
+                   }()));
+            ensure(zoneTable_, row, 5, QString::fromStdString(zone.address));
+            auto* shape = new QComboBox;
+            shape->addItem("球", QStringLiteral("sphere"));
+            shape->addItem("包围盒", QStringLiteral("box"));
+            shape->addItem("圆柱", QStringLiteral("cylinder"));
+            const int index = shape->findData(QString::fromStdString(zone.shape == "box" || zone.shape == "cylinder" ? zone.shape : "sphere"));
+            shape->setCurrentIndex(index < 0 ? 0 : index);
+            zoneTable_->setCellWidget(row, 1, shape);
+            connect(shape, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+                if (!filling_) {
+                    commitZones();
+                }
+            });
+        }
+        zoneTable_->blockSignals(false);
+    }
     filling_ = false;
+}
+
+namespace {
+
+Vec3 readVec3(const QString& text) {
+    Vec3 value;
+    int count = 0;
+    QString token;
+    auto push = [&] {
+        if (token.isEmpty()) {
+            return;
+        }
+        const double number = token.toDouble();
+        if (count == 0) {
+            value.x = number;
+        } else if (count == 1) {
+            value.y = number;
+        } else if (count == 2) {
+            value.z = number;
+        }
+        ++count;
+        token.clear();
+    };
+    for (const QChar letter : text) {
+        if (letter.isSpace() || letter == QLatin1Char(',')) {
+            push();
+        } else {
+            token += letter;
+        }
+    }
+    push();
+    if (count == 1) {
+        value.y = value.x;
+        value.z = value.x;
+    } else if (count == 2) {
+        value.z = value.y;
+        value.y = value.x;
+    }
+    return value;
+}
+
+}  // namespace
+
+void PlcCards::commitZones() {
+    if (filling_ || zoneTable_ == nullptr) {
+        return;
+    }
+    std::vector<PlcZoneWatch> zones;
+    zones.reserve(static_cast<std::size_t>(zoneTable_->rowCount()));
+    for (int row = 0; row < zoneTable_->rowCount(); ++row) {
+        auto text = [&](int column) {
+            const QTableWidgetItem* item = zoneTable_->item(row, column);
+            return item == nullptr ? QString() : item->text().trimmed();
+        };
+        PlcZoneWatch zone;
+        zone.name = text(0).toStdString();
+        if (auto* shape = qobject_cast<QComboBox*>(zoneTable_->cellWidget(row, 1))) {
+            zone.shape = shape->currentData().toString().toStdString();
+        }
+        if (zone.shape != "box" && zone.shape != "cylinder") {
+            zone.shape = "sphere";
+        }
+        zone.center = readVec3(text(2));
+        const Vec3 size = readVec3(text(3));
+        zone.size = size;
+        zone.radius = size.x;
+        QString watch = text(4);
+        QString token;
+        auto pushName = [&] {
+            const QString name = token.trimmed();
+            token.clear();
+            if (!name.isEmpty()) {
+                zone.watch.push_back(name.toStdString());
+            }
+        };
+        for (const QChar letter : watch) {
+            if (letter == QLatin1Char(',')) {
+                pushName();
+            } else {
+                token += letter;
+            }
+        }
+        pushName();
+        zone.address = text(5).toStdString();
+        if (!zone.name.empty() || !zone.address.empty()) {
+            zones.push_back(std::move(zone));
+        }
+    }
+    scene_.softPlc.zones = std::move(zones);
+    scene_.notify(ChangeKind::Transform);
 }
 
 void PlcCards::showRuntime(const std::vector<std::string>& log) {

@@ -29,6 +29,10 @@ public:
 // Clears timer elapsed time. The program, forces, and mappings stay.
 void resetSoftPlcTimers(SoftPlcDocument& doc);
 
+// Scan log as CSV. Columns are time, scan, signal, value. Lines that are not
+// scan records are skipped. One row per signal named on that scan.
+std::string softPlcScanCsv(const std::vector<std::string>& log);
+
 // Unwired boolean drafts for an imported mechanism. An arm gets
 // Rn_AtHome, Rn_Busy, Rn_Fault (in) and Rn_Start, Rn_Grip (out).
 // Each external axis gets Name_InPos (in). Device strings stay empty

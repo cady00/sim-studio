@@ -66,14 +66,19 @@ struct PlcRung {
     double literal = 0;
 };
 
-// Sphere watched by the soft PLC. A listed node origin or robot TCP inside the
-// radius writes a boolean input. An empty address becomes Name_Occupied, or
+// Volume watched by the soft PLC. A listed node origin or robot TCP inside the
+// volume writes a boolean input. An empty address becomes Name_Occupied, or
 // Z1_Occupied when the name is empty too. An empty watch list uses every robot TCP.
+// shape is sphere, box, or cylinder. sphere uses radius. box is an axis-aligned
+// box and size is the half extents. cylinder is vertical and size.x is the radius,
+// size.z the half height.
 struct PlcZoneWatch {
     std::string name;
     std::string address;
+    std::string shape = "sphere";
     Vec3 center{0, 0, 0};
     double radius = 150;
+    Vec3 size{150, 150, 150};
     std::vector<std::string> watch;
 };
 

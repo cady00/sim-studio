@@ -3019,7 +3019,7 @@ void MainWindow::beginHeadlessPlayback() {
                                       .arg(start != nullptr && start->flag ? QStringLiteral("1") : QStringLiteral("0"))
                                       .arg(shoulder, 0, 'f', 0));
             if (plc_ != nullptr) {
-                plc_->revealLog();
+                plc_->revealZones();
             }
             viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
             viewport_->fitAll();

@@ -569,11 +569,11 @@ void attachCommissionRobot(Scene& scene) {
     flag("r1_start", false);
     flag("r1_grip", false);
     flag("Z1_Occupied", false);
-    auto disc = addBox(scene, scene.root(), "Z1", {100, 100, 4}, {0.86, 0.28, 0.24}, zoneCenter);
-    disc->kind = NodeKind::Assembly;
     PlcZoneWatch zone;
     zone.name = "Z1";
+    zone.shape = "box";
     zone.center = zoneCenter;
+    zone.size = {100, 100, 80};
     zone.radius = 100;
     zone.watch = {"R1Gripper", "R1Work"};
     scene.softPlc.zones.push_back(std::move(zone));

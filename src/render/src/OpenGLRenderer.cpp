@@ -327,14 +327,26 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
     glUniformMatrix4fv(glGetUniformLocation(meshProgram_, "uViewProj"), 1, GL_FALSE, viewProj);
     glUniform3f(glGetUniformLocation(meshProgram_, "uEye"), static_cast<float>(frame_.eye.x),
                 static_cast<float>(frame_.eye.y), static_cast<float>(frame_.eye.z));
-    for (const auto& [key, batch] : batches) {
+    auto drawBatch = [&](const std::string& key, const std::vector<float>& batch) {
         const bool blend = key.size() >= 6 && key.compare(key.size() - 6, 6, "#blend") == 0;
         const std::string meshKey = blend ? key.substr(0, key.size() - 6) : key;
         const auto mesh = meshes_.find(meshKey);
         if (mesh == meshes_.end()) {
-            continue;
+            return;
         }
         drawInstances(mesh->second, batch, blend);
+    };
+    for (const auto& [key, batch] : batches) {
+        const bool blend = key.size() >= 6 && key.compare(key.size() - 6, 6, "#blend") == 0;
+        if (!blend) {
+            drawBatch(key, batch);
+        }
+    }
+    for (const auto& [key, batch] : batches) {
+        const bool blend = key.size() >= 6 && key.compare(key.size() - 6, 6, "#blend") == 0;
+        if (blend) {
+            drawBatch(key, batch);
+        }
     }
 }
 
