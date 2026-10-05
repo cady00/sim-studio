@@ -624,3 +624,77 @@ TEST_CASE("imported robot drafts unwired plc tags", "[plc]") {
     REQUIRE(sim::findPlcTag(doc, "R2_Start") != nullptr);
     REQUIRE(sim::findPlcTag(doc, "R3_Start") == nullptr);
 }
+
+TEST_CASE("commission robot cycle is started by the photoeye latch", "[plc]") {
+    sim::Scene scene;
+    sim::buildCommissionLine(scene);
+    sim::attachCommissionRobot(scene);
+    auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
+    sim::Simulation simulation(scene, *engine);
+    sim::SoftPlcRuntime plc;
+    sim::LogicMachine logic;
+    std::string error;
+    simulation.setHooks([&] { REQUIRE(plc.start(scene.softPlc, error)); },
+                        [&](double dt) {
+                            plc.scan(scene, simulation.time(), dt);
+                            logic.step(scene, dt);
+                        },
+                        [] {});
+    simulation.play();
+    double peak = 0;
+    bool gripped = false;
+    bool held = false;
+    for (int i = 0; i < 80; ++i) {
+        simulation.tick(0.02);
+        const sim::KinematicResource* robot = sim::findResource(scene.resources, "r1");
+        REQUIRE(robot != nullptr);
+        peak = std::max(peak, std::abs(robot->joints.front().position));
+        const sim::PlcTag* grip = sim::findPlcTag(scene.softPlc, "R1_Grip");
+        if (grip != nullptr && grip->flag) {
+            gripped = true;
+        }
+        if (const auto tool = scene.findByName("R1Gripper")) {
+            held = held || !tool->mech.held.empty();
+        }
+    }
+    REQUIRE(scene.findSignal("photo")->flag);
+    REQUIRE_FALSE(scene.findSignal("belt_run")->flag);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "R1_Start")->flag);
+    REQUIRE(peak > 40);
+    REQUIRE(gripped);
+    REQUIRE(held);
+}
+
+TEST_CASE("forcing R1_Start moves the robot without the photoeye", "[plc]") {
+    sim::Scene scene;
+    sim::buildCommissionLine(scene);
+    sim::attachCommissionRobot(scene);
+    if (const auto part = scene.findByName("Part")) {
+        part->local.translation = {-240, 0, 46};
+    }
+    sim::PlcTag* start = sim::findPlcTag(scene.softPlc, "R1_Start");
+    REQUIRE(start != nullptr);
+    start->forced = true;
+    start->forceFlag = true;
+    auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
+    sim::Simulation simulation(scene, *engine);
+    sim::SoftPlcRuntime plc;
+    sim::LogicMachine logic;
+    std::string error;
+    simulation.setHooks([&] { REQUIRE(plc.start(scene.softPlc, error)); },
+                        [&](double dt) {
+                            plc.scan(scene, simulation.time(), dt);
+                            logic.step(scene, dt);
+                        },
+                        [] {});
+    simulation.play();
+    double peak = 0;
+    for (int i = 0; i < 40; ++i) {
+        simulation.tick(0.02);
+        const sim::KinematicResource* robot = sim::findResource(scene.resources, "r1");
+        peak = std::max(peak, std::abs(robot->joints.front().position));
+    }
+    REQUIRE_FALSE(scene.findSignal("photo")->flag);
+    REQUIRE(scene.findSignal("r1_start")->flag);
+    REQUIRE(peak > 30);
+}

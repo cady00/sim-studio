@@ -148,6 +148,8 @@ public:
     void reload();
     // Scrolls the mapping table into view after a robot import.
     void revealMappings();
+    // Scrolls the tag table into view.
+    void revealTags();
     // Refreshes the monitor column and the scan log without rewriting edits.
     void showRuntime(const std::vector<std::string>& log);
     // Decimal node id, bool only. False when the client has no session.

@@ -2291,7 +2291,7 @@ void MainWindow::loadDemo(const QString& name) {
     meshDemo_ = name == QStringLiteral("mesh");
     slipDemo_ = name == QStringLiteral("slip");
     mcdDemo_ = name == QStringLiteral("mcd");
-    commissionDemo_ = name == QStringLiteral("commission");
+    commissionDemo_ = name == QStringLiteral("commission") || name == QStringLiteral("commission-force");
     lineDemo_ = name == QStringLiteral("line") || name.startsWith(QStringLiteral("line-"));
     lineFocus_ = QStringLiteral("floor");
     if (name.endsWith(QStringLiteral("ops"))) {
@@ -2417,9 +2417,19 @@ void MainWindow::loadDemo(const QString& name) {
     } else if (commissionDemo_) {
         usePhysicsBackend(PhysicsBackend::Builtin);
         buildCommissionLine(scene_);
+        attachCommissionRobot(scene_);
+        if (name == QStringLiteral("commission-force")) {
+            if (const auto part = scene_.findByName("Part")) {
+                part->local.translation = {-240, 0, 46};
+            }
+            if (PlcTag* start = findPlcTag(scene_.softPlc, "R1_Start")) {
+                start->forced = true;
+                start->forceFlag = true;
+            }
+        }
         demoPath_.clear();
         logic_.reset();
-        viewport_->setCallout(QStringLiteral("软 PLC · 光电 I0.0 · 定时 T0 · 气缸 Q0.0 · 输送 Q0.1 · 吸盘 grip"));
+        viewport_->setCallout(QStringLiteral("软 PLC · 光电 I0.0 · 输送 Q0.1 · R1_Start / R1_Grip"));
         applyTaskMode(5);
         refreshSignals();
         if (plc_ != nullptr) {
@@ -2997,18 +3007,19 @@ void MainWindow::beginHeadlessPlayback() {
             }
             const Signal* photo = scene_.findSignal("photo");
             const Signal* belt = scene_.findSignal("belt_run");
-            const Signal* grip = scene_.findSignal("grip");
-            const auto cylinder = scene_.findByName("Cylinder");
-            const double stroke = cylinder ? cylinder->mech.command : 0;
-            const PlcTag* counter = findPlcTag(scene_.softPlc, "C0");
-            const PlcTag* latch = findPlcTag(scene_.softPlc, "M0.0");
-            viewport_->setCallout(QStringLiteral("光电 %1 · 气缸 %2 mm · 输送 %3 · 吸盘 %4 · 计数 %5 · 锁存 %6")
+            const Signal* grip = scene_.findSignal("r1_grip");
+            const KinematicResource* robot = findResource(scene_.resources, "r1");
+            const double shoulder = robot != nullptr && !robot->joints.empty() ? robot->joints.front().position : 0;
+            const auto held = scene_.findByName("R1Gripper");
+            viewport_->setCallout(QStringLiteral("光电 %1 · 输送 %2 · A1 %3° · R1 夹取 %4 · 工件 %5")
                                       .arg(photo != nullptr && photo->flag ? QStringLiteral("通") : QStringLiteral("断"))
-                                      .arg(stroke, 0, 'f', 0)
                                       .arg(belt != nullptr && belt->flag ? QStringLiteral("运行") : QStringLiteral("停"))
+                                      .arg(shoulder, 0, 'f', 0)
                                       .arg(grip != nullptr && grip->flag ? QStringLiteral("合") : QStringLiteral("开"))
-                                      .arg(counter != nullptr ? static_cast<int>(counter->integer) : 0)
-                                      .arg(latch != nullptr && latch->flag ? QStringLiteral("合") : QStringLiteral("开")));
+                                      .arg(held && !held->mech.held.empty() ? QStringLiteral("已持") : QStringLiteral("空")));
+            if (plc_ != nullptr) {
+                plc_->revealTags();
+            }
             viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
             viewport_->fitAll();
         }

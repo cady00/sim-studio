@@ -856,6 +856,13 @@ void PlcCards::revealMappings() {
     }
 }
 
+void PlcCards::revealTags() {
+    reload();
+    if (scroll_ != nullptr && forceTable_ != nullptr) {
+        scroll_->ensureWidgetVisible(forceTable_, 0, 60);
+    }
+}
+
 void PlcCards::commit() {
     if (filling_) {
         return;

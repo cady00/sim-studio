@@ -132,7 +132,7 @@ int main(int argc, char* argv[]) {
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
     QCommandLineOption play("play", "Start the simulation after opening a project.");
     QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
-    QCommandLineOption demo("demo", "Built-in demo: cell, turntable, devices, robots, scara, collision, transfer, mesh, slip, mcd, plc, commission, kr420, kr420track, line, line-ops, line-gantt, or line-weld.", "name");
+    QCommandLineOption demo("demo", "Built-in demo: cell, turntable, devices, robots, scara, collision, transfer, mesh, slip, mcd, plc, commission, commission-force, kr420, kr420track, line, line-ops, line-gantt, or line-weld.", "name");
     QCommandLineOption mode("mode", "Task mode: model, kinematics, logic, robot, debug, commission.", "name");
     QCommandLineOption theme("theme", "Theme: dark or light.", "name");
     QCommandLineOption palette("palette", "Open the command palette before a screenshot.");

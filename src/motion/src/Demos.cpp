@@ -476,4 +476,192 @@ void buildPublicCell(Scene& scene) {
     scene.sequence = {transition, setDone, setSeen, waitDone};
 }
 
+void attachCommissionRobot(Scene& scene) {
+    auto& resource = ensureResource(scene, "r1");
+    Transform baseLocal;
+    baseLocal.translation = {560, 260, 0};
+    const std::string baseId = addLink(scene, resource, "base", "", baseLocal).nodeId;
+    Transform armLocal;
+    armLocal.translation = {0, 0, 70};
+    const std::string armId = addLink(scene, resource, "arm", "base", armLocal).nodeId;
+    Transform forearmLocal;
+    forearmLocal.translation = {180, 0, 0};
+    const std::string forearmId = addLink(scene, resource, "forearm", "arm", forearmLocal).nodeId;
+    Transform toolLocal;
+    toolLocal.translation = {150, 0, 0};
+    const std::string toolId = addLink(scene, resource, "tool", "forearm", toolLocal).nodeId;
+
+    addBox(scene, scene.find(baseId), "R1Base", {46, 46, 28}, {0.42, 0.46, 0.52}, {0, 0, 28});
+    addBox(scene, scene.find(armId), "R1Arm", {90, 18, 16}, {0.18, 0.42, 0.72}, {90, 0, 16});
+    addBox(scene, scene.find(forearmId), "R1Forearm", {75, 14, 12}, {0.16, 0.34, 0.58}, {75, 0, 12});
+    auto gripper = addBox(scene, scene.find(toolId), "R1Gripper", {16, 14, 18}, {0.72, 0.76, 0.82}, {16, 0, -8});
+    gripper->mech.kind = MechKind::Gripper;
+    gripper->mech.graspSignal = "r1_grip";
+    gripper->mech.graspRadius = 80;
+
+    KinJoint& shoulder = addJoint(resource, scene, "A1", "base", "arm", JointMotion::Revolute, {0, 0, 1}, {0, 0, 70});
+    shoulder.lower = -160;
+    shoulder.upper = 160;
+    shoulder.maxSpeed = 240;
+    shoulder.maxAccel = 960;
+    KinJoint& elbow = addJoint(resource, scene, "A2", "arm", "forearm", JointMotion::Revolute, {0, 0, 1}, {180, 0, 0});
+    elbow.lower = -150;
+    elbow.upper = 150;
+    elbow.maxSpeed = 280;
+    elbow.maxAccel = 1100;
+
+    setJointVector(resource, {0, 0});
+    applyResource(scene, resource);
+    capturePose(resource, "home");
+    setJointVector(resource, {-100, 18});
+    applyResource(scene, resource);
+    capturePose(resource, "pick");
+    const Vec3 pick = transformPoint(scene.find(toolId)->worldMatrix(), {0, 0, 0});
+    setJointVector(resource, {35, -55});
+    applyResource(scene, resource);
+    capturePose(resource, "place");
+    setJointVector(resource, {0, 0});
+    applyResource(scene, resource);
+
+    Mech pad;
+    pad.kind = MechKind::Collision;
+    pad.motion = BodyMotion::Anchored;
+    pad.kinematic = true;
+    pad.halfExtents = {36, 36, 10};
+    addBox(scene, scene.root(), "R1Pad", pad.halfExtents, {0.28, 0.32, 0.38}, pick + Vec3{0, 0, -48})->mech = pad;
+
+    Mech work;
+    work.kind = MechKind::Rigid;
+    work.motion = BodyMotion::Free;
+    work.kinematic = false;
+    work.autoMass = false;
+    work.mass = 0.3;
+    work.allowSleep = false;
+    work.halfExtents = {16, 16, 12};
+    addBox(scene, scene.root(), "R1Work", work.halfExtents, {0.86, 0.42, 0.22}, pick + Vec3{0, 0, -26})->mech = work;
+
+    Mech placePad;
+    placePad.kind = MechKind::Collision;
+    placePad.motion = BodyMotion::Anchored;
+    placePad.kinematic = true;
+    placePad.halfExtents = {40, 40, 8};
+    setJointVector(resource, {35, -55});
+    applyResource(scene, resource);
+    const Vec3 placeTool = transformPoint(scene.find(toolId)->worldMatrix(), {0, 0, 0});
+    setJointVector(resource, {0, 0});
+    applyResource(scene, resource);
+    addBox(scene, scene.root(), "R1Place", placePad.halfExtents, {0.30, 0.48, 0.36}, placeTool + Vec3{0, 0, -46})->mech = placePad;
+
+    auto flag = [&](const char* name, bool value) {
+        Signal& signal = scene.upsertSignal(name, SignalType::Bool);
+        signal.flag = value;
+    };
+    flag("r1_athome", true);
+    flag("r1_busy", false);
+    flag("r1_atpick", false);
+    flag("r1_atplace", false);
+    flag("r1_start", false);
+    flag("r1_grip", false);
+
+    auto ensureTag = [&](const char* address) {
+        if (findPlcTag(scene.softPlc, address) != nullptr) {
+            return;
+        }
+        PlcTag tag;
+        tag.address = address;
+        tag.kind = PlcValueKind::Bool;
+        scene.softPlc.tags.push_back(std::move(tag));
+    };
+    ensureTag("R1_AtHome");
+    ensureTag("R1_Busy");
+    ensureTag("R1_Fault");
+    ensureTag("R1_Start");
+    ensureTag("R1_Grip");
+    ensureTag("M1.0");
+    ensureTag("M2.0");
+    if (PlcTag* home = findPlcTag(scene.softPlc, "R1_AtHome")) {
+        home->flag = true;
+    }
+    auto bind = [&](const char* device, const char* address, const char* direction) {
+        for (const PlcBinding& have : scene.softPlc.bindings) {
+            if (have.address == address) {
+                return;
+            }
+        }
+        PlcBinding item;
+        item.device = device;
+        item.address = address;
+        item.direction = direction;
+        scene.softPlc.bindings.push_back(std::move(item));
+    };
+    bind("r1_athome", "R1_AtHome", "in");
+    bind("r1_busy", "R1_Busy", "in");
+    bind("r1_atpick", "M1.0", "in");
+    bind("r1_atplace", "M2.0", "in");
+    bind("r1_start", "R1_Start", "out");
+    bind("r1_grip", "R1_Grip", "out");
+
+    auto level = [](const char* address, bool normallyOpen) {
+        PlcContact contact;
+        contact.address = address;
+        contact.normallyOpen = normallyOpen;
+        return contact;
+    };
+    PlcRung start;
+    start.series.push_back(level("M0.0", true));
+    start.series.push_back(level("R1_AtHome", true));
+    start.coil = "R1_Start";
+    start.action = "set";
+    PlcRung grip;
+    grip.series.push_back(level("R1_Start", true));
+    grip.series.push_back(level("M1.0", true));
+    grip.series.push_back(level("M2.0", false));
+    grip.coil = "R1_Grip";
+    grip.action = "out";
+    scene.softPlc.rungs.push_back(std::move(start));
+    scene.softPlc.rungs.push_back(std::move(grip));
+
+    auto setOut = [](const char* signal) {
+        LogicAction action;
+        action.kind = "set_output";
+        action.signal = signal;
+        return action;
+    };
+    auto resetOut = [](const char* signal) {
+        LogicAction action;
+        action.kind = "reset_output";
+        action.signal = signal;
+        return action;
+    };
+    auto moveTo = [](const char* pose) {
+        LogicAction action;
+        action.kind = "move_pose";
+        action.pose = pose;
+        action.profile = "trapezoid";
+        return action;
+    };
+    auto when = [](const char* signal, bool flag) {
+        LogicCondition condition;
+        condition.signal = signal;
+        condition.flag = flag;
+        return condition;
+    };
+    LogicBlock cycle;
+    cycle.name = "r1_cycle";
+    cycle.resource = resource.name;
+    cycle.runSignal = "r1_start";
+    cycle.inputs = {"r1_start", "r1_grip"};
+    cycle.outputs = {"r1_athome", "r1_busy", "r1_atpick", "r1_atplace"};
+    LogicStep depart;
+    depart.actions = {resetOut("r1_athome"), setOut("r1_busy"), moveTo("pick"), setOut("r1_atpick")};
+    LogicStep carry;
+    carry.when = {when("r1_grip", true)};
+    carry.actions = {moveTo("place"), resetOut("r1_atpick"), setOut("r1_atplace")};
+    LogicStep ret;
+    ret.when = {when("r1_grip", false)};
+    ret.actions = {moveTo("home"), setOut("r1_athome"), resetOut("r1_busy"), resetOut("r1_atplace")};
+    cycle.steps = {depart, carry, ret};
+    scene.logicBlocks.push_back(std::move(cycle));
+}
+
 }  // namespace sim
