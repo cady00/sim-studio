@@ -1,8 +1,10 @@
 #include "sim/app/MainWindow.hpp"
+#include "sim/io/OpcUa.hpp"
 
 #include "sim/core/Version.hpp"
 
 #include <QApplication>
+#include <QDebug>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
@@ -13,6 +15,8 @@
 #include <QStyleFactory>
 #include <QSurfaceFormat>
 #include <QTimer>
+
+#include <thread>
 
 namespace {
 
@@ -61,7 +65,7 @@ int main(int argc, char* argv[]) {
     QSurfaceFormat format;
     format.setDepthBufferSize(24);
     format.setStencilBufferSize(8);
-    format.setVersion(3, 3);
+    format.setVersion(4, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setSamples(4);
     QSurfaceFormat::setDefaultFormat(format);
@@ -97,11 +101,13 @@ int main(int argc, char* argv[]) {
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
     QCommandLineOption play("play", "Start the simulation after opening a project.");
     QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
-    QCommandLineOption demo("demo", "Built-in demo: turntable, scara, collision, transfer, mesh, slip, kr420, or kr420track.", "name");
+    QCommandLineOption demo("demo", "Built-in demo: cell, turntable, devices, robots, scara, collision, transfer, mesh, slip, mcd, plc, kr420, kr420track, line, line-ops, line-gantt, or line-weld.", "name");
     QCommandLineOption mode("mode", "Task mode: model, kinematics, logic, robot, debug, commission.", "name");
     QCommandLineOption theme("theme", "Theme: dark or light.", "name");
     QCommandLineOption palette("palette", "Open the command palette before a screenshot.");
     QCommandLineOption intent("intent", "Open the AI intent bar before a screenshot.");
+    QCommandLineOption bench("bench", "Draw a 100000-part field, print BENCH, and save a screenshot.", "png");
+    QCommandLineOption plc("plc", "Open the commission cards and connect OPC UA on 127.0.0.1:4840.");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
@@ -113,6 +119,8 @@ int main(int argc, char* argv[]) {
     parser.addOption(theme);
     parser.addOption(palette);
     parser.addOption(intent);
+    parser.addOption(bench);
+    parser.addOption(plc);
     parser.process(application);
 
     sim::MainWindow window(parser.value(language));
@@ -121,7 +129,9 @@ int main(int argc, char* argv[]) {
     if (parser.isSet(theme)) {
         window.setThemeName(parser.value(theme));
     }
-    if (parser.isSet(demo)) {
+    if (parser.isSet(bench)) {
+        window.runLargeSceneBench(parser.value(bench));
+    } else if (parser.isSet(demo)) {
         window.loadDemo(parser.value(demo));
     } else if (parser.isSet(openProject)) {
         window.openProject(parser.value(openProject));
@@ -140,6 +150,20 @@ int main(int argc, char* argv[]) {
     }
     if (parser.isSet(intent)) {
         window.showIntentBar();
+    }
+    if (parser.isSet(plc)) {
+        auto* server = new sim::OpcUaServer;
+        std::string error;
+        if (!server->listen(4840, error)) {
+            qWarning("OPC UA listen on 127.0.0.1:4840 failed: %s", error.c_str());
+            delete server;
+        } else {
+            std::thread([server] {
+                std::string serveError;
+                server->serve(serveError);
+            }).detach();
+        }
+        window.showPlcConnection();
     }
     if (parser.isSet(importStep)) {
         window.importStepAsync(parser.value(importStep));

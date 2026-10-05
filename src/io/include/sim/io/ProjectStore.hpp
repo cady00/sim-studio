@@ -2,7 +2,9 @@
 
 #include "sim/core/Scene.hpp"
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace sim {
 
@@ -16,6 +18,16 @@ class ProjectStore {
 public:
     static ProjectResult save(const Scene& scene, const std::string& path);
     static ProjectResult load(const std::string& path, Scene& scene);
+    // Same package as save/load, kept in memory for the edit history.
+    static ProjectResult saveBytes(const Scene& scene, std::vector<std::uint8_t>& out);
+    static ProjectResult loadBytes(const std::vector<std::uint8_t>& bytes, Scene& scene);
+
+    // autosave.simproj plus session.pid. A dead pid means the last session crashed.
+    static ProjectResult autosave(const Scene& scene, const std::string& directory);
+    static void markSession(const std::string& directory);
+    static void clearSession(const std::string& directory);
+    static bool sessionInterrupted(const std::string& directory);
+    static ProjectResult restoreAutosave(const std::string& directory, Scene& scene);
 };
 
 }  // namespace sim

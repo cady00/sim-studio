@@ -1,9 +1,12 @@
 #pragma once
 
 #include "sim/core/Kinematics.hpp"
+#include "sim/core/LineModel.hpp"
 #include "sim/core/Mech.hpp"
 #include "sim/core/PhysicsModel.hpp"
 #include "sim/core/Proximity.hpp"
+#include "sim/core/Weld.hpp"
+#include "sim/core/Envelope.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Transform.hpp"
 
@@ -39,6 +42,9 @@ struct SceneNode {
     Transform local;
     std::string meshId;
     Vec3 color{0.55, 0.58, 0.66};
+    // glTF pbrMetallicRoughness. 0 metal and 1 rough is a plain painted part.
+    float metallic = 0;
+    float roughness = 1;
     bool visible = true;
     // Extracted at STEP import. Empty for boxes and meshes that were not exploded from B-rep.
     std::vector<FaceAxis> faceAxes;
@@ -65,6 +71,8 @@ public:
 
     std::shared_ptr<SceneNode> find(const std::string& id) const;
     std::shared_ptr<SceneNode> findByName(const std::string& name) const;
+    // Substring match on node names. Stops after `limit` hits. Used by the virtual scene tree.
+    int collectNames(const std::string& query, std::vector<std::string>& out, int limit) const;
     std::shared_ptr<SceneNode> makeNode(NodeKind kind, const std::string& name);
     void addChild(const std::shared_ptr<SceneNode>& parent, const std::shared_ptr<SceneNode>& child);
     // Moves a node under a new parent. keepWorld recomputes the local pose.
@@ -112,11 +120,18 @@ public:
     std::vector<KinematicResource> resources;
     std::vector<LogicBlock> logicBlocks;
     std::vector<RobotPath> robotPaths;
+    std::vector<WeldSpot> welds;
+    std::vector<MotionEnvelope> envelopes;
+    std::vector<InterlockZone> interlocks;
     ProximitySetup proximity;
     std::vector<ConvexCacheEntry> convexCache;
     PhysicsDocument physicsDoc;
     std::vector<MotorAspect> motors;
     std::vector<ContactNotice> contactNotices;
+    LineLayout layout;
+    std::vector<Operation> operations;
+    std::vector<SequenceEvent> sequence;
+    PprDocument ppr;
 
     bool dirty() const { return dirty_; }
     void markClean() { dirty_ = false; }

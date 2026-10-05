@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace sim {
@@ -45,6 +46,7 @@ struct Touch {
     Vec3 push{0, 0, 1};
     double depth = 0;
     Vec3 point{};
+    std::vector<Vec3> points;
     std::string otherId;
     std::string otherName;
     bool conveyor = false;
@@ -72,6 +74,32 @@ Box boxOf(const SceneNode& node) {
         const double r = std::abs(node.mech.radius);
         box.half = {r, r, r};
     }
+    return box;
+}
+
+Box worldBox(const Scene& scene, const SceneNode& node) {
+    Box box = boxOf(node);
+    if (node.meshId.empty() || (node.mech.shape != CollisionShape::Mesh && node.mech.shape != CollisionShape::ConvexHull &&
+                                node.mech.shape != CollisionShape::Extrusion)) {
+        return box;
+    }
+    const auto mesh = scene.mesh(node.meshId);
+    if (!mesh || !mesh->bounds.valid) {
+        return box;
+    }
+    const Mat4 world = node.worldMatrix();
+    const Vec3 corners[2] = {mesh->bounds.min, mesh->bounds.max};
+    Vec3 low = transformPoint(world, corners[0]);
+    Vec3 high = low;
+    for (int i = 1; i < 8; ++i) {
+        const Vec3 local{(i & 1) ? corners[1].x : corners[0].x, (i & 2) ? corners[1].y : corners[0].y,
+                         (i & 4) ? corners[1].z : corners[0].z};
+        const Vec3 point = transformPoint(world, local);
+        low = {std::min(low.x, point.x), std::min(low.y, point.y), std::min(low.z, point.z)};
+        high = {std::max(high.x, point.x), std::max(high.y, point.y), std::max(high.z, point.z)};
+    }
+    box.center = (low + high) * 0.5;
+    box.half = (high - low) * 0.5;
     return box;
 }
 
@@ -184,6 +212,26 @@ void integrateBall(JointState& joint, SceneNode& node, double dt) {
         const Quat delta = Quat::fromAxisAngle(normalize(joint.omega), deg2rad(rate * dt));
         joint.swing = (delta * joint.swing).normalized();
     }
+    if (node.mech.limited) {
+        const double cone = std::max(0.0, node.mech.upper);
+        const Vec3 rest = length(joint.axis) > 1e-8 ? normalize(joint.axis) : Vec3{0, 0, 1};
+        const Vec3 swung = joint.swing.rotate(rest);
+        const double cosine = std::clamp(dot(rest, normalize(swung)), -1.0, 1.0);
+        const double angle = rad2deg(std::acos(cosine));
+        if (angle > cone + 1e-3) {
+            Vec3 correction = cross(swung, rest);
+            if (length(correction) < 1e-8) {
+                correction = std::abs(rest.z) < 0.9 ? cross(rest, Vec3{0, 0, 1}) : cross(rest, Vec3{1, 0, 0});
+            }
+            correction = normalize(correction);
+            const Quat back = Quat::fromAxisAngle(correction, deg2rad(angle - cone));
+            joint.swing = (back * joint.swing).normalized();
+            const double closing = dot(joint.omega, correction);
+            if (closing < 0) {
+                joint.omega = joint.omega - correction * closing;
+            }
+        }
+    }
     node.local.rotation = (joint.swing * joint.restRotation).normalized();
     node.local.translation = joint.restTranslation;
 }
@@ -230,6 +278,237 @@ public:
         return true;
     }
 
+    bool stopAtImpact(BodyState& body, SceneNode& node, double dt) {
+        const Box self = boxOf(node);
+        double best = dt + 1.0;
+        Vec3 normal{0, 0, 1};
+        bool hit = false;
+        for (const BodyState& other : bodies_) {
+            if (other.id == body.id || other.dynamic) {
+                continue;
+            }
+            auto obstacle = scene_->find(other.id);
+            if (!obstacle) {
+                continue;
+            }
+            double toi = 0;
+            Vec3 hitNormal{0, 0, 1};
+            bool found = false;
+            if (obstacle->mech.shape == CollisionShape::Mesh) {
+                if (const TriangleBvh* bvh = trianglesFor(*obstacle)) {
+                    found = sweepAabbMesh(self.center, self.half, body.velocity, dt, *bvh, obstacle->worldMatrix(), toi, hitNormal);
+                }
+            } else {
+                const Box box = boxOf(*obstacle);
+                found = sweepAabbToi(self.center, self.half, body.velocity, dt, box.center, box.half, toi, hitNormal);
+            }
+            if (found && toi < best) {
+                best = toi;
+                normal = hitNormal;
+                hit = true;
+            }
+        }
+        if (!hit) {
+            return false;
+        }
+        node.local.translation = node.local.translation + body.velocity * std::max(0.0, best);
+        if (dot(body.velocity, normal) < 0) {
+            body.velocity = body.velocity - normal * dot(body.velocity, normal);
+        }
+        return true;
+    }
+
+    JointState* jointByName(const std::string& name) {
+        if (name.empty() || scene_ == nullptr) {
+            return nullptr;
+        }
+        auto node = scene_->findByName(name);
+        if (!node) {
+            return nullptr;
+        }
+        for (JointState& joint : joints_) {
+            if (joint.id == node->id) {
+                return &joint;
+            }
+        }
+        return nullptr;
+    }
+
+    void writeJoint(JointState& joint, SceneNode& node) const {
+        if (joint.ball) {
+            return;
+        }
+        if (joint.hinge) {
+            const Quat delta = Quat::fromAxisAngle(joint.axis, deg2rad(joint.position));
+            node.local.rotation = (delta * joint.restRotation).normalized();
+            node.local.translation = joint.restTranslation;
+        } else {
+            node.local.translation = joint.restTranslation + joint.axis * joint.position;
+            node.local.rotation = joint.restRotation;
+        }
+    }
+
+    static double camMap(const Mech& mech, double master) {
+        if (mech.camIn.size() < 2 || mech.camIn.size() != mech.camOut.size()) {
+            return master * mech.ratio;
+        }
+        if (master <= mech.camIn.front()) {
+            return mech.camOut.front();
+        }
+        for (std::size_t i = 1; i < mech.camIn.size(); ++i) {
+            if (master <= mech.camIn[i]) {
+                const double span = mech.camIn[i] - mech.camIn[i - 1];
+                const double t = span > 1e-9 ? (master - mech.camIn[i - 1]) / span : 0;
+                return mech.camOut[i - 1] + t * (mech.camOut[i] - mech.camOut[i - 1]);
+            }
+        }
+        return mech.camOut.back();
+    }
+
+    void applySetpoints() {
+        for (JointState& joint : joints_) {
+            auto node = scene_->find(joint.id);
+            if (!node || node->mech.setpoint.empty()) {
+                continue;
+            }
+            const Signal* signal = scene_->findSignal(node->mech.setpoint);
+            if (signal == nullptr) {
+                continue;
+            }
+            if (node->mech.control == "velocity") {
+                node->mech.drive = DriveMode::Speed;
+                node->mech.target = signal->real * node->mech.gain;
+            } else {
+                node->mech.drive = DriveMode::Position;
+                node->mech.target = signal->real;
+            }
+        }
+    }
+
+    void applyCoupling() {
+        for (JointState& joint : joints_) {
+            auto node = scene_->find(joint.id);
+            if (!node || node->mech.couple.empty()) {
+                continue;
+            }
+            double master = 0;
+            if (node->mech.couple == "ecam") {
+                const Signal* signal = scene_->findSignal(node->mech.master);
+                master = signal == nullptr ? 0 : signal->real;
+            } else if (JointState* drive = jointByName(node->mech.master)) {
+                master = drive->position;
+            } else {
+                continue;
+            }
+            if (node->mech.couple == "gear") {
+                joint.position = master * node->mech.ratio;
+            } else {
+                joint.position = camMap(node->mech, master);
+            }
+            writeJoint(joint, *node);
+        }
+    }
+
+    void stepActuators(double dt) {
+        grasped_.clear();
+        std::vector<std::shared_ptr<SceneNode>> stack{scene_->root()};
+        while (!stack.empty()) {
+            auto node = stack.back();
+            stack.pop_back();
+            if (!node) {
+                continue;
+            }
+            for (const auto& child : node->children) {
+                stack.push_back(child);
+            }
+            if (node->mech.kind == MechKind::Limit) {
+                const JointState* watched = jointByName(node->mech.other);
+                const bool tripped = watched != nullptr && watched->position >= node->mech.trip;
+                const std::string name = node->mech.signal.empty() ? node->name : node->mech.signal;
+                scene_->upsertSignal(name, SignalType::Bool).flag = tripped;
+            }
+            if (node->mech.kind == MechKind::Cylinder) {
+                const Signal* extend = node->mech.signal.empty() ? nullptr : scene_->findSignal(node->mech.signal);
+                const bool out = extend != nullptr && extend->flag;
+                const double goal = out ? node->mech.upper : node->mech.lower;
+                const double flow = std::clamp(node->mech.throttle, 0.0, 1.0);
+                const double vmax = std::max(0.0, node->mech.maxSpeed) * flow;
+                double remaining = goal - node->mech.command;
+                if (vmax > 1e-9 && dt > 0 && std::abs(remaining) > 1e-9) {
+                    const double dir = remaining > 0 ? 1.0 : -1.0;
+                    const double absRem = std::abs(remaining);
+                    const double cushionDist = std::max(0.0, node->mech.cushion) * vmax;
+                    if (cushionDist > 1e-6 && absRem <= cushionDist) {
+                        const double next = absRem * std::exp(-(vmax / cushionDist) * dt);
+                        node->mech.command = goal - dir * next;
+                    } else if (cushionDist > 1e-6) {
+                        const double cruise = absRem - cushionDist;
+                        const double cruiseTime = cruise / vmax;
+                        if (dt < cruiseTime) {
+                            node->mech.command += dir * vmax * dt;
+                        } else {
+                            const double next = cushionDist * std::exp(-(vmax / cushionDist) * (dt - cruiseTime));
+                            node->mech.command = goal - dir * next;
+                        }
+                    } else {
+                        node->mech.command += std::clamp(remaining, -vmax * dt, vmax * dt);
+                    }
+                }
+                const Vec3 axis = length(node->mech.axis) > 1e-8 ? normalize(node->mech.axis) : Vec3{1, 0, 0};
+                if (actuatorRest_.count(node->id) == 0) {
+                    actuatorRest_[node->id] = node->local.translation;
+                }
+                node->local.translation = actuatorRest_[node->id] + axis * node->mech.command;
+            }
+            if (node->mech.kind == MechKind::Gripper) {
+                const Signal* grasp = node->mech.graspSignal.empty() ? nullptr : scene_->findSignal(node->mech.graspSignal);
+                const bool closed = grasp != nullptr && grasp->flag;
+                if (!closed) {
+                    node->mech.held.clear();
+                    continue;
+                }
+                if (node->mech.held.empty()) {
+                    double best = node->mech.graspRadius;
+                    std::string id;
+                    const Vec3 origin = worldTranslation(*node);
+                    for (const BodyState& body : bodies_) {
+                        if (!body.dynamic) {
+                            continue;
+                        }
+                        auto other = scene_->find(body.id);
+                        if (!other) {
+                            continue;
+                        }
+                        const double distance = length(worldTranslation(*other) - origin);
+                        if (distance <= best) {
+                            best = distance;
+                            id = body.id;
+                        }
+                    }
+                    if (!id.empty()) {
+                        auto other = scene_->find(id);
+                        node->mech.held = id;
+                        node->mech.direction = worldTranslation(*other) - worldTranslation(*node);
+                    }
+                }
+                if (!node->mech.held.empty()) {
+                    auto held = scene_->find(node->mech.held);
+                    if (!held) {
+                        node->mech.held.clear();
+                    } else {
+                        held->local.translation = worldTranslation(*node) + node->mech.direction;
+                        grasped_.insert(held->id);
+                        for (BodyState& body : bodies_) {
+                            if (body.id == held->id) {
+                                body.velocity = {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     void step(double dtSeconds) override {
         if (scene_ == nullptr || dtSeconds <= 0) {
             return;
@@ -255,6 +534,7 @@ public:
         }
         const double dt = dtSeconds;
         const auto started = std::chrono::steady_clock::now();
+        applySetpoints();
         stepMotors(dt);
         rideSurfaces(dt);
         const auto detected = std::chrono::steady_clock::now();
@@ -277,10 +557,12 @@ public:
                 }
             }
         }
+        applyCoupling();
+        stepActuators(dt);
 
         constexpr double kGravity = -9810.0;
         for (BodyState& body : bodies_) {
-            if (!body.dynamic) {
+            if (!body.dynamic || grasped_.count(body.id) != 0) {
                 continue;
             }
             auto node = scene_->find(body.id);
@@ -290,11 +572,14 @@ public:
             if (node->mech.asleep && node->mech.allowSleep) {
                 continue;
             }
-            const int slices = node->mech.continuous ? 4 : 1;
-            const double sub = dt / static_cast<double>(slices);
-            for (int slice = 0; slice < slices; ++slice) {
-                body.velocity.z += kGravity * sub;
-                node->local.translation = node->local.translation + body.velocity * sub;
+            if (node->mech.continuous) {
+                body.velocity.z += kGravity * dt;
+                if (!stopAtImpact(body, *node, dt)) {
+                    node->local.translation = node->local.translation + body.velocity * dt;
+                }
+            } else {
+                body.velocity.z += kGravity * dt;
+                node->local.translation = node->local.translation + body.velocity * dt;
             }
             if (node->mech.allowSleep && length(body.velocity) < 2.0) {
                 node->mech.asleep = true;
@@ -315,6 +600,8 @@ public:
         bodies_.clear();
         joints_.clear();
         sourceClock_.clear();
+        actuatorRest_.clear();
+        grasped_.clear();
         meshBvh_.clear();
         scene_ = nullptr;
     }
@@ -492,6 +779,24 @@ private:
     }
 
     std::vector<Probe> narrowProbes(const SceneNode& moving, const SceneNode& obstacle) {
+        if (moving.mech.shape == CollisionShape::Mesh && obstacle.mech.shape == CollisionShape::Mesh) {
+            const TriangleBvh* first = trianglesFor(moving);
+            const TriangleBvh* second = trianglesFor(obstacle);
+            std::vector<Probe> probes;
+            if (first != nullptr && second != nullptr) {
+                const std::vector<NarrowContact> hits =
+                    queryMeshMesh(*first, moving.worldMatrix(), *second, obstacle.worldMatrix(), 8);
+                for (std::size_t i = 0; i < hits.size(); i += 2) {
+                    Probe probe;
+                    probe.hit = true;
+                    probe.push = hits[i].normal;
+                    probe.depth = hits[i].depth;
+                    probe.point = hits[i].point;
+                    probes.push_back(probe);
+                }
+            }
+            return probes;
+        }
         if (obstacle.mech.shape == CollisionShape::Mesh) {
             if (const TriangleBvh* bvh = trianglesFor(obstacle)) {
                 const Box box = boxOf(moving);
@@ -558,16 +863,20 @@ private:
             velocity = velocity - slip * (reduce / slipLength);
         }
         body.velocity = velocity;
-        ContactNotice notice;
-        notice.self = node.name;
-        notice.other = touch.otherName;
-        notice.impulse = massKilograms(node.mech) * std::abs(normalDelta);
-        notice.normal = push;
-        notice.point = touch.point;
-        scene_->contactNotices.push_back(notice);
+        const double impulseValue = massKilograms(node.mech) * std::abs(normalDelta);
+        const std::vector<Vec3> points = touch.points.empty() ? std::vector<Vec3>{touch.point} : touch.points;
+        for (const Vec3& point : points) {
+            ContactNotice notice;
+            notice.self = node.name;
+            notice.other = touch.otherName;
+            notice.impulse = impulseValue;
+            notice.normal = push;
+            notice.point = point;
+            scene_->contactNotices.push_back(notice);
+        }
         scene_->upsertSignal("contact", SignalType::Bool).flag = true;
         Signal& impulse = scene_->upsertSignal("contact_impulse", SignalType::Real);
-        impulse.real = std::max(impulse.real, notice.impulse);
+        impulse.real = std::max(impulse.real, impulseValue);
         if (touch.ride) {
             body.dynamic = false;
             body.riding = true;
@@ -757,6 +1066,15 @@ private:
                     if (!obstacle) {
                         continue;
                     }
+                    const Box movingBox = worldBox(*scene_, *node);
+                    const Box obstacleBox = worldBox(*scene_, *obstacle);
+                    if (movingBox.half.x > 1e-3 && obstacleBox.half.x > 1e-3) {
+                        Vec3 overlapNormal;
+                        double overlap = 0;
+                        if (!separated(movingBox, obstacleBox, overlapNormal, overlap)) {
+                            continue;
+                        }
+                    }
                     const std::vector<Probe> probes = narrowProbes(*node, *obstacle);
                     if (probes.empty()) {
                         continue;
@@ -773,12 +1091,16 @@ private:
                     Touch& touch = touches[index];
                     if (!touch.used || deepest->depth > touch.depth) {
                         if (!touch.used) {
-                            scene_->physicsDoc.stats.contacts += 1;
+                            scene_->physicsDoc.stats.contacts += static_cast<int>(probes.size());
                         }
                         touch.used = true;
                         touch.push = deepest->push;
                         touch.depth = deepest->depth;
                         touch.point = deepest->point;
+                        touch.points.clear();
+                        for (const Probe& probe : probes) {
+                            touch.points.push_back(probe.point);
+                        }
                         touch.otherId = obstacle->id;
                         touch.otherName = obstacle->name;
                         touch.conveyor = obstacle->mech.kind == MechKind::Conveyor;
@@ -885,6 +1207,12 @@ private:
             if (node->mech.kind != MechKind::Source || node->mech.prototype.empty()) {
                 continue;
             }
+            if (!node->mech.signal.empty()) {
+                const Signal* enable = scene_->findSignal(node->mech.signal);
+                if (enable == nullptr || !enable->flag) {
+                    continue;
+                }
+            }
             double& clock = sourceClock_[node->id];
             clock += dt;
             const double interval = std::max(node->mech.interval, 0.05);
@@ -930,6 +1258,12 @@ private:
                 double depth = 0;
                 if (separated(sink, boxOf(*other), normal, depth)) {
                     remove.push_back(body.id);
+                    if (!node->mech.signal.empty()) {
+                        scene_->upsertSignal(node->mech.signal, SignalType::Bool).flag = true;
+                    }
+                    if (!node->mech.valueSignal.empty()) {
+                        scene_->upsertSignal(node->mech.valueSignal, SignalType::Int).integer += 1;
+                    }
                 }
             }
         }
@@ -943,6 +1277,8 @@ private:
     std::vector<BodyState> bodies_;
     std::vector<JointState> joints_;
     std::unordered_map<std::string, double> sourceClock_;
+    std::unordered_map<std::string, Vec3> actuatorRest_;
+    std::unordered_set<std::string> grasped_;
     std::unordered_map<std::string, TriangleBvh> meshBvh_;
 };
 

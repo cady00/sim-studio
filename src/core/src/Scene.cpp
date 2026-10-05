@@ -102,11 +102,18 @@ void Scene::clear() {
     resources.clear();
     logicBlocks.clear();
     robotPaths.clear();
+    welds.clear();
+    envelopes.clear();
+    interlocks.clear();
     proximity = {};
     convexCache.clear();
     physicsDoc = {};
     motors.clear();
     contactNotices.clear();
+    layout = {};
+    operations.clear();
+    sequence.clear();
+    ppr = {};
     dirty_ = false;
     ++structureRevision_;
     if (!mute_ && onChanged) {
@@ -137,11 +144,18 @@ void Scene::steal(Scene& other) {
     resources = std::move(other.resources);
     logicBlocks = std::move(other.logicBlocks);
     robotPaths = std::move(other.robotPaths);
+    welds = std::move(other.welds);
+    envelopes = std::move(other.envelopes);
+    interlocks = std::move(other.interlocks);
     proximity = std::move(other.proximity);
     convexCache = std::move(other.convexCache);
     physicsDoc = std::move(other.physicsDoc);
     motors = std::move(other.motors);
     contactNotices = std::move(other.contactNotices);
+    layout = std::move(other.layout);
+    operations = std::move(other.operations);
+    sequence = std::move(other.sequence);
+    ppr = std::move(other.ppr);
     selected_.clear();
     selection_.clear();
     other.root_.reset();
@@ -153,11 +167,18 @@ void Scene::steal(Scene& other) {
     other.resources.clear();
     other.logicBlocks.clear();
     other.robotPaths.clear();
+    other.welds.clear();
+    other.envelopes.clear();
+    other.interlocks.clear();
     other.proximity = {};
     other.convexCache.clear();
     other.physicsDoc = {};
     other.motors.clear();
     other.contactNotices.clear();
+    other.layout = {};
+    other.operations.clear();
+    other.sequence.clear();
+    other.ppr = {};
     if (!root_) {
         clear();
         return;
@@ -237,6 +258,36 @@ std::shared_ptr<SceneNode> Scene::findByName(const std::string& nodeName) const 
     return {};
 }
 
+int Scene::collectNames(const std::string& query, std::vector<std::string>& out, int limit) const {
+    out.clear();
+    if (!root_ || query.empty() || limit <= 0) {
+        return 0;
+    }
+    std::string needle = query;
+    for (char& c : needle) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    std::vector<std::shared_ptr<SceneNode>> stack{root_};
+    while (!stack.empty() && static_cast<int>(out.size()) < limit) {
+        auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+        std::string name = node->name;
+        for (char& c : name) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (name.find(needle) != std::string::npos) {
+            out.push_back(node->id);
+        }
+    }
+    return static_cast<int>(out.size());
+}
+
 std::shared_ptr<SceneNode> Scene::spawnClone(const std::shared_ptr<SceneNode>& prototype, const Transform& worldPose) {
     if (!prototype || !root_) {
         return {};
@@ -253,7 +304,9 @@ std::shared_ptr<SceneNode> Scene::spawnClone(const std::shared_ptr<SceneNode>& p
     copy->faceAxes = prototype->faceAxes;
     copy->mech = prototype->mech;
     copy->mech.kind = MechKind::Rigid;
+    copy->mech.motion = BodyMotion::Free;
     copy->mech.kinematic = false;
+    copy->mech.asleep = false;
     copy->mech.drive = DriveMode::None;
     if (!mechCreatesBody(prototype->mech.kind) && prototype->mech.kind != MechKind::Rigid) {
         copy->mech.kind = MechKind::Rigid;
@@ -479,9 +532,18 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     resources.clear();
     logicBlocks.clear();
     robotPaths.clear();
+    welds.clear();
+    envelopes.clear();
+    interlocks.clear();
     proximity = {};
     convexCache.clear();
+    physicsDoc = {};
+    motors.clear();
     contactNotices.clear();
+    layout = {};
+    operations.clear();
+    sequence.clear();
+    ppr = {};
     selected_.clear();
     selection_.clear();
     adoptIds();

@@ -23,6 +23,8 @@ public:
     bool captureRgba(std::vector<std::uint8_t>& rgba, int& width, int& height) override;
     int lastSubmitted() const override { return submitted_; }
     int lastCulled() const override { return culled_; }
+    int lastDraws() const override { return draws_; }
+    int gpuFrustumCull(const Mat4& viewProjection, const std::vector<Aabb>& bounds) override;
 
 private:
     struct GpuMesh {
@@ -33,17 +35,21 @@ private:
     };
 
     bool compileProgram(unsigned& program, const char* vertex, const char* fragment, std::string& error);
-    void drawInstances(const GpuMesh& mesh, const std::vector<float>& instances);
+    void drawInstances(const GpuMesh& mesh, const std::vector<float>& instances, bool blend);
 
     std::unordered_map<std::string, GpuMesh> meshes_;
     unsigned meshProgram_ = 0;
     unsigned lineProgram_ = 0;
     unsigned lineVao_ = 0;
     unsigned lineVbo_ = 0;
+    unsigned instanceVbo_ = 0;
     FrameParams frame_;
     int submitted_ = 0;
     int culled_ = 0;
+    int draws_ = 0;
     bool ready_ = false;
+    unsigned cullProgram_ = 0;
+    bool cullFailed_ = false;
 };
 
 }  // namespace sim

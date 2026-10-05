@@ -8,7 +8,7 @@
 
 namespace sim {
 
-// Future model-backed features. None of them run in this revision.
+// The four hooks run offline rules by default. A localhost model is optional.
 enum class AiCapability {
     NaturalLanguageToLogic,
     LayoutSuggestion,
@@ -17,16 +17,15 @@ enum class AiCapability {
 };
 
 struct ProviderConfig {
-    // Default is off. A configured endpoint still does not open a socket
-    // unless a future build turns on the transport.
+    // Default is off. An enabled endpoint may open a socket only to localhost.
     bool enabled = false;
     std::string kind = "none";  // "none" or "openai-compatible"
     std::string endpoint;
     std::string model;
 };
 
-// Local OpenAI-compatible servers (Ollama, llama.cpp) are the intended first
-// provider. Cloud providers would be another kind. This binary never calls them.
+// Local OpenAI-compatible servers (llama.cpp) can answer on localhost.
+// Any other host is rejected before a socket is opened.
 class IAiProvider {
 public:
     virtual ~IAiProvider() = default;

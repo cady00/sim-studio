@@ -1,5 +1,6 @@
 #include "sim/io/ObjImporter.hpp"
 
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -20,7 +21,12 @@ ObjVertex parseCorner(const std::string& token) {
     int field = 0;
     while (std::getline(stream, item, '/')) {
         if (!item.empty()) {
-            const int value = std::stoi(item);
+            int value = 0;
+            try {
+                value = std::stoi(item);
+            } catch (const std::exception&) {
+                value = 0;
+            }
             if (field == 0) {
                 corner.position = value;
             } else if (field == 2) {
@@ -153,12 +159,6 @@ ImportResult ObjImporter::importFile(const std::string& path, Scene& scene) {
     result.meshCount = 1;
     result.triangleCount = static_cast<int>(mesh->triangleCount());
     result.message = "imported";
-    return result;
-}
-
-ImportResult GltfImporter::importFile(const std::string& path, Scene&) {
-    ImportResult result;
-    result.message = "glTF import is not implemented in Phase 1 (" + path + ")";
     return result;
 }
 

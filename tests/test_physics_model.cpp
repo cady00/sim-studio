@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cmath>
+#include <iostream>
 
 using Catch::Approx;
 
@@ -95,11 +96,11 @@ TEST_CASE("surface ride keeps friction order and hands a load to free motion") {
     REQUIRE(rubber->mech.motion == sim::BodyMotion::Surface);
     const sim::Signal* count = scene.findSignal("encoder_count");
     REQUIRE(count != nullptr);
-    REQUIRE(count->integer > 0);
+    REQUIRE(count->integer == 12);
     const sim::Signal* pulse = scene.findSignal("encoder_pulse");
     REQUIRE(pulse != nullptr);
     const int contacts = scene.physicsDoc.stats.contacts;
-    REQUIRE(contacts > 0);
+    REQUIRE(contacts == 2);
     REQUIRE(scene.physicsDoc.stats.continuous == 0);
     engine->step(sim::Simulation::kFixedDt);
     REQUIRE(scene.physicsDoc.stats.contacts < contacts * 3);

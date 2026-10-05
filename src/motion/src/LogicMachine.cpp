@@ -114,6 +114,15 @@ bool LogicMachine::finished(const std::string& blockName) const {
     return false;
 }
 
+int LogicMachine::activeStep(const std::string& blockName) const {
+    for (const auto& [name, run] : runs_) {
+        if (name == blockName && run.active && !run.finished) {
+            return static_cast<int>(run.step);
+        }
+    }
+    return -1;
+}
+
 void LogicMachine::step(Scene& scene, double dt) {
     dt = std::max(dt, 0.0);
     for (LogicBlock& block : scene.logicBlocks) {
@@ -143,12 +152,24 @@ void LogicMachine::step(Scene& scene, double dt) {
         }
         Run& run = *existing;
         if (run.waiting) {
-            run.waitLeft -= dt;
-            if (run.waitLeft > 0) {
-                continue;
+            if (run.waitSignal) {
+                bool isBool = false;
+                bool flag = false;
+                signalNumber(scene, block, run.signal, isBool, flag);
+                if (!flag) {
+                    continue;
+                }
+                run.waiting = false;
+                run.waitSignal = false;
+                ++run.action;
+            } else {
+                run.waitLeft -= dt;
+                if (run.waitLeft > 0) {
+                    continue;
+                }
+                run.waiting = false;
+                ++run.action;
             }
-            run.waiting = false;
-            ++run.action;
         } else if (run.move.active) {
             KinematicResource* resource = findResource(scene.resources, block.resource);
             if (resource == nullptr) {
@@ -199,9 +220,22 @@ void LogicMachine::step(Scene& scene, double dt) {
                 ++run.action;
                 continue;
             }
+            if (action.kind == "set_value") {
+                Signal& signal = scene.upsertSignal(action.signal, SignalType::Real);
+                signal.real = action.speed;
+                ++run.action;
+                continue;
+            }
             if (action.kind == "wait") {
                 run.waiting = true;
+                run.waitSignal = false;
                 run.waitLeft = action.seconds;
+                break;
+            }
+            if (action.kind == "wait_signal") {
+                run.waiting = true;
+                run.waitSignal = true;
+                run.signal = action.signal;
                 break;
             }
             const std::string& resourceName = action.resource.empty() ? block.resource : action.resource;
@@ -236,9 +270,16 @@ void LogicMachine::step(Scene& scene, double dt) {
             run.finished = true;
             break;
         }
-        if (run.step >= block.steps.size() && !run.waiting && !run.jogging && !run.move.active) {
-            run.finished = true;
-            run.active = false;
+        if (run.step >= block.steps.size() && !run.waiting && !run.jogging && !run.move.active && !run.waitSignal) {
+            if (block.repeat) {
+                run.step = 0;
+                run.action = 0;
+                run.finished = false;
+                run.active = true;
+            } else {
+                run.finished = true;
+                run.active = false;
+            }
         }
     }
 }

@@ -7,8 +7,14 @@
 #include "sim/app/CollisionPanel.hpp"
 #include "sim/app/CommandPalette.hpp"
 #include "sim/app/IntentBar.hpp"
+#include "sim/app/LinePanels.hpp"
+#include "sim/app/SceneTree.hpp"
 #include "sim/app/MotionPanel.hpp"
 #include "sim/app/TaskPanels.hpp"
+#include "sim/app/WeldPanel.hpp"
+#include "sim/motion/Envelope.hpp"
+#include "sim/motion/Olp.hpp"
+#include "sim/motion/WeldPlan.hpp"
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ObjImporter.hpp"
@@ -29,16 +35,21 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QTimer>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QFrame>
 #include <QFileDialog>
+#include <QSurfaceFormat>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeySequence>
 #include <QLabel>
+#include <QKeySequence>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
@@ -52,12 +63,18 @@
 #include <QStatusBar>
 #include <QSystemTrayIcon>
 #include <QTimer>
+#include <QSizePolicy>
 #include <QToolBar>
-#include <QTreeWidget>
+#include <QItemSelectionModel>
+#include <QTreeView>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <unordered_map>
 #include <cmath>
 #include <functional>
 
@@ -88,6 +105,15 @@ MainWindow::MainWindow(QString locale) {
     scripting_->bind(&scene_);
     scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
                                 [this](const std::string& id) { physics_->releaseBody(id); });
+    if (QCoreApplication::applicationName().isEmpty()) {
+        QCoreApplication::setApplicationName(QStringLiteral("Sim Studio"));
+    }
+    recoveryDir_ = (QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/recovery")).toStdString();
+    if (ProjectStore::sessionInterrupted(recoveryDir_)) {
+        const ProjectResult restored = ProjectStore::restoreAutosave(recoveryDir_, scene_);
+        recovered_ = restored.ok;
+    }
+    ProjectStore::markSession(recoveryDir_);
     QSettings settings;
     if (locale.isEmpty()) {
         locale = settings.value("locale", QString::fromLatin1(I18nCatalog::kDefaultLocale)).toString();
@@ -108,11 +134,25 @@ MainWindow::MainWindow(QString locale) {
     i18n_.setLocale(locale.toStdString());
     buildUi();
     bindScene();
+    history_.watch(scene_);
     retranslate();
     resize(1440, 900);
     applyTaskMode(0);
     setThemeName("dark");
     refreshStatus();
+    updateWelcome();
+    if (recovered_ && statusLabel_ != nullptr) {
+        statusLabel_->setText(trk("msg.recovered"));
+    }
+    autosaveTimer_ = new QTimer(this);
+    autosaveTimer_->setInterval(45000);
+    connect(autosaveTimer_, &QTimer::timeout, this, [this] {
+        if (importing_ || recoveryDir_.empty() || !scene_.dirty()) {
+            return;
+        }
+        ProjectStore::autosave(scene_, recoveryDir_);
+    });
+    autosaveTimer_->start();
 }
 
 MainWindow::~MainWindow() {
@@ -124,6 +164,9 @@ MainWindow::~MainWindow() {
     if (importThread_.joinable()) {
         importThread_.join();
     }
+    if (!recoveryDir_.empty()) {
+        ProjectStore::clearSession(recoveryDir_);
+    }
 }
 
 void MainWindow::buildUi() {
@@ -131,13 +174,25 @@ void MainWindow::buildUi() {
     setCentralWidget(viewport_);
     viewport_->setScene(&scene_);
 
-    tree_ = new QTreeWidget;
-    tree_->setColumnCount(2);
+    treeModel_ = new SceneTreeModel(scene_, this);
+    tree_ = new QTreeView;
+    tree_->setModel(treeModel_);
+    tree_->setUniformRowHeights(true);
+    tree_->setAnimated(false);
+    tree_->setHeaderHidden(false);
     tree_->header()->setStretchLastSection(false);
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     tree_->setMinimumWidth(260);
+    treeSearch_ = new QLineEdit;
+    treeSearch_->setClearButtonEnabled(true);
+    treeSearch_->setPlaceholderText(QStringLiteral("搜索名称"));
+    auto* treeHost = new QWidget;
+    auto* treeLayout = new QVBoxLayout(treeHost);
+    treeLayout->setContentsMargins(0, 0, 0, 0);
+    treeLayout->addWidget(treeSearch_);
+    treeLayout->addWidget(tree_, 1);
     treeDock_ = new QDockWidget(this);
-    treeDock_->setWidget(tree_);
+    treeDock_->setWidget(treeHost);
     treeDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::LeftDockWidgetArea, treeDock_);
 
@@ -246,8 +301,13 @@ void MainWindow::buildUi() {
     auto* scriptHost = new QWidget;
     auto* scriptLayout = new QVBoxLayout(scriptHost);
     scriptLayout->setContentsMargins(6, 6, 6, 6);
+    auto* scriptRun = new QPushButton;
+    scriptRun->setObjectName("script.run");
+    scriptRun->setText(trk("script.run"));
+    connect(scriptRun, &QPushButton::clicked, this, &MainWindow::runScriptSnippet);
     scriptLayout->addWidget(scriptCombo_);
     scriptLayout->addWidget(scriptEdit_, 1);
+    scriptLayout->addWidget(scriptRun);
     scriptLayout->addWidget(scriptLog_);
     scriptDock_ = new QDockWidget(this);
     scriptDock_->setObjectName("dock.script");
@@ -296,7 +356,20 @@ void MainWindow::buildUi() {
     pathDock_->setWidget(pathTimeline_);
     addDockWidget(Qt::BottomDockWidgetArea, pathDock_);
 
-    plc_ = new PlcCards(this);
+    scope_ = new SignalScope(scene_, this);
+    scopeDock_ = new QDockWidget(this);
+    scopeDock_->setObjectName("dock.scope");
+    scopeDock_->setWidget(scope_);
+    addDockWidget(Qt::BottomDockWidgetArea, scopeDock_);
+
+    weld_ = new WeldPanel(scene_, i18n_, this);
+    weldDock_ = new QDockWidget(this);
+    weldDock_->setObjectName("dock.weld");
+    weldDock_->setWidget(weld_);
+    addDockWidget(Qt::RightDockWidgetArea, weldDock_);
+
+    plc_ = new PlcCards(scene_, this);
+    connect(plc_, &PlcCards::signalsImported, this, [this] { refreshSignals(); });
     plcDock_ = new QDockWidget(this);
     plcDock_->setObjectName("dock.plc");
     plcDock_->setWidget(plc_);
@@ -312,6 +385,48 @@ void MainWindow::buildUi() {
     addDockWidget(Qt::RightDockWidgetArea, physicsDock_);
     splitDockWidget(propertyDock_, physicsDock_, Qt::Vertical);
 
+    floor_ = new FloorPlanView(scene_, this);
+    floorDock_ = new QDockWidget(this);
+    floorDock_->setObjectName("dock.floor");
+    floorDock_->setWidget(floor_);
+    addDockWidget(Qt::LeftDockWidgetArea, floorDock_);
+
+    operations_ = new OperationTreeView(scene_, this);
+    operationDock_ = new QDockWidget(this);
+    operationDock_->setObjectName("dock.operations");
+    operationDock_->setWidget(operations_);
+    addDockWidget(Qt::RightDockWidgetArea, operationDock_);
+
+    gantt_ = new GanttView(scene_, this);
+    ganttDock_ = new QDockWidget(this);
+    ganttDock_->setObjectName("dock.gantt");
+    ganttDock_->setWidget(gantt_);
+    addDockWidget(Qt::BottomDockWidgetArea, ganttDock_);
+
+    sequence_ = new SequenceEditor(scene_, this);
+    sequenceDock_ = new QDockWidget(this);
+    sequenceDock_->setObjectName("dock.sequence");
+    sequenceDock_->setWidget(sequence_);
+    addDockWidget(Qt::BottomDockWidgetArea, sequenceDock_);
+    splitDockWidget(ganttDock_, sequenceDock_, Qt::Horizontal);
+
+    welcome_ = new QFrame(this);
+    welcome_->setObjectName("welcome");
+    welcome_->setFrameShape(QFrame::StyledPanel);
+    auto* welcomeLayout = new QVBoxLayout(welcome_);
+    auto* welcomeTitle = new QLabel(welcome_);
+    welcomeTitle->setObjectName("welcome.title");
+    auto* welcomeBody = new QLabel(welcome_);
+    welcomeBody->setObjectName("welcome.body");
+    welcomeBody->setWordWrap(true);
+    auto* welcomeOpen = new QPushButton(welcome_);
+    welcomeOpen->setObjectName("welcome.openExample");
+    connect(welcomeOpen, &QPushButton::clicked, this, [this] { loadDemo(QStringLiteral("cell")); });
+    welcomeLayout->addWidget(welcomeTitle);
+    welcomeLayout->addWidget(welcomeBody);
+    welcomeLayout->addWidget(welcomeOpen);
+    welcome_->setStyleSheet(QStringLiteral("QFrame#welcome { background: #1b2133; border: 1px solid #2a3550; border-radius: 8px; }"));
+
     tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
     tray_->setToolTip(QStringLiteral("Sim Studio"));
     if (tray_->icon().isNull()) {
@@ -325,7 +440,14 @@ void MainWindow::buildUi() {
     propertyDock_->setObjectName("dock.properties");
 
     chrome_ = new ChromeBar(this);
-    setMenuWidget(chrome_);
+    chrome_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    chrome_->setMinimumWidth(1200);
+    auto* chromeHost = new QToolBar(this);
+    chromeHost->setObjectName("toolbar.chrome");
+    chromeHost->setMovable(false);
+    chromeHost->setFloatable(false);
+    chromeHost->addWidget(chrome_);
+    addToolBar(Qt::TopToolBarArea, chromeHost);
     palette_ = new CommandPalette(this);
     intent_ = new IntentBar(this);
     connect(chrome_, &ChromeBar::modeChanged, this, [this](int mode) { applyTaskMode(mode); });
@@ -384,7 +506,25 @@ void MainWindow::buildUi() {
             plain->undo();
             return;
         }
-        undoIntent();
+        if (!history_.undo()) {
+            undoIntent();
+        }
+    });
+    auto* redoAction = new QAction(this);
+    redoAction->setShortcuts({QKeySequence::Redo, QKeySequence(Qt::CTRL | Qt::Key_Y)});
+    redoAction->setShortcutContext(Qt::WindowShortcut);
+    addAction(redoAction);
+    connect(redoAction, &QAction::triggered, this, [this] {
+        QWidget* focus = QApplication::focusWidget();
+        if (auto* line = qobject_cast<QLineEdit*>(focus)) {
+            line->redo();
+            return;
+        }
+        if (auto* plain = qobject_cast<QPlainTextEdit*>(focus)) {
+            plain->redo();
+            return;
+        }
+        history_.redo();
     });
 
     newAction_ = new QAction(this);
@@ -524,7 +664,8 @@ void MainWindow::buildUi() {
     connect(scriptAction_, &QAction::triggered, this, &MainWindow::showScripting);
     connect(aboutAction_, &QAction::triggered, this, &MainWindow::showAbout);
     connect(cancelButton_, &QPushButton::clicked, this, &MainWindow::cancelImport);
-    connect(tree_, &QTreeWidget::currentItemChanged, this, &MainWindow::onTreeCurrentChanged);
+    connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MainWindow::onTreeCurrentChanged);
+    connect(treeSearch_, &QLineEdit::textChanged, this, [this](const QString& text) { treeModel_->setFilter(text); });
     connect(viewport_, &ViewportWidget::selectionChanged, this, &MainWindow::onViewportSelection);
     connect(viewport_, &ViewportWidget::pointPicked, this,
             [this](double x, double y, double z, double nx, double ny, double nz, const QString& nodeId) {
@@ -619,13 +760,34 @@ void MainWindow::bindScene() {
             if (motion_ != nullptr) {
                 motion_->refresh();
             }
+            if (floor_ != nullptr) {
+                floor_->reload();
+            }
+            if (operations_ != nullptr) {
+                operations_->reload();
+            }
+            if (gantt_ != nullptr) {
+                gantt_->reload();
+            }
+            if (sequence_ != nullptr) {
+                sequence_->reload();
+            }
+            updateWelcome();
+            if (logicCanvas_ != nullptr) {
+                logicCanvas_->reload();
+            }
+            if (scope_ != nullptr) {
+                scope_->reload();
+            }
+            if (weld_ != nullptr) {
+                weld_->reload();
+            }
         } else if (kind == ChangeKind::Selection) {
             refreshProperties();
             if (motion_ != nullptr) {
                 motion_->syncSelection();
             }
-            if (tree_->currentItem() == nullptr ||
-                tree_->currentItem()->data(0, Qt::UserRole).toString().toStdString() != scene_.selectedId()) {
+            if (treeModel_->nodeId(tree_->currentIndex()) != scene_.selectedId()) {
                 selectNode(QString::fromStdString(scene_.selectedId()), false);
             }
         } else {
@@ -685,6 +847,9 @@ void MainWindow::retranslate() {
     if (auto* dock = findChild<QDockWidget*>("dock.script")) {
         dock->setWindowTitle(trk("dock.script"));
     }
+    if (auto* run = findChild<QPushButton*>("script.run")) {
+        run->setText(trk("script.run"));
+    }
     if (auto* dock = findChild<QDockWidget*>("dock.motion")) {
         dock->setWindowTitle(trk("dock.motion"));
     }
@@ -697,17 +862,64 @@ void MainWindow::retranslate() {
     if (auto* dock = findChild<QDockWidget*>("dock.path")) {
         dock->setWindowTitle(trk("dock.path"));
     }
+    if (auto* dock = findChild<QDockWidget*>("dock.scope")) {
+        dock->setWindowTitle(trk("dock.scope"));
+    }
+    if (scope_ != nullptr) {
+        scope_->setTexts(trk("scope.velocity"), trk("scope.acceleration"), trk("scope.export"), trk("scope.clear"),
+                         trk("scope.waiting"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.weld")) {
+        dock->setWindowTitle(trk("dock.weld"));
+    }
     if (auto* dock = findChild<QDockWidget*>("dock.plc")) {
         dock->setWindowTitle(trk("dock.plc"));
     }
     if (auto* dock = findChild<QDockWidget*>("dock.physics")) {
         dock->setWindowTitle(trk("dock.physics"));
     }
+    if (auto* dock = findChild<QDockWidget*>("dock.floor")) {
+        dock->setWindowTitle(trk("dock.floor"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.operations")) {
+        dock->setWindowTitle(trk("dock.operations"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.gantt")) {
+        dock->setWindowTitle(trk("dock.gantt"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.sequence")) {
+        dock->setWindowTitle(trk("dock.sequence"));
+    }
+    if (auto* title = findChild<QLabel*>("welcome.title")) {
+        title->setText(trk("welcome.title"));
+    }
+    if (auto* body = findChild<QLabel*>("welcome.body")) {
+        body->setText(trk("welcome.body"));
+    }
+    if (auto* open = findChild<QPushButton*>("welcome.openExample")) {
+        open->setText(trk("welcome.openExample"));
+    }
+    const bool zh = i18n_.locale() == "zh_CN";
+    if (floor_ != nullptr) {
+        floor_->setZh(zh);
+    }
+    if (operations_ != nullptr) {
+        operations_->setZh(zh);
+    }
+    if (gantt_ != nullptr) {
+        gantt_->setZh(zh);
+    }
+    if (sequence_ != nullptr) {
+        sequence_->setZh(zh);
+    }
     if (physicsShelf_ != nullptr) {
         physicsShelf_->reload();
     }
     if (collision_ != nullptr) {
         collision_->retranslate();
+    }
+    if (weld_ != nullptr) {
+        weld_->retranslate();
     }
     if (motion_ != nullptr) {
         motion_->retranslate();
@@ -716,7 +928,8 @@ void MainWindow::retranslate() {
     fillMechCombos();
     treeDock_->setWindowTitle(trk("dock.tree"));
     propertyDock_->setWindowTitle(trk("dock.properties"));
-    tree_->setHeaderLabels({trk("tree.name"), trk("tree.kind")});
+    treeModel_->setHeaders(trk("tree.name"), trk("tree.kind"));
+    treeModel_->setWorldTitle(trk("tree.world"));
     cancelButton_->setText(trk("action.cancelImport"));
     if (auto* form = propertyDock_->findChild<QFormLayout*>()) {
         const char* labels[] = {"prop.empty",     "prop.name",       "prop.kind",      "prop.visible",
@@ -760,29 +973,12 @@ void MainWindow::setLocale(const QString& locale) {
 
 void MainWindow::rebuildTree() {
     const QString selected = QString::fromStdString(scene_.selectedId());
-    tree_->blockSignals(true);
-    tree_->clear();
-    std::function<QTreeWidgetItem*(const std::shared_ptr<SceneNode>&, QTreeWidgetItem*)> add =
-        [&](const std::shared_ptr<SceneNode>& node, QTreeWidgetItem* parent) -> QTreeWidgetItem* {
-        if (!node) {
-            return nullptr;
-        }
-        auto* item = parent == nullptr ? new QTreeWidgetItem(tree_) : new QTreeWidgetItem(parent);
-        const QString name = (node->id == "root" && node->name == "World") ? trk("tree.world")
-                                                                           : QString::fromUtf8(node->name.c_str());
-        item->setText(0, name);
-        item->setText(1, node->mech.kind == MechKind::None
-                             ? (node->kind == NodeKind::Assembly ? trk("kind.assembly") : trk("kind.part"))
-                             : mechLabel(node->mech.kind));
-        item->setData(0, Qt::UserRole, QString::fromStdString(node->id));
-        item->setExpanded(true);
-        for (const auto& child : node->children) {
-            add(child, item);
-        }
-        return item;
-    };
-    add(scene_.root(), nullptr);
-    tree_->blockSignals(false);
+    treeModel_->setWorldTitle(trk("tree.world"));
+    treeModel_->reload();
+    const QModelIndex root = treeModel_->index(0, 0, {});
+    if (root.isValid() && treeSearch_->text().trimmed().isEmpty() && treeModel_->rowCount(root) < 4000) {
+        tree_->expand(root);
+    }
     if (!selected.isEmpty()) {
         selectNode(selected, false);
     }
@@ -790,29 +986,12 @@ void MainWindow::rebuildTree() {
 
 void MainWindow::selectNode(const QString& id, bool fromTree) {
     if (!fromTree) {
-        std::function<QTreeWidgetItem*(QTreeWidgetItem*)> find = [&](QTreeWidgetItem* item) -> QTreeWidgetItem* {
-            if (item == nullptr) {
-                return nullptr;
-            }
-            if (item->data(0, Qt::UserRole).toString() == id) {
-                return item;
-            }
-            for (int i = 0; i < item->childCount(); ++i) {
-                if (auto* found = find(item->child(i))) {
-                    return found;
-                }
-            }
-            return nullptr;
-        };
+        const QModelIndex match = treeModel_->indexFor(id.toStdString());
         tree_->blockSignals(true);
-        QTreeWidgetItem* match = nullptr;
-        for (int i = 0; i < tree_->topLevelItemCount(); ++i) {
-            match = find(tree_->topLevelItem(i));
-            if (match != nullptr) {
-                break;
-            }
+        tree_->setCurrentIndex(match);
+        if (match.isValid()) {
+            tree_->scrollTo(match);
         }
-        tree_->setCurrentItem(match);
         tree_->blockSignals(false);
     }
     if (fromTree && scene_.selectedId() != id.toStdString()) {
@@ -823,12 +1002,12 @@ void MainWindow::selectNode(const QString& id, bool fromTree) {
     viewport_->update();
 }
 
-void MainWindow::onTreeCurrentChanged(QTreeWidgetItem* current, QTreeWidgetItem*) {
-    if (current == nullptr) {
+void MainWindow::onTreeCurrentChanged(const QModelIndex& current, const QModelIndex&) {
+    if (!current.isValid()) {
         scene_.setSelected({});
         return;
     }
-    selectNode(current->data(0, Qt::UserRole).toString(), true);
+    selectNode(QString::fromStdString(treeModel_->nodeId(current)), true);
 }
 
 void MainWindow::onViewportSelection(const QString& id) { selectNode(id, false); }
@@ -981,9 +1160,8 @@ void MainWindow::applyProperties() {
     node->mech.interval = intervalSpin_->value();
     node->mech.prototype = prototypeEdit_->text().toUtf8().toStdString();
     scene_.notify(ChangeKind::Transform);
-    if (auto* item = tree_->currentItem()) {
-        item->setText(0, node->id == "root" && node->name == "World" ? trk("tree.world")
-                                                                    : QString::fromUtf8(node->name.c_str()));
+    if (tree_->currentIndex().isValid()) {
+        treeModel_->reload();
     }
     viewport_->update();
 }
@@ -1031,6 +1209,8 @@ void MainWindow::newProject() {
     scene_.clear();
     projectPath_.clear();
     viewport_->fitAll();
+    applyTaskMode(taskMode_);
+    updateWelcome();
 }
 
 void MainWindow::openProjectInteractive() {
@@ -1056,6 +1236,8 @@ void MainWindow::openProject(const QString& path) {
     scene_.markClean();
     viewport_->fitAll();
     refreshStatus();
+    applyTaskMode(taskMode_);
+    updateWelcome();
 }
 
 bool MainWindow::saveProject(const QString& path) {
@@ -1252,10 +1434,65 @@ void MainWindow::showScripting() {
 
 void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path; }
 
+void MainWindow::arrangeLineDocks() {
+    if (floorDock_ == nullptr || operationDock_ == nullptr || ganttDock_ == nullptr) {
+        return;
+    }
+    auto show = [](QDockWidget* dock, bool visible) {
+        if (dock != nullptr) {
+            dock->setVisible(visible);
+        }
+    };
+    show(treeDock_, false);
+    show(propertyDock_, false);
+    show(motionDock_, false);
+    show(logicDock_, false);
+    show(pathDock_, false);
+    show(scopeDock_, false);
+    show(collisionDock_, false);
+    show(signalDock_, false);
+    show(scriptDock_, false);
+    show(plcDock_, false);
+    show(physicsDock_, false);
+    show(floorDock_, true);
+    show(operationDock_, true);
+    show(ganttDock_, true);
+    show(weldDock_, lineFocus_ == QStringLiteral("weld"));
+    if (lineFocus_ == QStringLiteral("weld")) {
+        show(floorDock_, false);
+        show(operationDock_, false);
+        show(ganttDock_, false);
+        show(weldDock_, true);
+        resizeDocks({weldDock_}, {460}, Qt::Horizontal);
+        if (weldDock_ != nullptr) {
+            weldDock_->raise();
+        }
+    } else if (lineFocus_ == QStringLiteral("ops")) {
+        resizeDocks({operationDock_, floorDock_}, {820, 280}, Qt::Horizontal);
+        resizeDocks({ganttDock_}, {180}, Qt::Vertical);
+        operationDock_->raise();
+    } else if (lineFocus_ == QStringLiteral("gantt")) {
+        resizeDocks({floorDock_, operationDock_}, {280, 280}, Qt::Horizontal);
+        resizeDocks({ganttDock_}, {460}, Qt::Vertical);
+        ganttDock_->raise();
+    } else {
+        resizeDocks({floorDock_, operationDock_}, {700, 320}, Qt::Horizontal);
+        resizeDocks({ganttDock_}, {230}, Qt::Vertical);
+        floorDock_->raise();
+    }
+}
+
 void MainWindow::captureScreenshot() {
+    if (lineDemo_) {
+        arrangeLineDocks();
+    }
     // update() only queues a paint. The simulation clock is advanced before the
     // event loop runs, so the widget FBO would still show the pose from fitAll.
+    updateWelcome();
     viewport_->repaint();
+    if (scope_ != nullptr && scope_->isVisible()) {
+        scope_->repaint();
+    }
     QImage view = viewport_->grabFramebuffer();
     if (view.isNull()) {
         view = viewport_->captureView();
@@ -1276,6 +1513,7 @@ void MainWindow::captureScreenshot() {
         };
         stamp(palette_);
         stamp(intent_);
+        stamp(welcome_);
     }
     const QImage& output = window.isNull() ? view : window;
     const bool saved = !output.isNull() && output.save(screenshotPath_);
@@ -1297,6 +1535,9 @@ QString MainWindow::mechLabel(MechKind kind) const {
         case MechKind::LightBarrier: return trk("mech.lightBarrier");
         case MechKind::Source: return trk("mech.source");
         case MechKind::Sink: return trk("mech.sink");
+        case MechKind::Limit: return trk("mech.limit");
+        case MechKind::Cylinder: return trk("mech.cylinder");
+        case MechKind::Gripper: return trk("mech.gripper");
     }
     return trk("mech.none");
 }
@@ -1324,7 +1565,10 @@ void MainWindow::fillMechCombos() {
                       {trk("mech.distanceSensor"), static_cast<int>(MechKind::DistanceSensor)},
                       {trk("mech.lightBarrier"), static_cast<int>(MechKind::LightBarrier)},
                       {trk("mech.source"), static_cast<int>(MechKind::Source)},
-                      {trk("mech.sink"), static_cast<int>(MechKind::Sink)}});
+                      {trk("mech.sink"), static_cast<int>(MechKind::Sink)},
+                      {trk("mech.limit"), static_cast<int>(MechKind::Limit)},
+                      {trk("mech.cylinder"), static_cast<int>(MechKind::Cylinder)},
+                      {trk("mech.gripper"), static_cast<int>(MechKind::Gripper)}});
     fill(shapeCombo_, {{trk("shape.box"), static_cast<int>(CollisionShape::Box)},
                        {trk("shape.sphere"), static_cast<int>(CollisionShape::Sphere)},
                        {trk("shape.capsule"), static_cast<int>(CollisionShape::Capsule)},
@@ -1432,6 +1676,7 @@ void MainWindow::onScriptChanged(int index) {
 }
 
 void MainWindow::playSimulation() {
+    history_.setRecording(false);
     commitScriptEditor();
     if (scriptIndex_ >= 0 && scriptIndex_ < static_cast<int>(scene_.scripts.size())) {
         scene_.activeScript = scene_.scripts[static_cast<std::size_t>(scriptIndex_)].name;
@@ -1457,12 +1702,21 @@ void MainWindow::playSimulation() {
             }
         }
     }
-    simulation_->setHooks([this] { scripting_->onStart(); },
+    simulation_->setHooks([this] {
+                              scripting_->onStart();
+                              if (scope_ != nullptr) {
+                                  scope_->clearTrace();
+                                  scope_->sample(0);
+                              }
+                          },
                           [this](double dt) {
                               scripting_->onStep(dt);
                               logic_.step(scene_, dt);
                               if (robot_ != nullptr) {
                                   robot_->step(dt);
+                              }
+                              if (scope_ != nullptr && simulation_ != nullptr) {
+                                  scope_->sample(simulation_->time() + dt);
                               }
                           },
                           [this] { scripting_->onStop(); });
@@ -1492,9 +1746,13 @@ void MainWindow::playSimulation() {
     }
 }
 
-void MainWindow::pauseSimulation() { simulation_->pause(); }
+void MainWindow::pauseSimulation() {
+    simulation_->pause();
+    history_.setRecording(true);
+}
 
 void MainWindow::stopSimulation() {
+    history_.setRecording(false);
     simulation_->stop();
     std::size_t cursor = 0;
     for (KinematicResource& resource : scene_.resources) {
@@ -1508,6 +1766,7 @@ void MainWindow::stopSimulation() {
     if (timeLabel_ != nullptr) {
         timeLabel_->setText(trk("status.simTime").arg(0.0, 0, 'f', 2));
     }
+    history_.setRecording(true);
     refreshSignals();
 }
 
@@ -1529,10 +1788,34 @@ void MainWindow::onSimTick() {
                                       .arg(QString::fromLatin1(physics_->backendName())));
     }
     if (logicCanvas_ != nullptr) {
-        logicCanvas_->update();
+        std::vector<std::string> steps;
+        std::vector<std::string> hot;
+        for (int index = 0; index < static_cast<int>(scene_.logicBlocks.size()); ++index) {
+            const LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+            const int step = logic_.activeStep(block.name);
+            if (step >= 0) {
+                steps.push_back(std::to_string(index) + "/s" + std::to_string(step));
+            }
+            for (const std::string& name : block.inputs) {
+                const Signal* signal = scene_.findSignal(name);
+                if (signal != nullptr && signal->flag) {
+                    hot.push_back(name);
+                }
+            }
+            for (const std::string& name : block.outputs) {
+                const Signal* signal = scene_.findSignal(name);
+                if (signal != nullptr && signal->flag) {
+                    hot.push_back(name);
+                }
+            }
+        }
+        logicCanvas_->setLive(steps, hot);
     }
     if (pathTimeline_ != nullptr) {
         pathTimeline_->update();
+    }
+    if (scope_ != nullptr) {
+        scope_->update();
     }
     const std::string log = scripting_->takeLog();
     if (!log.empty() && scriptLog_ != nullptr) {
@@ -1546,7 +1829,38 @@ void MainWindow::onSpeedChanged(double speed) {
     }
 }
 
-void MainWindow::runScriptSnippet() {}
+void MainWindow::runScriptSnippet() {
+    if (scripting_ == nullptr || scriptEdit_ == nullptr) {
+        return;
+    }
+    const std::string code = scriptEdit_->toPlainText().toUtf8().toStdString();
+    if (scene_.scripts.empty()) {
+        scene_.scripts.push_back(ProjectScript{"snippet", code});
+        scene_.activeScript = "snippet";
+        scriptIndex_ = 0;
+        if (scriptCombo_ != nullptr) {
+            refreshing_ = true;
+            scriptCombo_->addItem(QStringLiteral("snippet"));
+            scriptCombo_->setCurrentIndex(0);
+            refreshing_ = false;
+        }
+        scene_.notify(ChangeKind::Structure);
+    } else {
+        commitScriptEditor();
+    }
+    std::string output;
+    std::string error;
+    const bool ok = scripting_->execute(code, output, error);
+    if (scriptLog_ == nullptr) {
+        return;
+    }
+    if (!output.empty()) {
+        scriptLog_->appendPlainText(QString::fromStdString(output));
+    }
+    if (!ok) {
+        scriptLog_->appendPlainText(QString::fromStdString(error.empty() ? std::string("script failed") : error));
+    }
+}
 
 void MainWindow::usePhysicsBackend(PhysicsBackend backend) {
     if (simulation_ && simulation_->state() != SimState::Stopped) {
@@ -1561,6 +1875,100 @@ void MainWindow::usePhysicsBackend(PhysicsBackend backend) {
     scene_.physicsDoc.engine = physicsBackendName(backend);
 }
 
+namespace {
+
+bool graftKr420Model(Scene& scene, const std::string& stepPath, std::string& note) {
+    Scene side;
+    StepImporter importer;
+    const ImportResult imported = importer.importFile(stepPath, side);
+    if (!imported.ok) {
+        note = imported.message;
+        return false;
+    }
+    const SuggestResult suggestion = suggestLinkGroups(side);
+    std::string error;
+    if (!applyLinkSuggestions(side, "kr420", suggestion, kr420DatasheetLimits(), error)) {
+        note = error.empty() ? suggestion.note : error;
+        return false;
+    }
+    addKr420Demonstration(side);
+    if (auto proxy = scene.findByName("KR420")) {
+        scene.removeNode(proxy->id);
+    }
+    if (auto column = scene.findByName("KR420Column")) {
+        scene.removeNode(column->id);
+    }
+    std::unordered_map<std::string, std::string> meshMap;
+    std::unordered_map<std::string, std::string> idMap;
+    std::function<void(const std::shared_ptr<SceneNode>&, const std::shared_ptr<SceneNode>&)> copy =
+        [&](const std::shared_ptr<SceneNode>& from, const std::shared_ptr<SceneNode>& parent) {
+            if (!from) {
+                return;
+            }
+            for (const auto& child : from->children) {
+                auto node = scene.makeNode(child->kind, child->name);
+                node->local = child->local;
+                node->color = child->color;
+                node->visible = child->visible;
+                node->faceAxes = child->faceAxes;
+                node->mech = child->mech;
+                if (!child->meshId.empty()) {
+                    if (meshMap.count(child->meshId) == 0) {
+                        meshMap[child->meshId] = scene.addMesh(side.mesh(child->meshId));
+                    }
+                    node->meshId = meshMap[child->meshId];
+                }
+                idMap[child->id] = node->id;
+                scene.addChild(parent, node);
+                copy(child, node);
+            }
+        };
+    scene.beginEdit();
+    if (side.root()) {
+        copy(side.root(), scene.root());
+    }
+    scene.robotPaths.erase(std::remove_if(scene.robotPaths.begin(), scene.robotPaths.end(),
+                                          [](const RobotPath& path) { return path.name == "cycle"; }),
+                           scene.robotPaths.end());
+    for (RobotPath path : side.robotPaths) {
+        scene.robotPaths.push_back(std::move(path));
+    }
+    for (KinematicResource resource : side.resources) {
+        for (KinLink& link : resource.links) {
+            const auto mapped = idMap.find(link.nodeId);
+            if (mapped != idMap.end()) {
+                link.nodeId = mapped->second;
+            }
+        }
+        bool replaced = false;
+        for (KinematicResource& existing : scene.resources) {
+            if (existing.name == resource.name) {
+                existing = resource;
+                replaced = true;
+            }
+        }
+        if (!replaced) {
+            scene.resources.push_back(std::move(resource));
+        }
+    }
+    if (Station* weld = findStation(scene.layout, "st_weld")) {
+        for (const KinematicResource& resource : scene.resources) {
+            if (resource.name != "kr420" || resource.links.empty()) {
+                continue;
+            }
+            if (auto node = scene.find(resource.links.front().nodeId)) {
+                weld->nodeName = node->name;
+            }
+        }
+    }
+    scene.proximity = side.proximity;
+    scene.endEdit();
+    note = suggestion.note.empty() ? "KR420" : suggestion.note;
+    return true;
+}
+
+}  // namespace
+
 void MainWindow::loadDemo(const QString& name) {
     collisionDemo_ = name == QStringLiteral("collision");
     kr420Demo_ = name == QStringLiteral("kr420");
@@ -1568,6 +1976,16 @@ void MainWindow::loadDemo(const QString& name) {
     transferDemo_ = name == QStringLiteral("transfer");
     meshDemo_ = name == QStringLiteral("mesh");
     slipDemo_ = name == QStringLiteral("slip");
+    mcdDemo_ = name == QStringLiteral("mcd");
+    lineDemo_ = name == QStringLiteral("line") || name.startsWith(QStringLiteral("line-"));
+    lineFocus_ = QStringLiteral("floor");
+    if (name.endsWith(QStringLiteral("ops"))) {
+        lineFocus_ = QStringLiteral("ops");
+    } else if (name.endsWith(QStringLiteral("gantt"))) {
+        lineFocus_ = QStringLiteral("gantt");
+    } else if (name.endsWith(QStringLiteral("weld"))) {
+        lineFocus_ = QStringLiteral("weld");
+    }
     if (name == QStringLiteral("scara")) {
         buildScaraDemo(scene_);
         demoPath_ = "pick_place";
@@ -1636,6 +2054,220 @@ void MainWindow::loadDemo(const QString& name) {
         buildSlipDemo(scene_);
         demoPath_.clear();
         applyTaskMode(4);
+    } else if (mcdDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildDeviceDemo(scene_);
+        demoPath_.clear();
+        std::string error;
+        logic_.reset();
+        logic_.start(scene_, "cell", error);
+        if (physics_ != nullptr && physics_->build(scene_, error)) {
+            for (int i = 0; i < 72; ++i) {
+                logic_.step(scene_, 1.0 / 60.0);
+                physics_->step(1.0 / 60.0);
+            }
+        }
+        const auto degreesOf = [](const std::shared_ptr<SceneNode>& node) {
+            if (!node) {
+                return 0.0;
+            }
+            const Quat q = node->local.rotation.normalized();
+            return rad2deg(2.0 * std::atan2(q.z, q.w));
+        };
+        const double gear = degreesOf(scene_.findByName("GearOut"));
+        const auto cylinder = scene_.findByName("Cylinder");
+        const double stroke = cylinder ? cylinder->mech.command : 0;
+        const auto gripper = scene_.findByName("Gripper");
+        const bool held = gripper && !gripper->mech.held.empty();
+        const Signal* limit = scene_.findSignal("at_limit");
+        const Signal* collected = scene_.findSignal("collected_n");
+        viewport_->setCallout(QStringLiteral("齿轮 %1° · 气缸 %2 mm · 抓取 %3 · 限位 %4 · 收集 %5")
+                                  .arg(gear, 0, 'f', 0)
+                                  .arg(stroke, 0, 'f', 0)
+                                  .arg(held ? QStringLiteral("已持") : QStringLiteral("空"))
+                                  .arg(limit != nullptr && limit->flag ? QStringLiteral("开") : QStringLiteral("关"))
+                                  .arg(collected != nullptr ? static_cast<int>(collected->integer) : 0));
+        if (cylinder) {
+            scene_.setSelected(cylinder->id);
+        }
+        applyTaskMode(4);
+        refreshSignals();
+        if (signalDock_ != nullptr) {
+            signalDock_->raise();
+            resizeDocks({signalDock_}, {210}, Qt::Vertical);
+        }
+        if (physicsDock_ != nullptr) {
+            physicsDock_->raise();
+        }
+    } else if (name == QStringLiteral("plc")) {
+        demoPath_.clear();
+        if (plc_ != nullptr) {
+            plc_->demonstrateSecure();
+        }
+        viewport_->setCallout(QStringLiteral("Basic256Sha256 · SignAndEncrypt · operator"));
+        applyTaskMode(5);
+        refreshSignals();
+        if (plcDock_ != nullptr) {
+            plcDock_->show();
+            plcDock_->raise();
+            resizeDocks({plcDock_}, {460}, Qt::Horizontal);
+        }
+        if (signalDock_ != nullptr) {
+            signalDock_->show();
+            signalDock_->raise();
+            resizeDocks({signalDock_}, {220}, Qt::Vertical);
+        }
+    } else if (lineDemo_) {
+        buildExampleLine(scene_);
+        demoPath_.clear();
+        const QString stepPath = QString::fromUtf8(SIM_SOURCE_DIR "/testdata/local/KR420_R3080_KR280_R3080.stp");
+        std::string note;
+        const bool grafted = QFile::exists(stepPath) && graftKr420Model(scene_, stepPath.toStdString(), note);
+        const MeasureResult measured = measureOperationTimes(scene_, false);
+        statusLabel_->setText(QString::fromStdString(scene_.layout.title) + QStringLiteral(" · ") +
+                              (grafted ? QStringLiteral("KR420 模型") : QStringLiteral("代理模型")) +
+                              QStringLiteral(" · 实测 ") + QString::number(measured.updated));
+        if (lineFocus_ == QStringLiteral("weld")) {
+            prepareExampleWelds(scene_);
+            const int tourPoints = planExampleWeldTour(scene_);
+            KinematicResource* robot = findResource(scene_.resources, "kr420");
+            const BaseRegion region = robot == nullptr ? BaseRegion{} : optimizeRobotBase(*robot, scene_.welds, 500, 3);
+            if (weld_ != nullptr) {
+                weld_->reload();
+            }
+            int reachable = 0;
+            for (const WeldSpot& spot : scene_.welds) {
+                if (spot.reachable) {
+                    ++reachable;
+                }
+            }
+            int envelopeSegments = 0;
+            if (robot != nullptr) {
+                std::vector<std::vector<double>> tourJoints;
+                for (const RobotPath& path : scene_.robotPaths) {
+                    if (path.name != "weld_tour") {
+                        continue;
+                    }
+                    for (const PathPoint& point : path.points) {
+                        if (!point.joints.empty()) {
+                            tourJoints.push_back(point.joints);
+                        }
+                    }
+                }
+                if (tourJoints.size() >= 2) {
+                    const MotionEnvelope envelope = buildLinkSweep(scene_, *robot, tourJoints, "weld_envelope");
+                    envelopeSegments = static_cast<int>(envelope.nodes.size());
+                }
+                KinematicResource mate = *robot;
+                mate.name = "kr280";
+                KinJoint rail;
+                rail.name = "rail";
+                rail.motion = JointMotion::Prismatic;
+                rail.axis = {0, 1, 0};
+                rail.externalName = "E1";
+                rail.externalKind = "track";
+                rail.position = 350;
+                rail.lower = -3000;
+                rail.upper = 3000;
+                mate.joints.push_back(rail);
+                scene_.resources.push_back(std::move(mate));
+                robot = findResource(scene_.resources, "kr420");
+                KinematicResource* mateRobot = findResource(scene_.resources, "kr280");
+                const Vec3 tcpA = robot == nullptr ? Vec3{} : forwardModel(*robot).position;
+                const Vec3 tcpB = mateRobot == nullptr ? tcpA : forwardModel(*mateRobot).position;
+                auto proxy = scene_.makeNode(NodeKind::Part, "KR280");
+                proxy->meshId = scene_.addMesh(makeBoxMesh({160, 160, 420}));
+                proxy->local.translation = tcpB;
+                proxy->color = {0.86, 0.45, 0.18};
+                scene_.addChild(scene_.root(), proxy);
+                InterlockZone zone;
+                zone.name = "weld_cell";
+                zone.center = (tcpA + tcpB) * 0.5;
+                zone.radius = 400;
+                zone.releaseSeconds = 1.5;
+                zone.resources = {"kr420", "kr280"};
+                scene_.interlocks = {zone};
+                evaluateInterlocks(scene_);
+                if (robot != nullptr) {
+                    for (WeldSpot& spot : scene_.welds) {
+                        if (!spot.reachable) {
+                            spot.advice = suggestWeldFix(*robot, spot).text;
+                        }
+                    }
+                }
+            }
+            const QString base = region.found ? QStringLiteral("底座 X %1…%2")
+                                                    .arg(region.minX, 0, 'f', 0)
+                                                    .arg(region.maxX, 0, 'f', 0)
+                                              : QStringLiteral("底座未全覆盖");
+            int krlPoints = 0;
+            if (robot != nullptr) {
+                const std::unique_ptr<IOlpProgram> post = createOlpProgram("kuka");
+                for (const RobotPath& path : scene_.robotPaths) {
+                    if (path.name != "weld_tour" || post == nullptr) {
+                        continue;
+                    }
+                    std::string src;
+                    std::string dat;
+                    std::string error;
+                    RobotPath back;
+                    if (post->exportProgram(*robot, path, src, dat, error) &&
+                        post->importProgram(robot, src, dat, back, error)) {
+                        krlPoints = static_cast<int>(back.points.size());
+                    }
+                }
+            }
+            const double hold = applyInterlockHold(scene_);
+            const ScheduleReport schedule = scheduleOperations(scene_.operations, scene_.layout);
+            if (weld_ != nullptr) {
+                weld_->reload();
+            }
+            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 连杆包络 %5 · 互锁保持 %6 s · 节拍 %7 s · KRL %8 点")
+                                      .arg(static_cast<int>(scene_.welds.size()))
+                                      .arg(reachable)
+                                      .arg(base)
+                                      .arg(tourPoints)
+                                      .arg(envelopeSegments)
+                                      .arg(hold, 0, 'f', 1)
+                                      .arg(schedule.makespan, 0, 'f', 1)
+                                      .arg(krlPoints));
+            applyTaskMode(3);
+        } else {
+            applyTaskMode(0);
+        }
+    } else if (name == QStringLiteral("cell")) {
+        buildPublicCell(scene_);
+        demoPath_.clear();
+        const ScheduleReport schedule = scheduleSequence(scene_.operations, scene_.sequence, scene_.layout);
+        viewport_->setCallout(QStringLiteral("IRB 120 · 焊点 %1 · 路径 weld · 夹具 · OPC UA part_seen / weld_done / clamp · 节拍 %2 s")
+                                  .arg(static_cast<int>(scene_.welds.size()))
+                                  .arg(schedule.makespan, 0, 'f', 1));
+        applyTaskMode(0);
+        if (sequenceDock_ != nullptr) {
+            sequenceDock_->show();
+            sequenceDock_->raise();
+            resizeDocks({sequenceDock_, ganttDock_}, {420, 280}, Qt::Horizontal);
+        }
+    } else if (name == QStringLiteral("robots")) {
+        scene_.clear();
+        scene_.name = "robot_catalog";
+        demoPath_.clear();
+        std::string error;
+        int placed = 0;
+        for (const CatalogRobot& robot : robotCatalog()) {
+            if (!addCatalogRobot(scene_, robot.name, {placed * 1400.0, 0, 0}, error)) {
+                statusLabel_->setText(QString::fromStdString(error));
+                break;
+            }
+            ++placed;
+        }
+        viewport_->setCallout(QStringLiteral("KR6 R900 · IRB 120 · LR Mate 200iD · GP8 · 参数待核实"));
+        applyTaskMode(1);
+    } else if (name == QStringLiteral("devices")) {
+        buildEditorDevices(scene_);
+        demoPath_.clear();
+        viewport_->setCallout(QStringLiteral("转台 spin · 滚床 travel / roll · 升降机 rise"));
+        applyTaskMode(1);
     } else {
         buildTurntableLiftDemo(scene_);
         demoPath_.clear();
@@ -1660,8 +2292,273 @@ void MainWindow::loadDemo(const QString& name) {
     if (pathTimeline_ != nullptr) {
         pathTimeline_->update();
     }
+    if (floor_ != nullptr) {
+        floor_->reload();
+    }
+    if (operations_ != nullptr) {
+        operations_->reload();
+    }
+    if (gantt_ != nullptr) {
+        gantt_->reload();
+    }
+    if (sequence_ != nullptr) {
+        sequence_->reload();
+    }
+    updateWelcome();
+    if (lineDemo_) {
+        arrangeLineDocks();
+    }
     rebuildTree();
     viewport_->fitAll();
+    if (lineFocus_ == QStringLiteral("weld") && !scene_.welds.empty()) {
+        Vec3 center{0, 0, 0};
+        for (const WeldSpot& spot : scene_.welds) {
+            center = center + spot.position;
+        }
+        center = center / static_cast<double>(scene_.welds.size());
+        viewport_->camera().target = center;
+        viewport_->camera().distance = 1600;
+        viewport_->camera().eyeDirection = {0.55, -0.72, 0.42};
+    }
+}
+
+void MainWindow::runLargeSceneBench(const QString& screenshot) {
+    benchShot_ = screenshot;
+    benchTries_ = 0;
+    benchPhase_ = 0;
+    for (QDockWidget* dock : {propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_, pathDock_,
+                              plcDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
+        if (dock != nullptr) {
+            dock->hide();
+        }
+    }
+    if (treeDock_ != nullptr) {
+        treeDock_->show();
+        resizeDocks({treeDock_}, {420}, Qt::Horizontal);
+    }
+    // The model reads the scene directly. A per-node callback would rebuild the view 100000 times.
+    auto callback = std::move(scene_.onChanged);
+    scene_.onChanged = nullptr;
+    buildLargeField(scene_, 100000, 256);
+    scene_.onChanged = std::move(callback);
+    // show() has already returned, but the OpenGL widget is realized on the event loop.
+    QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+}
+
+void MainWindow::finishLargeSceneBench() {
+    if (benchPhase_ == 0) {
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        if (viewport_ == nullptr || !viewport_->isValid() || viewport_->width() < 32 || viewport_->height() < 32) {
+            if (++benchTries_ < 40) {
+                QTimer::singleShot(50, this, [this] { finishLargeSceneBench(); });
+                return;
+            }
+            std::cout << "BENCH failed reason=viewport_not_realized tries=" << benchTries_ << std::endl;
+            QApplication::exit(2);
+            return;
+        }
+        if (treeModel_ != nullptr && tree_ != nullptr && treeSearch_ != nullptr) {
+            treeSearch_->clear();
+            treeModel_->reload();
+            const QModelIndex root = treeModel_->index(0, 0, {});
+            QElapsedTimer treeTimer;
+            treeTimer.start();
+            if (root.isValid()) {
+                tree_->expand(root);
+            }
+            const QModelIndex firstChild = treeModel_->index(0, 0, root);
+            const int childCount = treeModel_->rowCount(root);
+            const QModelIndex lastChild = childCount > 0 ? treeModel_->index(childCount - 1, 0, root) : QModelIndex{};
+            for (int pass = 0; pass < 8; ++pass) {
+                tree_->scrollTo(pass % 2 == 0 ? lastChild : firstChild, QAbstractItemView::PositionAtTop);
+            }
+            benchScrollMs_ = static_cast<double>(treeTimer.nsecsElapsed()) / 1.0e6;
+            std::vector<std::string> matches;
+            treeTimer.restart();
+            const int found = scene_.collectNames("p99999", matches, 10);
+            benchTreeMs_ = static_cast<double>(treeTimer.nsecsElapsed()) / 1.0e6;
+            benchTreeHits_ = found;
+            treeSearch_->setText(QStringLiteral("p99999"));
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            const QModelIndex filtered = treeModel_->index(0, 0, {});
+            if (filtered.isValid()) {
+                tree_->setCurrentIndex(filtered);
+                tree_->scrollTo(filtered);
+            }
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            if (!benchShot_.isEmpty()) {
+                QString treeShot = benchShot_;
+                treeShot.replace(QStringLiteral("large-field"), QStringLiteral("large-tree"));
+                if (treeShot == benchShot_) {
+                    treeShot += QStringLiteral(".tree.png");
+                }
+                grab().save(treeShot);
+            }
+        }
+        for (QDockWidget* dock : {treeDock_, propertyDock_}) {
+            if (dock != nullptr) {
+                dock->hide();
+            }
+        }
+        viewport_->setStandardView(StandardView::Iso);
+        viewport_->setForceDetail(true);
+        viewport_->fitAll();
+        benchPhase_ = 1;
+        // A second repaint in the same slot does not enter paintGL. Time the next turn.
+        QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+        return;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    viewport_->repaint();
+    const double wallMs = static_cast<double>(timer.nsecsElapsed()) / 1.0e6;
+    const double drawMs = viewport_->lastDrawMs();
+    const double frameMs = wallMs > drawMs ? wallMs : drawMs;
+    if (viewport_->lastSubmitted() <= 0) {
+        if (++benchTries_ < 40) {
+            QTimer::singleShot(50, this, [this] { finishLargeSceneBench(); });
+            return;
+        }
+        std::cout << "BENCH failed reason=no_instances phase=" << benchPhase_ << " wall_ms=" << wallMs
+                  << " draw_ms=" << drawMs << std::endl;
+        QApplication::exit(2);
+        return;
+    }
+
+    if (benchPhase_ == 1) {
+        benchFitMs_ = frameMs;
+        benchFitSubmitted_ = viewport_->lastSubmitted();
+        benchFitCulled_ = viewport_->lastCulled();
+        benchFitDraws_ = viewport_->lastDraws();
+        benchFitDrawn_ = viewport_->lastDrawnTriangles();
+        double rssKb = 0;
+        std::ifstream status("/proc/self/status");
+        std::string label;
+        while (status >> label) {
+            if (label == "VmRSS:") {
+                status >> rssKb;
+                break;
+            }
+            status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        }
+        benchFitOccluded_ = viewport_->lastOccluded();
+        viewport_->setCallout(QString("10万零件 · 全细节 %1 三角 · %2 ms · 遮挡 %3 · RSS %4 MB · MSAA %5")
+                                  .arg(benchFitDrawn_)
+                                  .arg(benchFitMs_, 0, 'f', 0)
+                                  .arg(benchFitOccluded_)
+                                  .arg(rssKb / 1024.0, 0, 'f', 0)
+                                  .arg(QSurfaceFormat::defaultFormat().samples()));
+        viewport_->setForceDetail(false);
+        viewport_->camera().target = scene_.worldBounds().center();
+        viewport_->camera().distance = 4500;
+        benchPhase_ = 2;
+        QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+        return;
+    }
+
+    if (benchPhase_ == 2) {
+        benchNearSubmitted_ = viewport_->lastSubmitted();
+        benchNearCulled_ = viewport_->lastCulled();
+        benchNearDrawn_ = viewport_->lastDrawnTriangles();
+        benchNearOccluded_ = viewport_->lastOccluded();
+        benchNearMs_ = frameMs;
+        viewport_->camera().eyeDirection = {0.18, -0.97, 0.14};
+        viewport_->camera().distance = 1600;
+        viewport_->camera().target = scene_.worldBounds().center();
+        // A slab in front of the field. Parts behind it are what the occlusion buffer can reject.
+        // The fit-all and near frames already finished, and the slab is hidden again before the shot.
+        if (scene_.findByName("OccluderWall") == nullptr) {
+            const Vec3 center = scene_.worldBounds().center();
+            const Vec3 towardEye = normalize(viewport_->camera().eyeDirection);
+            auto wall = scene_.makeNode(NodeKind::Part, "OccluderWall");
+            wall->meshId = scene_.addMesh(makeBoxMesh({6000, 80, 2500}));
+            wall->local.translation = center + towardEye * 700.0;
+            wall->color = {0.85, 0.45, 0.2};
+            scene_.addChild(scene_.root(), wall);
+        }
+        benchPhase_ = 3;
+        QTimer::singleShot(0, this, [this] { finishLargeSceneBench(); });
+        return;
+    }
+
+    benchGrazeSubmitted_ = viewport_->lastSubmitted();
+    benchGrazeOccluded_ = viewport_->lastOccluded();
+    if (auto wall = scene_.findByName("OccluderWall")) {
+        wall->visible = false;
+    }
+    viewport_->setStandardView(StandardView::Iso);
+    viewport_->camera().target = scene_.worldBounds().center();
+    viewport_->camera().distance = 4500;
+
+    long long sceneTriangles = 0;
+    int meshTriangles = 0;
+    int parts = 0;
+    if (const auto part = scene_.findByName("p0")) {
+        if (const auto mesh = scene_.mesh(part->meshId)) {
+            meshTriangles = static_cast<int>(mesh->triangleCount());
+        }
+    }
+    if (scene_.root()) {
+        for (const auto& child : scene_.root()->children) {
+            if (child && child->name.rfind("p", 0) == 0) {
+                ++parts;
+            }
+        }
+    }
+    sceneTriangles = static_cast<long long>(meshTriangles) * parts;
+    double rssKb = 0;
+    std::ifstream status("/proc/self/status");
+    std::string label;
+    while (status >> label) {
+        if (label == "VmRSS:") {
+            status >> rssKb;
+            break;
+        }
+        status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+    const int msaa = QSurfaceFormat::defaultFormat().samples();
+    const double rssMb = rssKb / 1024.0;
+    const double nearMs = benchNearMs_;
+    std::vector<Aabb> gpuBounds;
+    if (scene_.root()) {
+        gpuBounds.reserve(scene_.root()->children.size());
+        for (const auto& child : scene_.root()->children) {
+            if (!child) {
+                continue;
+            }
+            Aabb box;
+            box.expand(child->local.translation - Vec3{20, 20, 10});
+            box.expand(child->local.translation + Vec3{20, 20, 20});
+            gpuBounds.push_back(box);
+        }
+    }
+    QElapsedTimer gpuTimer;
+    gpuTimer.start();
+    const int gpuKept = viewport_->gpuFrustumCull(gpuBounds);
+    const double gpuMs = static_cast<double>(gpuTimer.nsecsElapsed()) / 1.0e6;
+    std::cout << "BENCH parts=" << parts << " mesh_triangles=" << meshTriangles << " triangles=" << sceneTriangles
+              << " submitted=" << benchFitSubmitted_ << " culled=" << benchFitCulled_ << " occluded=" << benchFitOccluded_
+              << " draws=" << benchFitDraws_ << " drawn_triangles=" << benchFitDrawn_ << " frame_ms=" << benchFitMs_
+              << " fps=" << (benchFitMs_ > 0 ? 1000.0 / benchFitMs_ : 0) << " rss_mb=" << rssMb << " msaa=" << msaa
+              << " near_submitted=" << benchNearSubmitted_ << " near_culled=" << benchNearCulled_
+              << " near_occluded=" << benchNearOccluded_ << " near_drawn=" << benchNearDrawn_
+              << " near_frame_ms=" << nearMs << " near_fps=" << (nearMs > 0 ? 1000.0 / nearMs : 0)
+              << " resident=" << viewport_->residentMeshes() << " tree_query_ms=" << benchTreeMs_
+              << " tree_hits=" << benchTreeHits_ << " tree_scroll_ms=" << benchScrollMs_ << " gpu_kept=" << gpuKept
+              << " gpu_ms=" << gpuMs << " gpu_count=" << gpuBounds.size()
+              << " graze_submitted=" << benchGrazeSubmitted_ << " graze_occluded=" << benchGrazeOccluded_ << std::endl;
+    if (benchFitMs_ < 1.0 || nearMs < 1.0) {
+        std::cout << "BENCH failed reason=timer_did_not_cover_paint" << std::endl;
+        QApplication::exit(2);
+        return;
+    }
+    if (!benchShot_.isEmpty()) {
+        setScreenshotPath(benchShot_);
+        captureScreenshot();
+    } else {
+        QApplication::exit(0);
+    }
 }
 
 void MainWindow::beginHeadlessPlayback() {
@@ -1740,6 +2637,25 @@ void MainWindow::positionFloaters() {
     if (intent_ != nullptr) {
         intent_->move(std::max(12, (width() - intent_->width()) / 2), std::max(80, height() - intent_->height() - 40));
     }
+    updateWelcome();
+}
+
+void MainWindow::updateWelcome() {
+    if (welcome_ == nullptr || viewport_ == nullptr) {
+        return;
+    }
+    const bool empty = scene_.resources.empty() && scene_.operations.empty() && scene_.nodeCount() <= 1;
+    const bool show = empty && !importing_;
+    welcome_->setVisible(show);
+    if (!show) {
+        return;
+    }
+    const int boxWidth = std::min(520, std::max(280, viewport_->width() - 48));
+    const int boxHeight = std::min(240, std::max(180, viewport_->height() / 3));
+    const QPoint origin = viewport_->mapTo(this, QPoint(0, 0));
+    welcome_->setGeometry(origin.x() + std::max(12, (viewport_->width() - boxWidth) / 2),
+                          origin.y() + std::max(12, (viewport_->height() - boxHeight) / 2), boxWidth, boxHeight);
+    welcome_->raise();
 }
 
 void MainWindow::setTaskModeName(const QString& mode) {
@@ -1771,11 +2687,21 @@ void MainWindow::applyTaskMode(int mode) {
     show(motionDock_, taskMode_ == 1 || taskMode_ == 3);
     show(logicDock_, taskMode_ == 2);
     show(pathDock_, taskMode_ == 3);
+    show(scopeDock_, taskMode_ == 1 || taskMode_ == 2 || taskMode_ == 4 || taskMode_ == 5);
     show(collisionDock_, taskMode_ == 4 || taskMode_ == 5);
     show(signalDock_, taskMode_ == 2 || taskMode_ == 4 || taskMode_ == 5);
     show(scriptDock_, taskMode_ == 5);
     show(plcDock_, taskMode_ == 5);
     show(physicsDock_, taskMode_ == 0 || taskMode_ == 4);
+    const bool showLine = taskMode_ == 0 && (!scene_.layout.stations.empty() || !scene_.operations.empty());
+    show(floorDock_, showLine);
+    show(operationDock_, showLine);
+    show(ganttDock_, showLine);
+    show(sequenceDock_, showLine);
+    show(weldDock_, taskMode_ == 3 || lineFocus_ == QStringLiteral("weld"));
+    if (lineDemo_) {
+        arrangeLineDocks();
+    }
     if (chrome_ != nullptr) {
         chrome_->setMode(taskMode_);
     }
@@ -1786,6 +2712,10 @@ void MainWindow::applyTaskMode(int mode) {
     if (pathTimeline_ != nullptr && taskMode_ == 3) {
         pathTimeline_->reload();
         resizeDocks({pathDock_}, {260}, Qt::Vertical);
+    }
+    if (scope_ != nullptr && scopeDock_ != nullptr && scopeDock_->isVisible()) {
+        scope_->reload();
+        resizeDocks({scopeDock_}, {280}, Qt::Vertical);
     }
     if (taskMode_ == 5 && plcDock_ != nullptr) {
         resizeDocks({plcDock_}, {300}, Qt::Horizontal);
@@ -1808,6 +2738,21 @@ void MainWindow::setThemeName(const QString& theme) {
     if (pathTimeline_ != nullptr) {
         pathTimeline_->setDark(themeName_ == "dark");
     }
+    if (scope_ != nullptr) {
+        scope_->setDark(themeName_ == "dark");
+    }
+    if (floor_ != nullptr) {
+        floor_->setDark(themeName_ == "dark");
+    }
+    if (gantt_ != nullptr) {
+        gantt_->setDark(themeName_ == "dark");
+    }
+    if (sequence_ != nullptr) {
+        sequence_->setDark(themeName_ == "dark");
+    }
+    if (operations_ != nullptr) {
+        operations_->setDark(themeName_ == "dark");
+    }
     saveWorkspace();
 }
 
@@ -1817,6 +2762,25 @@ void MainWindow::showCommandPalette() {
     }
     positionFloaters();
     palette_->openFor(&scene_);
+}
+
+void MainWindow::showPlcConnection() {
+    // The task mode is applied before the event loop starts.
+    applyTaskMode(5);
+    for (QDockWidget* dock : {treeDock_, propertyDock_, signalDock_, scriptDock_, collisionDock_, motionDock_, logicDock_,
+                              pathDock_, scopeDock_, physicsDock_, floorDock_, operationDock_, ganttDock_}) {
+        if (dock != nullptr) {
+            dock->hide();
+        }
+    }
+    if (plcDock_ != nullptr) {
+        plcDock_->show();
+        plcDock_->raise();
+        resizeDocks({plcDock_}, {520}, Qt::Horizontal);
+    }
+    if (plc_ != nullptr) {
+        plc_->connectOpcUa();
+    }
 }
 
 void MainWindow::showIntentBar() {
@@ -1932,6 +2896,11 @@ bool MainWindow::applyIntent(const std::string& text) {
     intentSignals_ = scene_.signals;
     intentUndoValid_ = true;
     CommandExecutor executor(scene_, simulation_.get(), physics_.get());
+    // One history step for the whole intent, instead of one snapshot per command.
+    const bool batch = !plan.steps.empty();
+    if (batch) {
+        scene_.beginEdit();
+    }
     bool any = false;
     for (const PlanStep& step : plan.steps) {
         if (step.risk == "R3" || (step.risk == "R2" && intent_ != nullptr && !intent_->allowsStructuralEdits())) {
@@ -1943,6 +2912,9 @@ bool MainWindow::applyIntent(const std::string& text) {
             any = true;
         }
     }
+    if (batch) {
+        scene_.endEdit();
+    }
     if (viewport_ != nullptr) {
         viewport_->setPreviewMode(false);
         viewport_->setGhost(false);
@@ -1953,6 +2925,13 @@ bool MainWindow::applyIntent(const std::string& text) {
 }
 
 void MainWindow::undoIntent() {
+    if (history_.undo()) {
+        intentUndoValid_ = false;
+        if (intent_ != nullptr) {
+            intent_->note("已撤销上一次意图事务");
+        }
+        return;
+    }
     if (!intentUndoValid_) {
         if (intent_ != nullptr) {
             intent_->note("没有可撤销的意图事务");

@@ -2,6 +2,7 @@
 
 #include "sim/core/I18n.hpp"
 #include "sim/core/Scene.hpp"
+#include "sim/io/EditHistory.hpp"
 #include "sim/motion/Motion.hpp"
 #include "sim/physics/PhysicsEngine.hpp"
 #include "sim/scripting/ScriptHost.hpp"
@@ -17,6 +18,7 @@ class QCloseEvent;
 class QResizeEvent;
 class QComboBox;
 class QDockWidget;
+class QFrame;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -27,6 +29,8 @@ class QPushButton;
 class QTableWidget;
 class QSystemTrayIcon;
 class QTimer;
+class QModelIndex;
+class QTreeView;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -44,16 +48,23 @@ public:
     void importStepAsync(const QString& path);
     void importObj(const QString& path);
     void openProject(const QString& path);
+    bool saveProject(const QString& path);
+    const Scene& document() const { return scene_; }
+    bool importing() const { return importing_; }
     void setScreenshotPath(const QString& path);
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
     void loadDemo(const QString& name);
+    void updateWelcome();
+    void runLargeSceneBench(const QString& screenshot);
+    void finishLargeSceneBench();
     void usePhysicsBackend(PhysicsBackend backend);
     void setTaskModeName(const QString& mode);
     void setThemeName(const QString& theme);
     void showCommandPalette();
     void showIntentBar();
+    void showPlcConnection();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -68,7 +79,7 @@ private slots:
     void importObjInteractive();
     void onImportProgress(int percent, const QString& stageKey, int current, int total);
     void onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs);
-    void onTreeCurrentChanged(QTreeWidgetItem* current, QTreeWidgetItem* previous);
+    void onTreeCurrentChanged(const QModelIndex& current, const QModelIndex& previous);
     void onViewportSelection(const QString& id);
     void onTransformEdited();
     void applyProperties();
@@ -100,7 +111,6 @@ private:
     QString mechLabel(MechKind kind) const;
     void selectNode(const QString& id, bool fromTree);
     bool confirmDiscard();
-    bool saveProject(const QString& path);
     QString trk(const char* key) const;
     void finishScreenshot();
     void applyTaskMode(int mode);
@@ -109,8 +119,10 @@ private:
     void undoIntent();
     void saveWorkspace();
     void positionFloaters();
+    void arrangeLineDocks();
 
     Scene scene_;
+    EditHistory history_;
     I18nCatalog i18n_;
     std::unique_ptr<IPhysicsEngine> physics_;
     std::unique_ptr<IScriptHost> scripting_;
@@ -119,19 +131,27 @@ private:
     LogicMachine logic_;
     class MotionPanel* motion_ = nullptr;
     class CollisionPanel* collision_ = nullptr;
+    class WeldPanel* weld_ = nullptr;
+    QDockWidget* weldDock_ = nullptr;
     bool collisionDemo_ = false;
     bool kr420Demo_ = false;
     bool kr420TrackDemo_ = false;
     bool transferDemo_ = false;
     bool meshDemo_ = false;
     bool slipDemo_ = false;
+    bool mcdDemo_ = false;
     bool shelfReload_ = true;
     std::string demoPath_;
     std::string pendingPath_;
     std::vector<double> jointRest_;
     QTimer* simTimer_ = nullptr;
+    QTimer* autosaveTimer_ = nullptr;
+    std::string recoveryDir_;
+    bool recovered_ = false;
     ViewportWidget* viewport_ = nullptr;
-    QTreeWidget* tree_ = nullptr;
+    class SceneTreeModel* treeModel_ = nullptr;
+    QTreeView* tree_ = nullptr;
+    QLineEdit* treeSearch_ = nullptr;
     QLineEdit* nameEdit_ = nullptr;
     QLabel* kindLabel_ = nullptr;
     QLabel* colorSwatch_ = nullptr;
@@ -179,6 +199,25 @@ private:
     QPushButton* cancelButton_ = nullptr;
     QString projectPath_;
     QString screenshotPath_;
+    QString benchShot_;
+    int benchTries_ = 0;
+    int benchPhase_ = 0;
+    double benchFitMs_ = 0;
+    int benchFitSubmitted_ = 0;
+    int benchFitCulled_ = 0;
+    int benchFitOccluded_ = 0;
+    int benchFitDraws_ = 0;
+    int benchFitDrawn_ = 0;
+    double benchTreeMs_ = 0;
+    double benchScrollMs_ = 0;
+    int benchTreeHits_ = 0;
+    int benchNearSubmitted_ = 0;
+    int benchNearCulled_ = 0;
+    int benchNearDrawn_ = 0;
+    int benchNearOccluded_ = 0;
+    double benchNearMs_ = 0;
+    int benchGrazeSubmitted_ = 0;
+    int benchGrazeOccluded_ = 0;
     bool refreshing_ = false;
     bool importing_ = false;
     std::thread importThread_;
@@ -213,6 +252,7 @@ private:
     QDockWidget* motionDock_ = nullptr;
     QDockWidget* logicDock_ = nullptr;
     QDockWidget* pathDock_ = nullptr;
+    QDockWidget* scopeDock_ = nullptr;
     QDockWidget* plcDock_ = nullptr;
     QDockWidget* physicsDock_ = nullptr;
     class ChromeBar* chrome_ = nullptr;
@@ -220,8 +260,20 @@ private:
     class IntentBar* intent_ = nullptr;
     class LogicCanvas* logicCanvas_ = nullptr;
     class PathTimeline* pathTimeline_ = nullptr;
+    class SignalScope* scope_ = nullptr;
     class PlcCards* plc_ = nullptr;
     class PhysicsShelf* physicsShelf_ = nullptr;
+    class FloorPlanView* floor_ = nullptr;
+    class OperationTreeView* operations_ = nullptr;
+    class GanttView* gantt_ = nullptr;
+    class SequenceEditor* sequence_ = nullptr;
+    QFrame* welcome_ = nullptr;
+    QDockWidget* floorDock_ = nullptr;
+    QDockWidget* operationDock_ = nullptr;
+    QDockWidget* ganttDock_ = nullptr;
+    QDockWidget* sequenceDock_ = nullptr;
+    bool lineDemo_ = false;
+    QString lineFocus_;
     QSystemTrayIcon* tray_ = nullptr;
     int taskMode_ = 0;
     bool focusMode_ = false;

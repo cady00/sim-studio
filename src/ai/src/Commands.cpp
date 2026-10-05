@@ -1,8 +1,13 @@
 #include "sim/ai/Commands.hpp"
 
+#include "sim/ai/Provider.hpp"
 #include "sim/collision/Query.hpp"
 
+#include "sim/io/AssetImport.hpp"
 #include "sim/motion/Motion.hpp"
+
+#include <algorithm>
+#include <cctype>
 
 #include <vector>
 
@@ -80,10 +85,33 @@ nlohmann::json CommandExecutor::catalog() {
         op("min_distance", "Signed distance, witness points, and gradient between two named parts.", {"name", "other"}, true),
         op("sweep_check", "Continuous sweep of a part between local translations, or of a named robot path.",
            {"name", "path", "x0", "y0", "z0", "x1", "y1", "z1"}, true),
-        op("nl_to_logic", "Future: natural language to a logic block or script.", {"text"}, false),
-        op("layout_suggest", "Future: suggest a line layout. Does not edit the scene.", {"text"}, false),
-        op("cycle_optimize", "Future: suggest cycle-time changes.", {"text"}, false),
-        op("explain_anomaly", "Future: explain a signal or cycle anomaly.", {"text"}, false),
+        op("line_list", "Stations, grid, title, and whether the line is example data.", nlohmann::json::array(), true),
+        op("line_add_station", "Add or replace a station anchor in plan millimeters.",
+           {"id", "name", "x", "y", "width", "depth", "kind", "resource", "node"}, true),
+        op("line_move_station", "Move a station anchor. Coordinates are plan millimeters.", {"id", "x", "y"}, true),
+        op("line_snap", "Snap every station anchor to the layout grid.", nlohmann::json::array(), true),
+        op("line_align", "Align station left edges, then snap.", nlohmann::json::array(), true),
+        op("line_distribute", "Distribute station anchors along X, then snap.", nlohmann::json::array(), true),
+        op("line_import_dxf", "Import a DXF underlay: LINE, LWPOLYLINE, CIRCLE, ARC, SPLINE, INSERT, layers, ASCII and binary.", {"path", "mmPerUnit"}, true),
+        op("line_set_underlay", "Store an image underlay in the project.", {"path", "opacity"}, true),
+        op("line_measure", "Recompute task seconds from the path planner, logic events, or a conveyor step.", {"force"}, true),
+        op("line_ops", "Operation tree: sequence, parallel, predecessors, path, and logic names.", nlohmann::json::array(), true),
+        op("line_add_op", "Add or replace an operation. after is a list of finish-start ids.",
+           {"id", "name", "station", "parent", "kind", "seconds", "index", "after", "path", "logic"}, true),
+        op("line_schedule", "Critical path, makespan, and bottleneck station. Does not replan a robot path.", nlohmann::json::array(), true),
+        op("line_export_csv", "Write the cycle report as CSV.", {"path"}, true),
+        op("line_export_xlsx", "Write the cycle report as a spreadsheet.", {"path"}, true),
+        op("ppr_list", "Product, process, and plant nodes.", nlohmann::json::array(), true),
+        op("ems_import", "Read eBOP-style XML into operations, resources, parts, welds, paths, and placements.", {"path"}, true),
+        op("ems_export", "Write operations, resources, parts, welds, paths, and placements to eBOP-style XML.", {"path"}, true),
+        op("asset_import", "Import a file through the asset registry. Format is chosen by extension, then by content.", {"path"}, true),
+        op("asset_export", "Export visible meshes as gltf, glb, or stl.", {"path", "format"}, true),
+        op("logic_upsert", "Create or replace a logic block. steps is a list of actions.", {"name", "steps", "repeat"}, true),
+        op("line_set_cyclic", "Turn the operation list into a repeating production cycle.", {"value"}, true),
+        op("nl_to_logic", "Offline rules turn a sentence into logic commands. An optional localhost model can replace the commands.", {"text"}, true),
+        op("layout_suggest", "Offline rules add stations. An optional localhost model can replace the commands.", {"text"}, true),
+        op("cycle_optimize", "Offline rules shorten a task that is more than twice the median and mark the line cyclic.", {"text"}, true),
+        op("explain_anomaly", "Offline rules describe stuck signals and mark anomaly_explained.", {"text"}, true),
     });
 }
 
@@ -99,6 +127,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
     if (op == "set_bool") {
         Signal& signal = scene_.upsertSignal(command.value("name", ""), SignalType::Bool);
         signal.flag = command.value("value", false);
+        scene_.notify(ChangeKind::Structure);
         return okValue(signal.flag);
     }
     if (op == "get_int") {
@@ -108,6 +137,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
     if (op == "set_int") {
         Signal& signal = scene_.upsertSignal(command.value("name", ""), SignalType::Int);
         signal.integer = command.value("value", 0);
+        scene_.notify(ChangeKind::Structure);
         return okValue(signal.integer);
     }
     if (op == "get_real") {
@@ -117,6 +147,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
     if (op == "set_real") {
         Signal& signal = scene_.upsertSignal(command.value("name", ""), SignalType::Real);
         signal.real = command.value("value", 0.0);
+        scene_.notify(ChangeKind::Structure);
         return okValue(signal.real);
     }
     if (op == "set_joint_target" || op == "set_joint_speed") {
@@ -130,6 +161,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (op == "set_joint_speed") {
             node->mech.drive = DriveMode::Speed;
         }
+        scene_.notify(ChangeKind::Transform);
         return okValue(node->mech.target);
     }
     if (op == "get_transform") {
@@ -149,6 +181,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             return error;
         }
         node->local.translation = {command.value("x", 0.0), command.value("y", 0.0), command.value("z", 0.0)};
+        scene_.notify(ChangeKind::Transform);
         return okValue(true);
     }
     if (op == "spawn") {
@@ -259,6 +292,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         joint->position = clampJoint(*joint, command.value("value", 0.0));
         applyResource(scene_, *resource);
+        scene_.notify(ChangeKind::Transform);
         return okValue(jointCommand(*resource, *joint));
     }
     if (op == "kin_fk") {
@@ -287,6 +321,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (command.value("apply", true) && solved.ok) {
             setJointVector(*resource, solved.joints);
             applyResource(scene_, *resource);
+            scene_.notify(ChangeKind::Transform);
         }
         return solved.ok ? okValue({{"joints", solved.joints}, {"warning", solved.warning}, {"approximated", solved.approximated}})
                          : fail(solved.warning.empty() ? "inverse kinematics failed" : solved.warning);
@@ -325,6 +360,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (command.value("apply", true) && solved.ok) {
             setJointVector(*resource, solved.values);
             applyResource(scene_, *resource);
+            scene_.notify(ChangeKind::Transform);
         }
         return solved.ok ? okValue({{"joints", solved.values}, {"residual", solved.residual}, {"solver", solved.solver},
                                     {"iterations", solved.iterations}})
@@ -342,6 +378,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         }
         node->mech.motion = motion;
         syncMotionFlags(node->mech);
+        scene_.notify(ChangeKind::Structure);
         return okValue(bodyMotionName(node->mech.motion));
     }
     if (op == "physics_pair") {
@@ -356,10 +393,12 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             if ((pair.a == a && pair.b == b) || (pair.a == b && pair.b == a)) {
                 pair.friction = friction;
                 pair.restitution = restitution;
+                scene_.notify(ChangeKind::Structure);
                 return okValue(pair.friction);
             }
         }
         scene_.physicsDoc.pairs.push_back(GradePair{a, b, friction, restitution});
+        scene_.notify(ChangeKind::Structure);
         return okValue(friction);
     }
     if (op == "motor_profile") {
@@ -395,6 +434,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (command.contains("running")) {
             motor->running = command.value("running", false);
         }
+        scene_.notify(ChangeKind::Structure);
         return okValue({{"name", motor->name}, {"target", motor->targetSpeed}, {"running", motor->running}});
     }
     if (op == "kin_move_pose") {
@@ -412,6 +452,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             advanceMove(*resource, move, Simulation::kFixedDt);
         }
         applyResource(scene_, *resource);
+        scene_.notify(ChangeKind::Transform);
         return okValue(jointVector(*resource));
     }
     if (op == "logic_start") {
@@ -466,6 +507,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             if (!detachTool(scene_, node->id, error)) {
                 return fail(error);
             }
+            scene_.notify(ChangeKind::Structure);
             return okValue(true);
         }
         KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
@@ -480,6 +522,7 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         if (!attachTool(scene_, *resource, node->id, error)) {
             return fail(error);
         }
+        scene_.notify(ChangeKind::Structure);
         return okValue(true);
     }
     if (op == "collision_query" || op == "min_distance" || op == "sweep_check") {
@@ -546,8 +589,437 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
         query->commitCache(scene_);
         return okValue(hits);
     }
+    if (op == "line_list") {
+        nlohmann::json stations = nlohmann::json::array();
+        for (const Station& station : scene_.layout.stations) {
+            stations.push_back({{"id", station.id},
+                                {"name", station.name},
+                                {"x", station.x},
+                                {"y", station.y},
+                                {"kind", stationKindName(station.kind)},
+                                {"resource", station.resource},
+                                {"node", station.nodeName}});
+        }
+        return okValue({{"example", scene_.layout.example},
+                        {"title", scene_.layout.title},
+                        {"gridMm", scene_.layout.gridMm},
+                        {"underlay", scene_.layout.underlay.kind},
+                        {"stations", std::move(stations)}});
+    }
+    if (op == "line_add_station") {
+        const std::string id = command.value("id", "");
+        if (id.empty()) {
+            return fail("station needs an id");
+        }
+        Station station;
+        if (Station* existing = findStation(scene_.layout, id)) {
+            station = *existing;
+        }
+        station.id = id;
+        if (command.contains("name")) {
+            station.name = command.value("name", station.name);
+        }
+        station.x = command.value("x", station.x);
+        station.y = command.value("y", station.y);
+        station.width = command.value("width", station.width);
+        station.depth = command.value("depth", station.depth);
+        if (command.contains("kind")) {
+            StationKind kind = station.kind;
+            if (!stationKindFromName(command.value("kind", ""), kind)) {
+                return fail("unknown station kind");
+            }
+            station.kind = kind;
+        }
+        if (command.contains("resource")) {
+            station.resource = command.value("resource", "");
+        }
+        if (command.contains("node")) {
+            station.nodeName = command.value("node", "");
+        }
+        if (Station* existing = findStation(scene_.layout, id)) {
+            *existing = station;
+        } else {
+            scene_.layout.stations.push_back(station);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(id);
+    }
+    if (op == "line_move_station") {
+        Station* station = findStation(scene_.layout, command.value("id", ""));
+        if (station == nullptr) {
+            return fail("no station named " + command.value("id", ""));
+        }
+        station->x = command.value("x", station->x);
+        station->y = command.value("y", station->y);
+        scene_.notify(ChangeKind::Structure);
+        return okValue({{"x", station->x}, {"y", station->y}});
+    }
+    if (op == "line_snap") {
+        snapStations(scene_.layout);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(static_cast<int>(scene_.layout.stations.size()));
+    }
+    if (op == "line_align") {
+        alignStationsMinX(scene_.layout);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(true);
+    }
+    if (op == "line_distribute") {
+        distributeStationsX(scene_.layout);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(true);
+    }
+    if (op == "line_import_dxf") {
+        std::string error;
+        if (!loadDxfUnderlay(scene_.layout, command.value("path", ""), command.value("mmPerUnit", 1.0), error)) {
+            return fail(error);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(static_cast<int>(scene_.layout.underlay.lines.size()));
+    }
+    if (op == "line_set_underlay") {
+        setImageUnderlay(scene_.layout, command.value("path", ""), command.value("opacity", 0.35));
+        scene_.notify(ChangeKind::Structure);
+        return okValue(scene_.layout.underlay.path);
+    }
+    if (op == "line_ops") {
+        return okValue(operationsToJson(scene_.operations));
+    }
+    if (op == "line_add_op") {
+        const std::string id = command.value("id", "");
+        if (id.empty()) {
+            return fail("operation needs an id");
+        }
+        Operation operation;
+        for (const Operation& existing : scene_.operations) {
+            if (existing.id == id) {
+                operation = existing;
+            }
+        }
+        operation.id = id;
+        if (command.contains("name")) {
+            operation.name = command.value("name", operation.name);
+        }
+        if (command.contains("station")) {
+            operation.station = command.value("station", "");
+        }
+        if (command.contains("parent")) {
+            operation.parent = command.value("parent", "");
+        }
+        if (command.contains("kind")) {
+            OpKind kind = operation.kind;
+            if (!opKindFromName(command.value("kind", ""), kind)) {
+                return fail("unknown operation kind");
+            }
+            operation.kind = kind;
+        }
+        operation.seconds = command.value("seconds", operation.seconds);
+        operation.index = command.value("index", operation.index);
+        if (command.contains("path")) {
+            operation.path = command.value("path", "");
+        }
+        if (command.contains("logic")) {
+            operation.logic = command.value("logic", "");
+        }
+        if (command.contains("after")) {
+            operation.after.clear();
+            const nlohmann::json& after = command.at("after");
+            if (after.is_array()) {
+                for (const auto& item : after) {
+                    if (item.is_string()) {
+                        operation.after.push_back(item.get<std::string>());
+                    }
+                }
+            } else if (after.is_string() && !after.get<std::string>().empty()) {
+                operation.after.push_back(after.get<std::string>());
+            }
+        }
+        bool replaced = false;
+        for (Operation& existing : scene_.operations) {
+            if (existing.id == id) {
+                existing = operation;
+                replaced = true;
+            }
+        }
+        if (!replaced) {
+            scene_.operations.push_back(operation);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(id);
+    }
+    if (op == "line_schedule") {
+        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        if (!report.error.empty()) {
+            return fail(report.error);
+        }
+        return okValue(scheduleToJson(report));
+    }
+    if (op == "line_export_csv") {
+        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        std::string error = report.error;
+        if (error.empty() && !exportScheduleCsv(report, command.value("path", ""), error)) {
+            return fail(error.empty() ? "csv export failed" : error);
+        }
+        if (!error.empty()) {
+            return fail(error);
+        }
+        return okValue(command.value("path", ""));
+    }
+    if (op == "line_export_xlsx") {
+        const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+        std::string error = report.error;
+        if (error.empty() && !exportScheduleXlsx(report, command.value("path", ""), error)) {
+            return fail(error.empty() ? "xlsx export failed" : error);
+        }
+        if (!error.empty()) {
+            return fail(error);
+        }
+        return okValue(command.value("path", ""));
+    }
+    if (op == "ppr_list") {
+        return okValue(pprToJson(scene_.ppr));
+    }
+    if (op == "line_measure") {
+        const MeasureResult measured = measureOperationTimes(scene_, command.value("force", false));
+        scene_.notify(ChangeKind::Structure);
+        return okValue({{"updated", measured.updated},
+                        {"planned", measured.planned},
+                        {"logic", measured.logic},
+                        {"conveyor", measured.conveyor},
+                        {"note", measured.note}});
+    }
+    if (op == "ems_import") {
+        const EmsImportResult imported = importEmsXml(command.value("path", ""), scene_);
+        if (!imported.ok) {
+            return fail(imported.message);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(imported.message);
+    }
+    if (op == "ems_export") {
+        const EmsImportResult written = exportEmsXml(scene_, command.value("path", ""));
+        if (!written.ok) {
+            return fail(written.message);
+        }
+        return okValue(written.message);
+    }
+    if (op == "asset_import") {
+        const auto registry = createBuiltinRegistry();
+        const AssetImportResult imported = registry->importPath(command.value("path", ""), scene_);
+        if (!imported.ok) {
+            return fail(imported.message);
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue({{"format", imported.format},
+                        {"nodes", imported.nodeCount},
+                        {"triangles", imported.triangleCount},
+                        {"message", imported.message}});
+    }
+    if (op == "asset_export") {
+        const std::string path = command.value("path", "");
+        std::string format = command.value("format", "");
+        if (format.empty()) {
+            const auto dot = path.find_last_of('.');
+            format = dot == std::string::npos ? "" : path.substr(dot + 1);
+        }
+        for (char& c : format) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        std::string error;
+        bool ok = false;
+        if (format == "stl") {
+            ok = exportSceneStl(scene_, path, error);
+        } else if (format == "gltf" || format == "glb") {
+            ok = exportSceneGltf(scene_, path, error);
+        } else if (format == "csv") {
+            const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+            error = report.error;
+            ok = error.empty() && exportScheduleCsv(report, path, error);
+        } else if (format == "xlsx") {
+            const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
+            error = report.error;
+            ok = error.empty() && exportScheduleXlsx(report, path, error);
+        } else {
+            return fail("export format is gltf, glb, stl, csv, or xlsx");
+        }
+        if (!ok) {
+            return fail(error.empty() ? "export failed" : error);
+        }
+        return okValue(path);
+    }
+    if (op == "logic_upsert") {
+        const std::string name = command.value("name", "");
+        if (name.empty()) {
+            return fail("logic block needs a name");
+        }
+        LogicBlock block;
+        block.name = name;
+        block.repeat = command.value("repeat", false);
+        block.resource = command.value("resource", "");
+        if (command.contains("steps") && command.at("steps").is_array()) {
+            LogicStep step;
+            for (const auto& item : command.at("steps")) {
+                if (!item.is_object()) {
+                    continue;
+                }
+                LogicAction action;
+                action.kind = item.value("kind", "wait");
+                action.signal = item.value("signal", "");
+                action.seconds = item.value("seconds", 0.0);
+                step.actions.push_back(std::move(action));
+            }
+            if (!step.actions.empty()) {
+                block.steps.push_back(std::move(step));
+            }
+        }
+        bool replaced = false;
+        for (LogicBlock& existing : scene_.logicBlocks) {
+            if (existing.name == name) {
+                existing = block;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            scene_.logicBlocks.push_back(std::move(block));
+        }
+        scene_.notify(ChangeKind::Structure);
+        return okValue(name);
+    }
+    if (op == "line_set_cyclic") {
+        scene_.layout.cyclic = command.value("value", true);
+        scene_.notify(ChangeKind::Structure);
+        return okValue(scene_.layout.cyclic);
+    }
     if (op == "nl_to_logic" || op == "layout_suggest" || op == "cycle_optimize" || op == "explain_anomaly") {
-        return fail(op + " is a documented hook and is not implemented");
+        const std::string text = command.value("text", "");
+        std::string folded = text;
+        for (char& character : folded) {
+            character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        }
+        nlohmann::json commands = nlohmann::json::array();
+        std::string note;
+        if (op == "nl_to_logic") {
+            std::string cue = "barrier";
+            std::string act = "push";
+            const auto when = folded.find("when ");
+            const auto then = folded.find(" then ");
+            if (when != std::string::npos && then != std::string::npos && then > when) {
+                cue = folded.substr(when + 5, then - (when + 5));
+                act = folded.substr(then + 6);
+            }
+            const auto dang = text.find("当");
+            const auto ze = text.find("则");
+            if (dang != std::string::npos && ze != std::string::npos && ze > dang) {
+                cue = text.substr(dang + std::string("当").size(), ze - (dang + std::string("当").size()));
+                act = text.substr(ze + std::string("则").size());
+            }
+            auto trim = [](std::string value) {
+                while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
+                    value.erase(value.begin());
+                }
+                while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+                    value.pop_back();
+                }
+                return value;
+            };
+            cue = trim(cue);
+            act = trim(act);
+            if (cue.empty()) {
+                cue = "go";
+            }
+            if (act.empty()) {
+                act = "done";
+            }
+            if (text.find("气缸") != std::string::npos || folded.find("cylinder") != std::string::npos) {
+                act = "cylinder";
+            }
+            commands.push_back({{"op", "logic_upsert"},
+                                {"name", "nl"},
+                                {"repeat", true},
+                                {"steps",
+                                 nlohmann::json::array({{{"kind", "wait_signal"}, {"signal", cue}},
+                                                        {{"kind", "set_output"}, {"signal", act}}})}});
+            note = "rule: wait " + cue + " then set " + act;
+        } else if (op == "layout_suggest") {
+            if (text.find("焊接") != std::string::npos || folded.find("weld") != std::string::npos) {
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_weld"}, {"name", "焊接"}, {"kind", "robot"}, {"x", 2000}});
+                note = "rule: weld station";
+            } else {
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_load"}, {"name", "上料"}, {"kind", "manual"}, {"x", 0}});
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_weld"}, {"name", "焊接"}, {"kind", "robot"}, {"x", 2500}});
+                commands.push_back({{"op", "line_add_station"}, {"id", "st_inspect"}, {"name", "检查"}, {"kind", "manual"}, {"x", 5000}});
+                note = "rule: load, weld, inspect";
+            }
+        } else if (op == "cycle_optimize") {
+            std::vector<double> spans;
+            for (const Operation& operation : scene_.operations) {
+                if (operation.kind == OpKind::Task && operation.seconds > 0) {
+                    spans.push_back(operation.seconds);
+                }
+            }
+            std::sort(spans.begin(), spans.end());
+            const double median = spans.empty() ? 0 : spans[(spans.size() - 1) / 2];
+            for (const Operation& operation : scene_.operations) {
+                if (operation.kind == OpKind::Task && median > 0 && operation.seconds > median * 2.0) {
+                    commands.push_back({{"op", "line_add_op"},
+                                        {"id", operation.id},
+                                        {"name", operation.name},
+                                        {"station", operation.station},
+                                        {"parent", operation.parent},
+                                        {"kind", "task"},
+                                        {"seconds", median}});
+                }
+            }
+            commands.push_back({{"op", "line_set_cyclic"}, {"value", true}});
+            note = spans.empty() ? "rule: line set cyclic" : "rule: cap tasks above twice the median";
+        } else {
+            std::string stuck;
+            for (const Signal& signal : scene_.signals) {
+                if (signal.type == SignalType::Bool && signal.flag) {
+                    if (!stuck.empty()) {
+                        stuck += ", ";
+                    }
+                    stuck += signal.name;
+                }
+            }
+            note = stuck.empty() ? "没有保持为真的布尔信号" : "这些布尔信号保持为真: " + stuck;
+            commands.push_back({{"op", "set_bool"}, {"name", "anomaly_explained"}, {"value", true}});
+        }
+        if (command.value("use_model", false)) {
+            ProviderConfig config;
+            config.enabled = true;
+            config.kind = "openai-compatible";
+            config.endpoint = command.value("endpoint", "http://127.0.0.1:8080/v1/chat/completions");
+            config.model = command.value("model", "local");
+            auto provider = createAiProvider(config);
+            std::string modelError;
+            const nlohmann::json reply = provider->complete(
+                {{"messages", nlohmann::json::array({{{"role", "user"}, {"content", text}}})}}, modelError);
+            if (reply.contains("commands") && reply.at("commands").is_array()) {
+                commands = reply.at("commands");
+                note = "localhost model";
+            } else if (!modelError.empty()) {
+                note += "; " + modelError;
+            }
+        }
+        nlohmann::json applied = nlohmann::json::array();
+        for (const auto& generated : commands) {
+            if (!generated.is_object()) {
+                continue;
+            }
+            const std::string generatedOp = generated.value("op", "");
+            if (generatedOp == "nl_to_logic" || generatedOp == "layout_suggest" || generatedOp == "cycle_optimize" ||
+                generatedOp == "explain_anomaly") {
+                return fail("model command cannot call " + generatedOp);
+            }
+            const CommandResult step = execute(generated);
+            if (!step.ok) {
+                return fail(step.error.empty() ? "generated command failed" : step.error);
+            }
+            applied.push_back({{"op", generatedOp}, {"value", step.value}});
+        }
+        return okValue({{"note", note}, {"commands", commands}, {"applied", applied}});
     }
     return fail("unknown op " + op);
 }

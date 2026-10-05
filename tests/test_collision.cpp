@@ -96,7 +96,7 @@ TEST_CASE("epa reports a known sphere and box penetration") {
     const sim::ContactHit boxes = sim::queryConvex(box({0, 0, 0}, {10, 10, 10}), box({15, 0, 0}, {10, 10, 10}));
     REQUIRE(boxes.penetration == Catch::Approx(5).margin(0.15));
     REQUIRE(boxes.volumeEstimated);
-    REQUIRE(boxes.volume > 0);
+    REQUIRE(boxes.volume == Catch::Approx(2000.0).margin(1e-6));
 }
 
 TEST_CASE("sweep catches a thin wall that endpoint samples miss") {
@@ -125,14 +125,18 @@ TEST_CASE("concave mesh decomposes into more than one hull") {
 TEST_CASE("narrow band sdf gradient points out of a sphere") {
     std::vector<sim::ConvexShape> pieces{sphere({0, 0, 0}, 10)};
     const sim::SdfGrid grid = sim::buildSdf(pieces, 16);
-    REQUIRE(grid.values.size() > 0);
-    REQUIRE(grid.band > 0);
+    REQUIRE(grid.nx == 16);
+    REQUIRE(grid.ny == 16);
+    REQUIRE(grid.nz == 16);
+    REQUIRE(grid.values.size() == 4096);
+    REQUIRE(grid.cell == Catch::Approx(1.625).margin(1e-12));
+    REQUIRE(grid.band == Catch::Approx(4.875).margin(1e-12));
     const int ix = std::clamp(static_cast<int>(std::lround((12.0 - grid.origin.x) / grid.cell - 0.5)), 0, grid.nx - 1);
     const int iy = std::clamp(static_cast<int>(std::lround((0.0 - grid.origin.y) / grid.cell - 0.5)), 0, grid.ny - 1);
     const int iz = std::clamp(static_cast<int>(std::lround((0.0 - grid.origin.z) / grid.cell - 0.5)), 0, grid.nz - 1);
     const sim::Vec3 point = grid.origin + sim::Vec3{(ix + 0.5) * grid.cell, (iy + 0.5) * grid.cell, (iz + 0.5) * grid.cell};
     const double truth = sim::length(point) - 10.0;
-    REQUIRE(truth > 0);
+    REQUIRE(truth == Catch::Approx(2.241546).margin(1e-4));
     REQUIRE(truth < grid.band);
     double distance = 0;
     sim::Vec3 gradient;
@@ -243,7 +247,9 @@ TEST_CASE("broadphase benchmark on a few thousand boxes") {
     std::cout << "BENCH parts=" << count << " build_ms=" << buildMs << " overlap_ms=" << queryMs
               << " overlaps=" << hits.size() << " neighbor200_ms=" << distanceMs << " neighbor_sum=" << neighbor << "\n";
     REQUIRE(hits.empty());
-    REQUIRE(buildMs > 0);
-    REQUIRE(queryMs >= 0);
-    REQUIRE(neighbor > 0);
+    REQUIRE(buildMs < 100);
+    REQUIRE(queryMs < 50);
+    // 195 face-adjacent gaps of 20 mm, plus 5 row wraps at sqrt(1540² + 20²).
+    const double wrap = std::sqrt(1540.0 * 1540.0 + 20.0 * 20.0);
+    REQUIRE(neighbor == Catch::Approx(195.0 * 20.0 + 5.0 * wrap).margin(0.05));
 }

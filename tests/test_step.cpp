@@ -48,7 +48,7 @@ TEST_CASE("sample fixture STEP keeps the assembly and shared pin mesh") {
     const sim::ImportResult result = importer.importFile(path.string(), scene);
     INFO(result.message);
     REQUIRE(result.ok);
-    REQUIRE(result.triangleCount > 0);
+    REQUIRE(result.triangleCount == 136);
     const auto fixture = findName(scene.root(), "Fixture");
     REQUIRE(fixture);
     REQUIRE(fixture->kind == sim::NodeKind::Assembly);
@@ -59,7 +59,9 @@ TEST_CASE("sample fixture STEP keeps the assembly and shared pin mesh") {
     REQUIRE(pinA);
     REQUIRE(pinB);
     REQUIRE(pinA->meshId == pinB->meshId);
-    REQUIRE_FALSE(pinA->meshId.empty());
+    const auto pinMesh = scene.mesh(pinA->meshId);
+    REQUIRE(pinMesh);
+    REQUIRE(pinMesh->triangleCount() == 124);
     const auto baseMesh = scene.mesh(base->meshId);
     REQUIRE(baseMesh);
     REQUIRE(baseMesh->bounds.max.x == Approx(120).margin(2));
