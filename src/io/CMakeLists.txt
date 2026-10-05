@@ -9,6 +9,7 @@ add_library(sim_io
     src/AssetImport.cpp
     src/JtImporter.cpp
     src/JtTopo.cpp
+    src/Cojt.cpp
     src/UsdStage.cpp
     src/Xacro.cpp
     src/OcctCadImport.cpp

@@ -159,8 +159,13 @@ JointAccelLimit jointAccelLimit(const KinematicResource& resource, const KinJoin
         limit.payloadScaled = resource.payload > 0 && payloadInertia > 1e-12;
         return limit;
     }
-    if (joint.accelSource == "user" || (joint.accelSource.empty() && joint.maxAccel > 0)) {
-        return fromUser(resource, joint, linkInertia, payloadInertia, known);
+    if (joint.accelSource == "user" || joint.accelSource == "motionparameters" ||
+        (joint.accelSource.empty() && joint.maxAccel > 0)) {
+        JointAccelLimit limit = fromUser(resource, joint, linkInertia, payloadInertia, known);
+        if (joint.accelSource == "motionparameters") {
+            limit.source = "motionparameters";
+        }
+        return limit;
     }
     JointAccelLimit limit;
     limit.source = "velocity";

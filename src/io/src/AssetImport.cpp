@@ -1,6 +1,8 @@
 #include "sim/io/AssetImport.hpp"
 #include "JtImporter.hpp"
 
+#include "sim/io/Cojt.hpp"
+
 #include "sim/core/LineModel.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Xml.hpp"
@@ -1233,6 +1235,9 @@ public:
             result.message = error;
             return result;
         }
+        if (bytes.find("<AddFlow") != std::string::npos) {
+            return importCojt(path, scene);
+        }
         if (bytes.find("<robot") != std::string::npos) {
             const auto slash = path.find_last_of("/\\");
             const std::string base = slash == std::string::npos ? std::string{} : path.substr(0, slash + 1);
@@ -1280,6 +1285,10 @@ const IAssetImporter* AssetRegistry::match(const std::string& path, const std::s
 
 AssetImportResult AssetRegistry::importPath(const std::string& path, Scene& scene) const {
     AssetImportResult result;
+    std::error_code directoryError;
+    if (std::filesystem::is_directory(path, directoryError)) {
+        return importCojt(path, scene);
+    }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         result.message = "cannot open " + path;
