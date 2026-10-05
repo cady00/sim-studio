@@ -17,10 +17,13 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Constraints/FixedConstraint.h>
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
+#include <Jolt/Physics/Constraints/PointConstraint.h>
 #include <Jolt/Physics/Constraints/SliderConstraint.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
@@ -29,6 +32,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cmath>
 #include <cstdio>
@@ -193,27 +197,6 @@ void writePose(SceneNode& node, JPH::RVec3 origin, JPH::Quat rotation) {
     node.local.rotation = quatFromMatrix(local);
 }
 
-double volumeCubicMeters(const Mech& mech) {
-    const double hx = std::max(mech.halfExtents.x, 0.1) * kMmToM;
-    const double hy = std::max(mech.halfExtents.y, 0.1) * kMmToM;
-    const double hz = std::max(mech.halfExtents.z, 0.1) * kMmToM;
-    const double radius = std::max(mech.radius, 0.1) * kMmToM;
-    const double height = std::max(mech.height, 0.1) * kMmToM;
-    switch (mech.shape) {
-        case CollisionShape::Sphere:
-            return 4.0 / 3.0 * kPi * radius * radius * radius;
-        case CollisionShape::Capsule: {
-            const double cylinder = kPi * radius * radius * std::max(height - 2.0 * radius, 0.0);
-            const double caps = 4.0 / 3.0 * kPi * radius * radius * radius;
-            return cylinder + caps;
-        }
-        case CollisionShape::Box:
-        case CollisionShape::ConvexHull:
-            return 8.0 * hx * hy * hz;
-    }
-    return 8.0 * hx * hy * hz;
-}
-
 void collect(const std::shared_ptr<SceneNode>& node, std::vector<SceneNode*>& out) {
     if (!node) {
         return;
@@ -243,14 +226,16 @@ Vec3 perpendicular(Vec3 axis) {
     return normalize(cross(axis, hint));
 }
 
-void configureMotor(JPH::MotorSettings& motor) {
+void configureMotor(JPH::MotorSettings& motor, const Mech& mech) {
     motor.mSpringSettings.mMode = JPH::ESpringMode::FrequencyAndDamping;
     motor.mSpringSettings.mFrequency = 0.0f;
     motor.mSpringSettings.mDamping = 1.0f;
-    motor.mMinForceLimit = -1.0e6f;
-    motor.mMaxForceLimit = 1.0e6f;
-    motor.mMinTorqueLimit = -500.0f;
-    motor.mMaxTorqueLimit = 500.0f;
+    const float force = mech.maxForce > 0 ? static_cast<float>(mech.maxForce) : 1.0e6f;
+    const float torque = mech.maxTorque > 0 ? static_cast<float>(mech.maxTorque) : 500.0f;
+    motor.mMinForceLimit = -force;
+    motor.mMaxForceLimit = force;
+    motor.mMinTorqueLimit = -torque;
+    motor.mMaxTorqueLimit = torque;
 }
 
 }  // namespace
@@ -281,19 +266,22 @@ struct JoltPhysicsEngine::Impl {
             return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
         }
         void OnContactAdded(const JPH::Body& a, const JPH::Body& b, const JPH::ContactManifold&,
-                            JPH::ContactSettings&) override {
-            note(a, b);
+                            JPH::ContactSettings& settings) override {
+            note(a, b, settings);
         }
         void OnContactPersisted(const JPH::Body& a, const JPH::Body& b, const JPH::ContactManifold&,
-                                JPH::ContactSettings&) override {
-            note(a, b);
+                                JPH::ContactSettings& settings) override {
+            note(a, b, settings);
         }
         void OnContactRemoved(const JPH::SubShapeIDPair&) override {}
 
-        void note(const JPH::Body& a, const JPH::Body& b) {
+        void note(const JPH::Body& a, const JPH::Body& b, JPH::ContactSettings& settings) {
             const auto keyA = a.GetID().GetIndexAndSequenceNumber();
             const auto keyB = b.GetID().GetIndexAndSequenceNumber();
             std::lock_guard<std::mutex> lock(owner_.contactMutex_);
+            if (owner_.scene != nullptr) {
+                ++owner_.scene->physicsDoc.stats.contacts;
+            }
             const auto beltA = owner_.belts_.find(keyA);
             const auto beltB = owner_.belts_.find(keyB);
             if (beltA != owner_.belts_.end() && b.IsDynamic()) {
@@ -301,6 +289,18 @@ struct JoltPhysicsEngine::Impl {
             } else if (beltB != owner_.belts_.end() && a.IsDynamic()) {
                 owner_.pendingBelts_[keyA] = beltB->second;
             }
+            if (owner_.scene == nullptr) {
+                return;
+            }
+            const auto surfaceA = owner_.surfaces_.find(keyA);
+            const auto surfaceB = owner_.surfaces_.find(keyB);
+            const std::string gradeA = surfaceA == owner_.surfaces_.end() ? std::string{} : surfaceA->second;
+            const std::string gradeB = surfaceB == owner_.surfaces_.end() ? std::string{} : surfaceB->second;
+            if (gradeA.empty() && gradeB.empty()) {
+                return;
+            }
+            settings.mCombinedFriction = static_cast<float>(pairFriction(owner_.scene->physicsDoc, gradeA, gradeB));
+            settings.mCombinedRestitution = static_cast<float>(pairRestitution(owner_.scene->physicsDoc, gradeA, gradeB));
         }
 
         Impl& owner_;
@@ -319,9 +319,10 @@ struct JoltPhysicsEngine::Impl {
     JPH::BodyID anchor_;
     std::vector<BodyRecord> bodies_;
     std::vector<JointRecord> joints_;
-    std::unordered_map<std::uint32_t, Vec3> belts_;
-    std::unordered_map<std::uint32_t, Vec3> activeBelts_;
-    std::unordered_map<std::uint32_t, Vec3> pendingBelts_;
+        std::unordered_map<std::uint32_t, Vec3> belts_;
+        std::unordered_map<std::uint32_t, Vec3> activeBelts_;
+        std::unordered_map<std::uint32_t, Vec3> pendingBelts_;
+        std::unordered_map<std::uint32_t, std::string> surfaces_;
     std::mutex contactMutex_;
     std::vector<std::pair<std::string, double>> sourceClocks_;
 
@@ -347,69 +348,144 @@ struct JoltPhysicsEngine::Impl {
 
 void JoltPhysicsEngine::Impl::addBody(SceneNode& node) {
     const Mech& mech = node.mech;
-    const bool kinematic = mech.kinematic || mech.kind == MechKind::Conveyor || mech.kind == MechKind::Collision;
+    if (mech.joinAncestor) {
+        return;
+    }
     const WorldPose pose = worldPose(node);
-    JPH::RefConst<JPH::Shape> shape;
-    const auto boxHalf = [&](Vec3 halfMm) {
-        const float hx = std::max(static_cast<float>(halfMm.x * kMmToM), 1.0e-4f);
-        const float hy = std::max(static_cast<float>(halfMm.y * kMmToM), 1.0e-4f);
-        const float hz = std::max(static_cast<float>(halfMm.z * kMmToM), 1.0e-4f);
-        float radius = 0.001f;
-        const float minHalf = std::min(hx, std::min(hy, hz));
-        if (minHalf <= radius) {
-            radius = std::max(minHalf * 0.2f, 1.0e-5f);
+    const auto leaf = [&](const SceneNode& owner) -> JPH::RefConst<JPH::Shape> {
+        const Mech& shapeMech = owner.mech;
+        const float margin = std::clamp(static_cast<float>(shapeMech.margin * kMmToM), 1.0e-5f, 0.002f);
+        const auto boxHalf = [&](Vec3 halfMm) {
+            const float hx = std::max(static_cast<float>(halfMm.x * kMmToM), 1.0e-4f);
+            const float hy = std::max(static_cast<float>(halfMm.y * kMmToM), 1.0e-4f);
+            const float hz = std::max(static_cast<float>(halfMm.z * kMmToM), 1.0e-4f);
+            float radius = margin;
+            const float minHalf = std::min(hx, std::min(hy, hz));
+            if (minHalf <= radius) {
+                radius = std::max(minHalf * 0.2f, 1.0e-5f);
+            }
+            return JPH::BoxShapeSettings(JPH::Vec3(hx, hy, hz), radius).Create().Get();
+        };
+        const auto alongZ = [](JPH::RefConst<JPH::Shape> upright) {
+            const JPH::Quat yToZ = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), 0.5f * JPH::JPH_PI);
+            return JPH::RefConst<JPH::Shape>(new JPH::RotatedTranslatedShape(JPH::Vec3::sZero(), yToZ, upright));
+        };
+        if (shapeMech.shape == CollisionShape::Sphere) {
+            return new JPH::SphereShape(static_cast<float>(std::max(shapeMech.radius, 0.5) * kMmToM));
         }
-        return JPH::BoxShapeSettings(JPH::Vec3(hx, hy, hz), radius).Create().Get();
-    };
-
-    if (mech.shape == CollisionShape::Sphere) {
-        shape = new JPH::SphereShape(static_cast<float>(std::max(mech.radius, 0.5) * kMmToM));
-    } else if (mech.shape == CollisionShape::Capsule) {
-        const float radius = static_cast<float>(std::max(mech.radius, 0.5) * kMmToM);
-        const float cylinder = static_cast<float>(std::max(mech.height - 2.0 * mech.radius, 0.5) * kMmToM);
-        auto capsule = JPH::CapsuleShapeSettings(cylinder * 0.5f, radius).Create().Get();
-        const JPH::Quat yToZ = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), 0.5f * JPH::JPH_PI);
-        shape = new JPH::RotatedTranslatedShape(JPH::Vec3::sZero(), yToZ, capsule);
-    } else if (mech.shape == CollisionShape::ConvexHull) {
-        JPH::Array<JPH::Vec3> points;
-        if (scene != nullptr) {
-            if (const auto mesh = scene->mesh(node.meshId)) {
-                const int count = static_cast<int>(mesh->vertexCount());
-                const int stride = std::max(1, count / 96);
-                for (int i = 0; i < count; i += stride) {
-                    points.push_back(JPH::Vec3(mesh->positions[static_cast<std::size_t>(i) * 3] * static_cast<float>(kMmToM),
-                                               mesh->positions[static_cast<std::size_t>(i) * 3 + 1] * static_cast<float>(kMmToM),
-                                               mesh->positions[static_cast<std::size_t>(i) * 3 + 2] * static_cast<float>(kMmToM)));
+        if (shapeMech.shape == CollisionShape::Capsule) {
+            const float radius = static_cast<float>(std::max(shapeMech.radius, 0.5) * kMmToM);
+            const float cylinder = static_cast<float>(std::max(shapeMech.height - 2.0 * shapeMech.radius, 0.5) * kMmToM);
+            return alongZ(JPH::CapsuleShapeSettings(cylinder * 0.5f, radius).Create().Get());
+        }
+        if (shapeMech.shape == CollisionShape::Cylinder) {
+            const float radius = static_cast<float>(std::max(shapeMech.radius, 0.5) * kMmToM);
+            const float halfHeight = static_cast<float>(std::max(shapeMech.height, 1.0) * 0.5 * kMmToM);
+            const float convex = std::min(margin, std::min(radius, halfHeight) * 0.2f);
+            return alongZ(JPH::CylinderShapeSettings(halfHeight, radius, convex).Create().Get());
+        }
+        if (shapeMech.shape == CollisionShape::Extrusion) {
+            JPH::Array<JPH::Vec3> ring;
+            const float radius = static_cast<float>(std::max(shapeMech.radius, 0.5) * kMmToM);
+            const float halfHeight = static_cast<float>(std::max(shapeMech.height, 1.0) * 0.5 * kMmToM);
+            for (int i = 0; i < 8; ++i) {
+                const float angle = static_cast<float>(i) * (2.0f * static_cast<float>(kPi) / 8.0f);
+                const float x = radius * std::cos(angle);
+                const float y = radius * std::sin(angle);
+                ring.push_back(JPH::Vec3(x, y, halfHeight));
+                ring.push_back(JPH::Vec3(x, y, -halfHeight));
+            }
+            auto created = JPH::ConvexHullShapeSettings(ring, margin).Create();
+            if (created.IsValid()) {
+                return created.Get();
+            }
+        }
+        if (shapeMech.shape == CollisionShape::ConvexHull || shapeMech.shape == CollisionShape::Mesh ||
+            shapeMech.shape == CollisionShape::Extrusion) {
+            JPH::Array<JPH::Vec3> points;
+            if (scene != nullptr) {
+                if (const auto mesh = scene->mesh(owner.meshId)) {
+                    const int count = static_cast<int>(mesh->vertexCount());
+                    const int stride = std::max(1, count / 96);
+                    for (int i = 0; i < count; i += stride) {
+                        points.push_back(JPH::Vec3(mesh->positions[static_cast<std::size_t>(i) * 3] * static_cast<float>(kMmToM),
+                                                   mesh->positions[static_cast<std::size_t>(i) * 3 + 1] * static_cast<float>(kMmToM),
+                                                   mesh->positions[static_cast<std::size_t>(i) * 3 + 2] * static_cast<float>(kMmToM)));
+                    }
+                }
+            }
+            if (points.size() >= 4) {
+                auto created = JPH::ConvexHullShapeSettings(points, margin).Create();
+                if (created.IsValid()) {
+                    return created.Get();
                 }
             }
         }
-        if (points.size() >= 4) {
-            auto created = JPH::ConvexHullShapeSettings(points, 0.001f).Create();
-            if (created.IsValid()) {
-                shape = created.Get();
+        return boxHalf(shapeMech.halfExtents);
+    };
+
+    JPH::RefConst<JPH::Shape> shape = leaf(node);
+    std::vector<SceneNode*> joined;
+    std::vector<SceneNode*> pending{&node};
+    while (!pending.empty()) {
+        SceneNode* parent = pending.back();
+        pending.pop_back();
+        for (const auto& child : parent->children) {
+            if (!child || !child->mech.joinAncestor || !mechCreatesBody(child->mech.kind)) {
+                continue;
             }
+            joined.push_back(child.get());
+            pending.push_back(child.get());
         }
-        if (shape == nullptr) {
-            shape = boxHalf(mech.halfExtents);
+    }
+    if (!joined.empty()) {
+        JPH::StaticCompoundShapeSettings compound;
+        compound.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), shape.GetPtr());
+        const Mat4 parentWorld = node.worldMatrix();
+        for (SceneNode* child : joined) {
+            const Mat4 local = mul(inverseAffine(parentWorld), child->worldMatrix());
+            const Vec3 translation{local(3, 0), local(3, 1), local(3, 2)};
+            compound.AddShape(JPH::Vec3(static_cast<float>(translation.x * kMmToM), static_cast<float>(translation.y * kMmToM),
+                                        static_cast<float>(translation.z * kMmToM)),
+                              toRot(quatFromMatrix(local)), leaf(*child).GetPtr());
         }
-    } else {
-        shape = boxHalf(mech.halfExtents);
+        auto created = compound.Create();
+        if (created.IsValid()) {
+            shape = created.Get();
+        }
     }
 
+    const BodyMotion mode = effectiveMotion(mech);
+    const bool driven = mech.kind == MechKind::Conveyor || mode == BodyMotion::Driven || mode == BodyMotion::Surface;
+    const bool anchored = !driven && (mech.kind == MechKind::Collision || mode == BodyMotion::Anchored);
+    const JPH::EMotionType motion = driven ? JPH::EMotionType::Kinematic
+                                  : anchored ? JPH::EMotionType::Static
+                                             : JPH::EMotionType::Dynamic;
     double mass = 0;
-    if (!kinematic && mech.kind != MechKind::Collision) {
-        mass = mech.autoMass ? std::max(0.05, volumeCubicMeters(mech) * 900.0) : std::max(0.01, mech.mass);
+    if (motion == JPH::EMotionType::Dynamic && mech.kind != MechKind::Collision) {
+        mass = std::max(mech.autoMass ? 0.05 : 0.01, massKilograms(mech));
     }
-    const JPH::EMotionType motion = kinematic ? JPH::EMotionType::Kinematic : JPH::EMotionType::Dynamic;
-    const JPH::ObjectLayer layer = motion == JPH::EMotionType::Dynamic || motion == JPH::EMotionType::Kinematic
-                                       ? Layers::kMoving
-                                       : Layers::kStatic;
+    const JPH::ObjectLayer layer = motion == JPH::EMotionType::Static ? Layers::kStatic : Layers::kMoving;
     JPH::BodyCreationSettings settings(shape, toPos(pose.translation), toRot(pose.rotation), motion, layer);
-    settings.mFriction = 0.85f;
-    settings.mRestitution = 0.02f;
-    settings.mLinearDamping = 0.04f;
-    settings.mAngularDamping = 0.2f;
-    settings.mAllowSleeping = false;
+    float friction = 0.85f;
+    float restitution = 0.02f;
+    if (scene != nullptr && !mech.surface.empty()) {
+        friction = static_cast<float>(scene->physicsDoc.defaultFriction);
+        restitution = static_cast<float>(scene->physicsDoc.defaultRestitution);
+        for (const SurfaceGrade& grade : scene->physicsDoc.grades) {
+            if (grade.name == mech.surface) {
+                friction = static_cast<float>(grade.friction);
+                restitution = static_cast<float>(grade.restitution);
+                break;
+            }
+        }
+    }
+    settings.mFriction = friction;
+    settings.mRestitution = restitution;
+    settings.mLinearDamping = static_cast<float>(std::max(0.0, mech.linearDamp));
+    settings.mAngularDamping = static_cast<float>(std::max(0.0, mech.angularDamp));
+    settings.mAllowSleeping = mech.allowSleep;
+    settings.mMotionQuality = mech.continuous ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
     if (mass > 0) {
         settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
         settings.mMassPropertiesOverride.mMass = static_cast<float>(mass);
@@ -429,6 +505,9 @@ void JoltPhysicsEngine::Impl::addBody(SceneNode& node) {
         direction = normalize(pose.rotation.rotate(normalize(direction)));
         record.beltMeters = direction * (mech.speed * kMmToM);
         belts_[id.GetIndexAndSequenceNumber()] = record.beltMeters;
+    }
+    if (!mech.surface.empty()) {
+        surfaces_[id.GetIndexAndSequenceNumber()] = mech.surface;
     }
     bodies_.push_back(record);
 }
@@ -482,10 +561,10 @@ void JoltPhysicsEngine::Impl::addJoint(SceneNode& node) {
         }
         settings.mLimitsMin = lower;
         settings.mLimitsMax = upper;
-        configureMotor(settings.mMotorSettings);
+        configureMotor(settings.mMotorSettings, node.mech);
         constraint = settings.Create(lockHeavy.GetBody(), lockLight.GetBody());
         slider = true;
-    } else if (node.mech.kind == MechKind::Hinge) {
+    } else if (node.mech.kind == MechKind::Hinge || node.mech.kind == MechKind::Ball) {
         JPH::HingeConstraintSettings settings;
         settings.mSpace = JPH::EConstraintSpace::WorldSpace;
         settings.mPoint1 = pivot;
@@ -502,9 +581,17 @@ void JoltPhysicsEngine::Impl::addJoint(SceneNode& node) {
         upper = std::clamp(upper, 0.0f, static_cast<float>(kPi));
         settings.mLimitsMin = lower;
         settings.mLimitsMax = upper;
-        configureMotor(settings.mMotorSettings);
-        constraint = settings.Create(lockHeavy.GetBody(), lockLight.GetBody());
-        hinge = true;
+        if (node.mech.kind == MechKind::Hinge) {
+            configureMotor(settings.mMotorSettings, node.mech);
+            constraint = settings.Create(lockHeavy.GetBody(), lockLight.GetBody());
+            hinge = true;
+        } else {
+            JPH::PointConstraintSettings point;
+            point.mSpace = JPH::EConstraintSpace::WorldSpace;
+            point.mPoint1 = pivot;
+            point.mPoint2 = pivot;
+            constraint = point.Create(lockHeavy.GetBody(), lockLight.GetBody());
+        }
     } else {
         JPH::FixedConstraintSettings settings;
         settings.mAutoDetectPoint = true;
@@ -531,6 +618,7 @@ void JoltPhysicsEngine::Impl::destroyBody(const std::string& id) {
     belts_.erase(body.GetIndexAndSequenceNumber());
     activeBelts_.erase(body.GetIndexAndSequenceNumber());
     pendingBelts_.erase(body.GetIndexAndSequenceNumber());
+    surfaces_.erase(body.GetIndexAndSequenceNumber());
     JPH::BodyInterface& bodies = physics_->GetBodyInterface();
     bodies.RemoveBody(body);
     bodies.DestroyBody(body);
@@ -796,13 +884,34 @@ void JoltPhysicsEngine::step(double dtSeconds) {
     if (world.physics_ == nullptr || dtSeconds <= 0) {
         return;
     }
+    if (world.scene != nullptr) {
+        world.scene->physicsDoc.stats.contacts = 0;
+        int continuous = 0;
+        for (const Impl::BodyRecord& record : world.bodies_) {
+            auto node = world.scene->find(record.id);
+            if (node && node->mech.continuous) {
+                ++continuous;
+            }
+        }
+        world.scene->physicsDoc.stats.continuous = continuous;
+        if (!world.scene->physicsDoc.enabled) {
+            return;
+        }
+    }
+    const auto started = std::chrono::steady_clock::now();
     world.applyDrives(dtSeconds);
     world.applyBelts();
+    const auto detected = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(world.contactMutex_);
         world.pendingBelts_.clear();
     }
     world.physics_->Update(static_cast<float>(dtSeconds), 1, world.temp_.get(), world.jobs_.get());
+    const auto solved = std::chrono::steady_clock::now();
+    if (world.scene != nullptr) {
+        world.scene->physicsDoc.stats.detectMs = std::chrono::duration<double, std::milli>(detected - started).count();
+        world.scene->physicsDoc.stats.solveMs = std::chrono::duration<double, std::milli>(solved - detected).count();
+    }
     {
         std::lock_guard<std::mutex> lock(world.contactMutex_);
         world.activeBelts_ = world.pendingBelts_;
@@ -851,10 +960,9 @@ void JoltPhysicsEngine::shutdown() {
     world.belts_.clear();
     world.activeBelts_.clear();
     world.pendingBelts_.clear();
+    world.surfaces_.clear();
     world.sourceClocks_.clear();
     world.scene = nullptr;
 }
-
-std::unique_ptr<IPhysicsEngine> createPhysicsEngine() { return std::make_unique<JoltPhysicsEngine>(); }
 
 }  // namespace sim

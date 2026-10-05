@@ -2,6 +2,7 @@
 
 #include "sim/core/I18n.hpp"
 #include "sim/core/Scene.hpp"
+#include "sim/motion/Motion.hpp"
 #include "sim/physics/PhysicsEngine.hpp"
 #include "sim/scripting/ScriptHost.hpp"
 
@@ -13,6 +14,7 @@
 
 class QAction;
 class QCloseEvent;
+class QResizeEvent;
 class QComboBox;
 class QDockWidget;
 class QDoubleSpinBox;
@@ -23,6 +25,7 @@ class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QTableWidget;
+class QSystemTrayIcon;
 class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -45,9 +48,16 @@ public:
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
+    void loadDemo(const QString& name);
+    void usePhysicsBackend(PhysicsBackend backend);
+    void setTaskModeName(const QString& mode);
+    void setThemeName(const QString& theme);
+    void showCommandPalette();
+    void showIntentBar();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private slots:
     void newProject();
@@ -93,12 +103,32 @@ private:
     bool saveProject(const QString& path);
     QString trk(const char* key) const;
     void finishScreenshot();
+    void applyTaskMode(int mode);
+    void runUiCommand(const std::string& id);
+    bool applyIntent(const std::string& text);
+    void undoIntent();
+    void saveWorkspace();
+    void positionFloaters();
 
     Scene scene_;
     I18nCatalog i18n_;
     std::unique_ptr<IPhysicsEngine> physics_;
     std::unique_ptr<IScriptHost> scripting_;
     std::unique_ptr<Simulation> simulation_;
+    std::unique_ptr<BuiltinRobotSolver> robot_;
+    LogicMachine logic_;
+    class MotionPanel* motion_ = nullptr;
+    class CollisionPanel* collision_ = nullptr;
+    bool collisionDemo_ = false;
+    bool kr420Demo_ = false;
+    bool kr420TrackDemo_ = false;
+    bool transferDemo_ = false;
+    bool meshDemo_ = false;
+    bool slipDemo_ = false;
+    bool shelfReload_ = true;
+    std::string demoPath_;
+    std::string pendingPath_;
+    std::vector<double> jointRest_;
     QTimer* simTimer_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
     QTreeWidget* tree_ = nullptr;
@@ -177,6 +207,29 @@ private:
     QAction* resetAction_ = nullptr;
     QDockWidget* treeDock_ = nullptr;
     QDockWidget* propertyDock_ = nullptr;
+    QDockWidget* signalDock_ = nullptr;
+    QDockWidget* scriptDock_ = nullptr;
+    QDockWidget* collisionDock_ = nullptr;
+    QDockWidget* motionDock_ = nullptr;
+    QDockWidget* logicDock_ = nullptr;
+    QDockWidget* pathDock_ = nullptr;
+    QDockWidget* plcDock_ = nullptr;
+    QDockWidget* physicsDock_ = nullptr;
+    class ChromeBar* chrome_ = nullptr;
+    class CommandPalette* palette_ = nullptr;
+    class IntentBar* intent_ = nullptr;
+    class LogicCanvas* logicCanvas_ = nullptr;
+    class PathTimeline* pathTimeline_ = nullptr;
+    class PlcCards* plc_ = nullptr;
+    class PhysicsShelf* physicsShelf_ = nullptr;
+    QSystemTrayIcon* tray_ = nullptr;
+    int taskMode_ = 0;
+    bool focusMode_ = false;
+    QString themeName_ = "dark";
+    std::vector<std::pair<std::string, Transform>> intentPoses_;
+    std::vector<Signal> intentSignals_;
+    bool intentUndoValid_ = false;
+    QLabel* offlineLabel_ = nullptr;
 };
 
 }  // namespace sim

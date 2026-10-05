@@ -2,9 +2,11 @@
 
 #include "sim/render/Renderer.hpp"
 
+#include <QDateTime>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
+#include <QPainter>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -15,16 +17,20 @@
 namespace sim {
 namespace {
 
-bool selectedBranch(const SceneNode& node, const std::string& selected) {
-    if (selected.empty()) {
+bool selectedBranch(const SceneNode& node, const Scene& scene) {
+    const auto& ids = scene.selection();
+    if (ids.empty()) {
         return false;
     }
-    if (node.id == selected) {
+    const auto listed = [&ids](const std::string& id) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+    };
+    if (listed(node.id)) {
         return true;
     }
     auto parent = node.parent.lock();
     while (parent) {
-        if (parent->id == selected) {
+        if (listed(parent->id)) {
             return true;
         }
         parent = parent->parent.lock();
@@ -243,6 +249,7 @@ void ViewportWidget::paintGL() {
     frame.width = std::max(width(), 1);
     frame.height = std::max(height(), 1);
     frame.frustumCull = true;
+    frame.clearColor = darkChrome_ ? Vec3{0.07, 0.09, 0.14} : Vec3{0.94, 0.94, 0.97};
     renderer_->beginFrame(frame);
     drawGrid();
 
@@ -266,11 +273,87 @@ void ViewportWidget::paintGL() {
             instance.meshKey = node->meshId;
             instance.world = node->worldMatrix();
             instance.material.color = node->color;
-            instance.material.highlight = selectedBranch(*node, scene_->selectedId()) ? 1.0f : 0.0f;
+            instance.material.highlight = selectedBranch(*node, *scene_) ? 1.0f : 0.0f;
             instance.worldBounds = mesh ? transformedBounds(mesh->bounds, instance.world) : Aabb{};
             instance.distanceMm = static_cast<float>(length(instance.worldBounds.center() - frame.eye));
             instance.lodLevels = 1;
+            if (mesh) {
+                triangles_ += static_cast<int>(mesh->triangleCount());
+            }
             instances.push_back(std::move(instance));
+        }
+        if (ghost_) {
+            std::shared_ptr<SceneNode> ghostNode;
+            if (auto selected = scene_->find(scene_->selectedId()); selected && !selected->meshId.empty()) {
+                ghostNode = selected;
+            }
+            if (!ghostNode) {
+                std::vector<std::shared_ptr<SceneNode>> walk{scene_->root()};
+                while (!walk.empty() && !ghostNode) {
+                    auto node = walk.back();
+                    walk.pop_back();
+                    if (!node) {
+                        continue;
+                    }
+                    for (const auto& child : node->children) {
+                        walk.push_back(child);
+                    }
+                    if (node->effectivelyVisible() && !node->meshId.empty()) {
+                        ghostNode = node;
+                    }
+                }
+            }
+            if (ghostNode) {
+                const Mat4 home = ghostNode->worldMatrix();
+                Mat4 world = home;
+                bool onPath = false;
+                for (const RobotPath& path : scene_->robotPaths) {
+                    for (auto point = path.points.rbegin(); point != path.points.rend(); ++point) {
+                        if (point->cartesian) {
+                            world(3, 0) = point->position.x;
+                            world(3, 1) = point->position.y;
+                            world(3, 2) = point->position.z;
+                            onPath = true;
+                            break;
+                        }
+                    }
+                    if (onPath) {
+                        break;
+                    }
+                }
+                if (!onPath) {
+                    Vec3 right;
+                    Vec3 up;
+                    Vec3 forward;
+                    camera_.basis(right, up, forward);
+                    const double shift = std::max(120.0, camera_.distance * 0.08);
+                    world(3, 0) += right.x * shift;
+                    world(3, 1) += right.y * shift;
+                    world(3, 2) += right.z * shift + shift * 0.15;
+                }
+                const auto mesh = scene_->mesh(ghostNode->meshId);
+                RenderInstance ghost;
+                ghost.meshKey = ghostNode->meshId;
+                ghost.world = world;
+                ghost.material.color = {0.239, 0.525, 0.910};
+                ghost.material.highlight = 0;
+                ghost.material.opacity = 0.38f;
+                ghost.worldBounds = mesh ? transformedBounds(mesh->bounds, ghost.world) : Aabb{};
+                ghost.distanceMm = static_cast<float>(length(ghost.worldBounds.center() - frame.eye));
+                instances.push_back(std::move(ghost));
+                ghostCaption_ = onPath ? QStringLiteral("幽灵在路径末点 · 场景未改 · 不是模型输出")
+                                       : QStringLiteral("幽灵是零件的平移副本 · 场景未改 · 不是模型输出");
+                LineBatch link;
+                link.width = 1.5f;
+                link.depthTest = false;
+                pushLine(link, Vec3{home(3, 0), home(3, 1), home(3, 2)}, Vec3{0.239, 0.525, 0.910});
+                pushLine(link, Vec3{world(3, 0), world(3, 1), world(3, 2)}, Vec3{0.114, 0.333, 0.702});
+                renderer_->submitLines(link);
+            } else {
+                ghostCaption_.clear();
+            }
+        } else {
+            ghostCaption_.clear();
         }
         renderer_->submitInstances(instances);
     }
@@ -306,6 +389,143 @@ void ViewportWidget::paintGL() {
         renderer_->submitLines(gizmo);
     }
     renderer_->endFrame();
+    paintOverlay();
+}
+
+void ViewportWidget::setSimTime(double seconds) { simTime_ = seconds; }
+
+void ViewportWidget::setPhysicsLine(const QString& text) {
+    physicsLine_ = text;
+    update();
+}
+
+void ViewportWidget::setCallout(const QString& text) {
+    callout_ = text;
+    update();
+}
+
+void ViewportWidget::setMeasureMode(bool enabled) {
+    measureMode_ = enabled;
+    if (!enabled) {
+        measurePoints_.clear();
+    }
+    update();
+}
+
+void ViewportWidget::setPreviewMode(bool enabled) {
+    previewMode_ = enabled;
+    update();
+}
+
+void ViewportWidget::setGhost(bool enabled) {
+    ghost_ = enabled;
+    if (!enabled) {
+        ghostCaption_.clear();
+    }
+    update();
+}
+
+void ViewportWidget::setDarkChrome(bool dark) {
+    darkChrome_ = dark;
+    update();
+}
+
+void ViewportWidget::paintOverlay() {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (lastFrameMs_ != 0) {
+        const double dt = static_cast<double>(now - lastFrameMs_) / 1000.0;
+        if (dt > 0.001) {
+            const double instant = 1.0 / dt;
+            fps_ = fps_ <= 0 ? instant : fps_ * 0.8 + instant * 0.2;
+        }
+    }
+    lastFrameMs_ = now;
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QColor ink = darkChrome_ ? QColor(231, 233, 247) : QColor(23, 29, 56);
+    const QColor muted = darkChrome_ ? QColor(166, 172, 203) : QColor(76, 83, 115);
+    const QColor glass = darkChrome_ ? QColor(19, 25, 48, 190) : QColor(255, 255, 255, 220);
+    const QColor line = darkChrome_ ? QColor(61, 134, 232, 110) : QColor(44, 110, 206, 140);
+    auto capsule = [&](const QRect& rect) {
+        painter.setPen(line);
+        painter.setBrush(glass);
+        painter.drawRoundedRect(rect, 10, 10);
+    };
+
+    QString hud = QString("透视  ·  t %1 s  ·  %2 fps  ·  %3 三角")
+                      .arg(simTime_, 0, 'f', 2)
+                      .arg(fps_, 0, 'f', 0)
+                      .arg(triangles_);
+    if (previewMode_) {
+        hud += "  ·  预览模式 · 场景未修改";
+    }
+    if (!ghostCaption_.isEmpty()) {
+        hud += "  ·  " + ghostCaption_;
+    }
+    if (!physicsLine_.isEmpty()) {
+        hud += "\n" + physicsLine_;
+    }
+    if (fps_ > 0 && fps_ < 30) {
+        hud += "  ·  建议检查显示负载";
+    }
+    const bool wideHud = !ghostCaption_.isEmpty() || !physicsLine_.isEmpty();
+    const QRect hudRect(16, 16, std::min(width() - 140, wideHud ? std::max(360, width() - 150) : 520), wideHud ? 52 : 28);
+    capsule(hudRect);
+    painter.setPen(muted);
+    painter.drawText(hudRect.adjusted(10, 4, -10, -4), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap, hud);
+
+    cubeRect_ = QRect(width() - 112, 16, 96, 104);
+    capsule(cubeRect_);
+    faceTop_ = QRect(cubeRect_.left() + 28, cubeRect_.top() + 8, 40, 26);
+    faceFront_ = QRect(cubeRect_.left() + 8, cubeRect_.top() + 40, 40, 28);
+    faceRight_ = QRect(cubeRect_.left() + 48, cubeRect_.top() + 40, 40, 28);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(91, 140, 255, 180));
+    painter.drawPolygon(QPolygon() << faceTop_.topLeft() << faceTop_.topRight() << faceRight_.bottomRight()
+                                   << faceFront_.bottomLeft());
+    painter.setBrush(QColor(42, 54, 94, 220));
+    painter.drawRect(faceFront_);
+    painter.setBrush(QColor(54, 69, 122, 220));
+    painter.drawRect(faceRight_);
+    painter.setBrush(QColor(44, 110, 206, 230));
+    painter.drawRect(faceTop_);
+    painter.setPen(ink);
+    painter.drawText(faceTop_, Qt::AlignCenter, "上");
+    painter.drawText(faceFront_, Qt::AlignCenter, "前");
+    painter.drawText(faceRight_, Qt::AlignCenter, "右");
+
+    if (!callout_.isEmpty()) {
+        const QRect box(24, 56, std::min(width() - 48, 460), 32);
+        painter.setPen(QColor(255, 178, 36));
+        painter.setBrush(QColor(42, 32, 8, 210));
+        painter.drawRoundedRect(box, 8, 8);
+        painter.drawText(box.adjusted(8, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft, callout_);
+    }
+    if (measurePoints_.size() == 2) {
+        const double distance = length(measurePoints_[1] - measurePoints_[0]);
+        const QRect box(24, height() - 48, 220, 28);
+        painter.setPen(QColor(98, 210, 242));
+        painter.setBrush(glass);
+        painter.drawRoundedRect(box, 8, 8);
+        painter.drawText(box, Qt::AlignCenter, QString("测量  %1 mm").arg(distance, 0, 'f', 1));
+    } else if (measureMode_) {
+        painter.setPen(QColor(98, 210, 242));
+        painter.drawText(24, height() - 28, "测量：在模型上点两个点");
+    }
+
+    toolbarRect_ = QRect();
+    if (scene_ != nullptr && !scene_->selectedId().empty()) {
+        toolbarRect_ = QRect(std::max(16, width() / 2 - 140), std::max(56, height() - 78), 280, 34);
+        capsule(toolbarRect_);
+        painter.setPen(ink);
+        const QString labels[] = {"聚焦", "移动", "测量"};
+        for (int i = 0; i < 3; ++i) {
+            const QRect slot(toolbarRect_.left() + i * 92, toolbarRect_.top(), 92, toolbarRect_.height());
+            painter.drawText(slot, Qt::AlignCenter, labels[i]);
+        }
+    }
+    triangles_ = 0;
 }
 
 QImage ViewportWidget::captureView() {
@@ -352,6 +572,19 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton || scene_ == nullptr) {
         return;
     }
+    const QPoint click = event->position().toPoint();
+    if (cubeRect_.contains(click)) {
+        cubePress_ = true;
+        cubeDrag_ = false;
+        cubePressPos_ = click;
+        return;
+    }
+    if (toolbarRect_.contains(click)) {
+        const int slot = std::clamp((click.x() - toolbarRect_.left()) / 92, 0, 2);
+        const char* ids[] = {"ui.fit", "ui.move", "ui.measure"};
+        emit overlayCommand(QString::fromLatin1(ids[slot]));
+        return;
+    }
     const int axis = pickGizmo(event->position().x(), event->position().y());
     if (axis >= 0 && !scene_->selectedId().empty()) {
         Vec3 origin, axisX, axisY, axisZ;
@@ -380,8 +613,22 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event) {
     const Ray ray = camera_.rayFromPixel(event->position().x(), event->position().y(), width(), height());
     const auto hit = renderer_ ? renderer_->pick(*scene_, ray) : pickScene(*scene_, ray);
     const QString id = hit ? QString::fromStdString(hit->nodeId) : QString();
-    scene_->setSelected(hit ? hit->nodeId : std::string{});
+    const bool extend = event->modifiers().testFlag(Qt::ControlModifier);
+    if (extend && hit) {
+        scene_->toggleSelected(hit->nodeId);
+    } else if (!extend) {
+        scene_->setSelected(hit ? hit->nodeId : std::string{});
+    }
     emit selectionChanged(id);
+    if (hit) {
+        emit pointPicked(hit->point.x, hit->point.y, hit->point.z, hit->normal.x, hit->normal.y, hit->normal.z, id);
+        if (measureMode_) {
+            measurePoints_.push_back(hit->point);
+            if (measurePoints_.size() > 2) {
+                measurePoints_.erase(measurePoints_.begin());
+            }
+        }
+    }
     update();
 }
 
@@ -390,6 +637,16 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event) {
     const double dx = pos.x() - lastPos_.x();
     const double dy = pos.y() - lastPos_.y();
     lastPos_ = pos;
+    if (cubePress_) {
+        if ((pos - cubePressPos_).manhattanLength() > 4) {
+            cubeDrag_ = true;
+        }
+        if (cubeDrag_) {
+            camera_.orbit(dx, dy);
+            update();
+        }
+        return;
+    }
     if (draggingCamera_) {
         camera_.orbit(dx, dy);
         update();
@@ -412,6 +669,18 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event) {
         panning_ = false;
     }
     if (event->button() == Qt::LeftButton) {
+        if (cubePress_ && !cubeDrag_) {
+            const QPoint click = event->position().toPoint();
+            if (faceTop_.contains(click) || faceTop_.contains(cubePressPos_)) {
+                setStandardView(StandardView::Top);
+            } else if (faceFront_.contains(click) || faceFront_.contains(cubePressPos_)) {
+                setStandardView(StandardView::Front);
+            } else if (faceRight_.contains(click) || faceRight_.contains(cubePressPos_)) {
+                setStandardView(StandardView::Right);
+            }
+        }
+        cubePress_ = false;
+        cubeDrag_ = false;
         draggingGizmo_ = false;
         gizmoAxis_ = -1;
     }

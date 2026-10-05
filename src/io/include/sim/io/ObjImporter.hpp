@@ -1,12 +1,14 @@
 #pragma once
 
-#include "sim/io/Importer.hpp"
+#include "sim/io/GeometryKernel.hpp"
 
 namespace sim {
 
-// Wavefront OBJ (triangles and n-gons fanned into triangles). Phase 1 display import.
-class ObjImporter : public IGeometryImporter {
+// Wavefront OBJ (triangles and n-gons fanned into triangles). Parsed here, not by OCCT.
+class ObjImporter : public ICadImporter {
 public:
+    const char* backendName() const override { return "builtin"; }
+    const char* format() const override { return "obj"; }
     ImportResult importFile(const std::string& path, Scene& scene) override;
 };
 

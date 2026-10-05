@@ -23,7 +23,7 @@ void applyDarkPalette(QApplication& app) {
     const QColor base(18, 24, 42);
     const QColor button(42, 51, 80);
     const QColor text(230, 232, 242);
-    const QColor highlight(108, 112, 216);
+    const QColor highlight(44, 110, 206);
     palette.setColor(QPalette::Window, window);
     palette.setColor(QPalette::WindowText, text);
     palette.setColor(QPalette::Base, base);
@@ -41,8 +41,9 @@ void applyDarkPalette(QApplication& app) {
 }
 
 void applyCjkFont(QApplication& app) {
-    const QStringList preferred = {"Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI",
-                                   "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei"};
+    // HarmonyOS Sans is listed first when installed. It is not bundled with the app.
+    const QStringList preferred = {"HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans CJK SC", "Noto Sans SC",
+                                   "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "WenQuanYi Micro Hei"};
     const QStringList families = QFontDatabase::families();
     for (const QString& family : preferred) {
         if (families.contains(family)) {
@@ -70,6 +71,7 @@ int main(int argc, char* argv[]) {
     QApplication::setOrganizationName(QString::fromLatin1("SimStudio"));
     QApplication::setApplicationVersion(QString::fromLatin1(sim::kVersion));
     QIcon icon;
+    icon.addFile(":/branding/logo_256.png");
     icon.addFile(":/branding/logo.png");
     icon.addFile(":/branding/app.ico");
     QApplication::setWindowIcon(icon);
@@ -95,17 +97,33 @@ int main(int argc, char* argv[]) {
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
     QCommandLineOption play("play", "Start the simulation after opening a project.");
     QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
+    QCommandLineOption demo("demo", "Built-in demo: turntable, scara, collision, transfer, mesh, slip, kr420, or kr420track.", "name");
+    QCommandLineOption mode("mode", "Task mode: model, kinematics, logic, robot, debug, commission.", "name");
+    QCommandLineOption theme("theme", "Theme: dark or light.", "name");
+    QCommandLineOption palette("palette", "Open the command palette before a screenshot.");
+    QCommandLineOption intent("intent", "Open the AI intent bar before a screenshot.");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
     parser.addOption(language);
     parser.addOption(play);
     parser.addOption(simSeconds);
+    parser.addOption(demo);
+    parser.addOption(mode);
+    parser.addOption(theme);
+    parser.addOption(palette);
+    parser.addOption(intent);
     parser.process(application);
 
     sim::MainWindow window(parser.value(language));
+    window.setWindowIcon(icon);
     window.show();
-    if (parser.isSet(openProject)) {
+    if (parser.isSet(theme)) {
+        window.setThemeName(parser.value(theme));
+    }
+    if (parser.isSet(demo)) {
+        window.loadDemo(parser.value(demo));
+    } else if (parser.isSet(openProject)) {
         window.openProject(parser.value(openProject));
     }
     if (parser.isSet(screenshot)) {
@@ -113,6 +131,15 @@ int main(int argc, char* argv[]) {
     }
     if (parser.isSet(simSeconds)) {
         window.setHeadlessSeconds(parser.value(simSeconds).toDouble());
+    }
+    if (parser.isSet(mode)) {
+        window.setTaskModeName(parser.value(mode));
+    }
+    if (parser.isSet(palette)) {
+        window.showCommandPalette();
+    }
+    if (parser.isSet(intent)) {
+        window.showIntentBar();
     }
     if (parser.isSet(importStep)) {
         window.importStepAsync(parser.value(importStep));

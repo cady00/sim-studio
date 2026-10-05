@@ -65,6 +65,12 @@ if ($windeploy) {
 Copy-Item "LICENSE.txt" $OutDir
 Copy-Item "THIRD_PARTY_LICENSES.md" $OutDir
 Copy-Item "README.md" $OutDir
+$brand = Join-Path $root "resources/branding"
+if (Test-Path $brand) {
+    Copy-Item $brand (Join-Path $OutDir "branding") -Recurse
+    Copy-Item (Join-Path $brand "app.ico") (Join-Path $OutDir "simstudio.ico")
+    Copy-Item (Join-Path $brand "tray.ico") (Join-Path $OutDir "tray.ico")
+}
 if (Test-Path "samples") {
     Copy-Item "samples" (Join-Path $OutDir "samples") -Recurse
 }

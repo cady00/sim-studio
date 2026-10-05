@@ -16,6 +16,7 @@ struct PickHit {
     std::string nodeId;
     double distance = 0;
     Vec3 point;
+    Vec3 normal{0, 0, 1};
 };
 
 // Closest visible triangle along the ray. Empty if nothing is hit.

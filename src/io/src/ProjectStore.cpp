@@ -110,6 +110,15 @@ nlohmann::json writeNode(const SceneNode& node) {
     if (!node.meshId.empty()) {
         json["mesh"] = node.meshId;
     }
+    if (!node.faceAxes.empty()) {
+        nlohmann::json axes = nlohmann::json::array();
+        for (const FaceAxis& axis : node.faceAxes) {
+            axes.push_back({{"origin", {axis.origin.x, axis.origin.y, axis.origin.z}},
+                            {"direction", {axis.direction.x, axis.direction.y, axis.direction.z}},
+                            {"radius", axis.radius}});
+        }
+        json["faceAxes"] = std::move(axes);
+    }
     if (node.mech.kind != MechKind::None) {
         json["mech"] = mechToJson(node.mech);
     }
@@ -156,6 +165,26 @@ std::shared_ptr<SceneNode> readNode(const nlohmann::json& json, std::string& err
     if (json.contains("mesh")) {
         node->meshId = json.at("mesh").get<std::string>();
     }
+    if (json.contains("faceAxes") && json.at("faceAxes").is_array()) {
+        for (const auto& axisJson : json.at("faceAxes")) {
+            if (!axisJson.is_object()) {
+                continue;
+            }
+            FaceAxis axis;
+            if (axisJson.contains("origin") && axisJson.at("origin").is_array() && axisJson.at("origin").size() >= 3) {
+                axis.origin = {axisJson.at("origin")[0].get<double>(), axisJson.at("origin")[1].get<double>(),
+                               axisJson.at("origin")[2].get<double>()};
+            }
+            if (axisJson.contains("direction") && axisJson.at("direction").is_array() && axisJson.at("direction").size() >= 3) {
+                axis.direction = {axisJson.at("direction")[0].get<double>(), axisJson.at("direction")[1].get<double>(),
+                                  axisJson.at("direction")[2].get<double>()};
+            }
+            axis.radius = axisJson.value("radius", 0.0);
+            if (axis.radius > 0) {
+                node->faceAxes.push_back(axis);
+            }
+        }
+    }
     if (json.contains("mech")) {
         mechFromJson(json.at("mech"), node->mech);
     }
@@ -189,6 +218,25 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     json["upAxis"] = "Z";
     json["sources"] = scene.sourceFiles;
     json["activeScript"] = scene.activeScript;
+    json["kinematics"] = nlohmann::json::array();
+    for (const KinematicResource& resource : scene.resources) {
+        json["kinematics"].push_back(kinematicsToJson(resource));
+    }
+    json["logic"] = nlohmann::json::array();
+    for (const LogicBlock& block : scene.logicBlocks) {
+        json["logic"].push_back(logicBlockToJson(block));
+    }
+    json["paths"] = nlohmann::json::array();
+    for (const RobotPath& path : scene.robotPaths) {
+        json["paths"].push_back(robotPathToJson(path));
+    }
+    json["proximity"] = proximityToJson(scene.proximity);
+    json["convexCache"] = convexCacheToJson(scene.convexCache);
+    json["physics"] = physicsToJson(scene.physicsDoc);
+    json["motors"] = nlohmann::json::array();
+    for (const MotorAspect& motor : scene.motors) {
+        json["motors"].push_back(motorToJson(motor));
+    }
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
         json["signals"].push_back(signalToJson(signal));
@@ -318,6 +366,52 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
             if (!script.name.empty()) {
                 scene.scripts.push_back(std::move(script));
             }
+        }
+    }
+    if (json.contains("kinematics") && json.at("kinematics").is_array()) {
+        for (const auto& item : json.at("kinematics")) {
+            KinematicResource resource;
+            if (!kinematicsFromJson(item, resource, error)) {
+                result.message = error;
+                return result;
+            }
+            scene.resources.push_back(std::move(resource));
+        }
+    }
+    if (json.contains("logic") && json.at("logic").is_array()) {
+        for (const auto& item : json.at("logic")) {
+            LogicBlock block;
+            if (!logicBlockFromJson(item, block, error)) {
+                result.message = error;
+                return result;
+            }
+            scene.logicBlocks.push_back(std::move(block));
+        }
+    }
+    if (json.contains("paths") && json.at("paths").is_array()) {
+        for (const auto& item : json.at("paths")) {
+            RobotPath path;
+            if (!robotPathFromJson(item, path, error)) {
+                result.message = error;
+                return result;
+            }
+            scene.robotPaths.push_back(std::move(path));
+        }
+    }
+    if (json.contains("proximity")) {
+        proximityFromJson(json.at("proximity"), scene.proximity);
+    }
+    if (json.contains("convexCache")) {
+        convexCacheFromJson(json.at("convexCache"), scene.convexCache);
+    }
+    if (json.contains("physics")) {
+        physicsFromJson(json.at("physics"), scene.physicsDoc);
+    }
+    if (json.contains("motors") && json.at("motors").is_array()) {
+        for (const auto& item : json.at("motors")) {
+            MotorAspect motor;
+            motorFromJson(item, motor);
+            scene.motors.push_back(std::move(motor));
         }
     }
     result.ok = true;

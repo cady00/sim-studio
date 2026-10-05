@@ -25,6 +25,8 @@ public:
     virtual void onStart() = 0;
     virtual void onStep(double dtSeconds) = 0;
     virtual void onStop() = 0;
+    // Called after the physics step. Scripts may define on_contact(self, other, impulse).
+    virtual void onContacts() = 0;
     virtual bool execute(const std::string& code, std::string& output, std::string& error) = 0;
     virtual std::string takeLog() = 0;
 };
