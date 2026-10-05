@@ -14,7 +14,7 @@
 | 图片 | 自写 | PNG/JPEG 字节写入项目 ZIP |
 | URDF | 自写 | 连杆、转动/移动/固定/连续关节、盒子、圆柱、球体、STL/OBJ 网格视觉、惯性（质量、质心、惯量张量，千克和千克·米²）。网格按米再乘 scale 换成毫米。`package://` 不解析 |
 | XML | 自写 | 本地名 product/part/component/item、process/operation/task/activity、plant/resource/station/robot/equipment。这不是某家产线软件的完整模式 |
-| JT | 自写 | 8.x/9.x/10.x 文件头、TOC、zlib 与 XZ/LZMA 段、LSG 装配/变换/材质、量化 Tri-Strip，以及 JT 9 拓扑压缩网格（算术编码、Bitlength、Chopper、Lag/Stride 预测器、二次量化顶点和法向）。JT 10.5 Tri-Strip 的本地 GUID 头不在公开参考里，不造三角形。XT B-rep 不解码。不链接 JT Open Toolkit，也不链接 GPL/LGPL JT 库 |
+| JT | 自写 | 8.x/9.x/10.x 文件头、TOC、zlib 与 XZ/LZMA 段、LSG 装配/变换/材质、量化 Tri-Strip，JT 9 拓扑压缩网格，以及 JT 10.0/10.5 带本地 GUID 头的拓扑 Tri-Strip（第 4 代 Int32 包、Lag1 量化或无损坐标、打包 Deering 或无损法向）。高度数面掩码、颜色和纹理绑定不解码。JT 9.1 的 Range LOD 经常解得出三角形但 LSG 接不上，不放进场景。XT B-rep 不解码。不链接 JT Open Toolkit，也不链接 GPL/LGPL JT 库 |
 | USDA | 自写 | ASCII `.usda`。层级、局部变换、三角形网格、UsdPreviewSurface（基色、金属度、粗糙度）、UsdPhysics 刚体/碰撞/质量/关节，以及路径的时间采样。坐标保持毫米，`metersPerUnit = 0.001`。不链接 OpenUSD。二进制 crate 不读 |
 
 导出：可见网格可写成二进制 STL 或 glTF/GLB（顶点烤成世界坐标，单位米）。场景可写成 USDA（层级和局部变换保留，单位毫米）。节拍表仍是 CSV 和自写的 XLSX。命令和 Python 的 `asset_export` 接受 `usda`。

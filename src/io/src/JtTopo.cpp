@@ -159,12 +159,9 @@ int nlz32(std::uint32_t value) {
     if (value == 0) {
         return 32;
     }
-    int bits = 0;
-    while ((value & 0x80000000u) == 0) {
-        value <<= 1;
-        ++bits;
-    }
-    return bits;
+    // __builtin_clz is defined for every non-zero value, including 0x80000000.
+    // A shift loop that stops on the sign flag does not, and it does not terminate.
+    return __builtin_clz(value);
 }
 
 int unsignedBits(std::uint32_t value) { return 32 - nlz32(value); }
@@ -190,6 +187,86 @@ std::int32_t readNibble(WordBits& bits) {
     return 0;
 }
 
+// JT 10 bitlength nibbles are four magnitude bits followed by a separate
+// continuation bit. The version 9 packet packs three magnitude bits and the
+// continuation into the same nibble.
+std::int32_t readV10Nibble(WordBits& bits) {
+    std::int32_t result = 0;
+    int groups = 0;
+    while (groups < 8) {
+        const std::uint32_t chunk = bits.readU(4);
+        const std::uint32_t more = bits.readU(1);
+        if (!bits.ok) {
+            return 0;
+        }
+        result |= static_cast<std::int32_t>(chunk) << (groups * 4);
+        ++groups;
+        if (more == 0) {
+            break;
+        }
+    }
+    const int width = groups * 4;
+    if (width > 0 && width < 32 && (result & (1 << (width - 1))) != 0) {
+        result -= 1 << width;
+    }
+    return result;
+}
+
+bool decodeV10Bitlength(const std::uint32_t* words, int totalBits, int count, std::vector<std::int32_t>& values) {
+    WordBits bits;
+    bits.words = words;
+    bits.total = totalBits;
+    const std::uint32_t tag = bits.readU(1);
+    values.assign(static_cast<std::size_t>(std::max(count, 0)), 0);
+    if (!bits.ok) {
+        return false;
+    }
+    if (tag == 0) {
+        const std::int32_t minimum = readV10Nibble(bits);
+        const std::int32_t maximum = readV10Nibble(bits);
+        if (!bits.ok || maximum < minimum) {
+            return false;
+        }
+        const std::uint32_t span =
+            static_cast<std::uint32_t>(static_cast<std::int64_t>(maximum) - static_cast<std::int64_t>(minimum));
+        const int width = unsignedBits(span);
+        for (int i = 0; i < count; ++i) {
+            values[static_cast<std::size_t>(i)] = static_cast<std::int32_t>(bits.readU(width)) + minimum;
+        }
+    } else {
+        const std::int32_t mean = readV10Nibble(bits);
+        int width = 0;
+        int produced = 0;
+        constexpr int kBlock = 4;
+        const int maxIncr = (1 << (kBlock - 1)) - 1;
+        const int maxDecr = -(1 << (kBlock - 1));
+        while (produced < count && bits.ok) {
+            int delta = 0;
+            do {
+                delta = bits.readS(kBlock);
+                width += delta;
+            } while (bits.ok && (delta == maxIncr || delta == maxDecr));
+            if (width < 0 || width > 32) {
+                return false;
+            }
+            const std::uint32_t run = bits.readU(kBlock);
+            if (!bits.ok || run == 0) {
+                return false;
+            }
+            for (std::uint32_t k = 0; k < run; ++k) {
+                if (produced >= count) {
+                    return false;
+                }
+                values[static_cast<std::size_t>(produced++)] = bits.readS(width) + mean;
+            }
+        }
+        if (produced != count) {
+            return false;
+        }
+    }
+    return bits.ok && bits.pos == totalBits;
+}
+
 bool decodeNibbleBitlength(const std::uint32_t* words, int totalBits, int count, std::vector<std::int32_t>& values) {
     WordBits bits;
     bits.words = words;
@@ -205,7 +282,9 @@ bool decodeNibbleBitlength(const std::uint32_t* words, int totalBits, int count,
         if (!bits.ok || maximum < minimum) {
             return false;
         }
-        const int width = unsignedBits(static_cast<std::uint32_t>(maximum - minimum));
+        const std::uint32_t span =
+            static_cast<std::uint32_t>(static_cast<std::int64_t>(maximum) - static_cast<std::int64_t>(minimum));
+        const int width = unsignedBits(span);
         for (int i = 0; i < count; ++i) {
             values[static_cast<std::size_t>(i)] = static_cast<std::int32_t>(bits.readU(width)) + minimum;
         }
@@ -260,7 +339,9 @@ bool decodeMk2Bitlength(const std::uint32_t* words, int totalBits, int count, st
         if (!bits.ok || maximum < minimum) {
             return false;
         }
-        const int width = unsignedBits(static_cast<std::uint32_t>(maximum - minimum));
+        const std::uint32_t span =
+            static_cast<std::uint32_t>(static_cast<std::int64_t>(maximum) - static_cast<std::int64_t>(minimum));
+        const int width = unsignedBits(span);
         values.resize(static_cast<std::size_t>(count));
         for (int i = 0; i < count; ++i) {
             values[static_cast<std::size_t>(i)] = static_cast<std::int32_t>(bits.readU(width)) + minimum;
@@ -511,9 +592,10 @@ bool readCdp(ByteReader& reader, int generation, int depth, std::vector<std::int
         for (int i = 0; i < words; ++i) {
             text[static_cast<std::size_t>(i)] = reader.u32();
         }
-        const bool decoded = generation >= 3
-                                 ? decodeNibbleBitlength(text.data(), bitLength, count, values)
-                                 : decodeMk2Bitlength(text.data(), bitLength, count, values);
+        const bool decoded = generation >= 4
+                                 ? decodeV10Bitlength(text.data(), bitLength, count, values)
+                                 : generation >= 3 ? decodeNibbleBitlength(text.data(), bitLength, count, values)
+                                                   : decodeMk2Bitlength(text.data(), bitLength, count, values);
         if (!decoded) {
             error = "bitlength packet did not consume its code text";
             return false;
@@ -585,7 +667,7 @@ bool readCdp(ByteReader& reader, int generation, int depth, std::vector<std::int
             }
             return reader.ok;
         };
-        if (generation >= 3) {
+        if (generation >= 3 && generation < 4) {
             BitReader bits{reader.cur, static_cast<std::size_t>(reader.end - reader.cur), 0, 0, true};
             if (!readProbability(bits, generation, entries)) {
                 error = "arithmetic probability context is invalid";
@@ -1354,6 +1436,43 @@ bool readCoordinateArray(ByteReader& reader, int generation, int expected, std::
     }
     coords.assign(static_cast<std::size_t>(unique) * 3, 0.f);
     std::uint32_t hash = 0;
+    if (bits[0] == 0 && generation >= 4) {
+        std::vector<std::int32_t> codes[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            if (!readCdp(reader, generation, 0, codes[axis], error) ||
+                static_cast<int>(codes[axis].size()) != unique) {
+                error = "JT 10.5 lossless coordinate packet is invalid axis=" + std::to_string(axis) + " " + error;
+                return false;
+            }
+        }
+        const std::uint32_t stored = reader.u32();
+        std::uint32_t rawHash = 0;
+        std::uint32_t lagHash = 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            rawHash = hash32(codes[axis].data(), unique, rawHash);
+            const std::vector<std::int32_t> lag = jtUnpackPredictor(codes[axis], 0);
+            lagHash = hash32(lag.data(), unique, lagHash);
+        }
+        if (!reader.ok || (rawHash != stored && lagHash != stored)) {
+            error = "JT 10.5 lossless coordinate hash does not match";
+            return false;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            const std::vector<std::int32_t> values =
+                rawHash == stored ? codes[axis] : jtUnpackPredictor(codes[axis], 0);
+            for (int i = 0; i < unique; ++i) {
+                const std::uint32_t bitsValue = static_cast<std::uint32_t>(values[static_cast<std::size_t>(i)]);
+                float value = 0;
+                std::memcpy(&value, &bitsValue, 4);
+                if (value < minimum[axis] - 1e-3f || value > maximum[axis] + 1e-3f) {
+                    error = "JT 10.5 lossless coordinate is outside the quantizer range";
+                    return false;
+                }
+                coords[static_cast<std::size_t>(i) * 3 + static_cast<std::size_t>(axis)] = value;
+            }
+        }
+        return true;
+    }
     if (bits[0] == 0) {
         std::vector<std::int32_t> decoded[3][2];
         for (int axis = 0; axis < 3; ++axis) {
@@ -1572,6 +1691,97 @@ bool buildMesh(const DualMesh& dual, const std::vector<float>& coords, const std
     return true;
 }
 
+bool readPackedDeering(ByteReader& reader, int generation, int expected, std::vector<float>& normals, std::string& error) {
+    const std::int32_t count = reader.i32();
+    const int components = reader.u8();
+    const int quantBits = reader.u8();
+    if (!reader.ok || count != expected || components != 3 || quantBits < 0 || quantBits > 13) {
+        error = "JT 10.5 packed normal header is invalid";
+        return false;
+    }
+    if (quantBits == 0) {
+        std::vector<std::int32_t> codes[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            if (!readCdp(reader, generation, 0, codes[axis], error) || static_cast<int>(codes[axis].size()) != count) {
+                error = error.empty() ? "JT 10.5 lossless normal count differs" : error;
+                return false;
+            }
+        }
+        const std::uint32_t stored = reader.u32();
+        std::uint32_t rawHash = 0;
+        std::uint32_t lagHash = 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            rawHash = hash32(codes[axis].data(), count, rawHash);
+            const std::vector<std::int32_t> lag = jtUnpackPredictor(codes[axis], 0);
+            lagHash = hash32(lag.data(), count, lagHash);
+        }
+        if (!reader.ok || (rawHash != stored && lagHash != stored)) {
+            error = "JT 10.5 lossless normal hash does not match";
+            return false;
+        }
+        const bool lag = lagHash == stored;
+        std::vector<std::int32_t> restored[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            restored[axis] = lag ? jtUnpackPredictor(codes[axis], 0) : codes[axis];
+        }
+        normals.assign(static_cast<std::size_t>(count) * 3, 0.f);
+        for (int i = 0; i < count; ++i) {
+            float value[3];
+            for (int axis = 0; axis < 3; ++axis) {
+                const std::uint32_t bitsValue = static_cast<std::uint32_t>(restored[axis][static_cast<std::size_t>(i)]);
+                std::memcpy(&value[axis], &bitsValue, 4);
+                normals[static_cast<std::size_t>(i) * 3 + static_cast<std::size_t>(axis)] = value[axis];
+            }
+            const float length = std::sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2]);
+            if (std::fabs(length - 1.f) > 0.02f) {
+                error = "JT 10.5 lossless normal is not a unit vector";
+                return false;
+            }
+        }
+        return true;
+    }
+    std::vector<std::int32_t> codes;
+    if (!readCdp(reader, generation, 0, codes, error)) {
+        return false;
+    }
+    if (static_cast<int>(codes.size()) != count) {
+        error = "JT 10.5 packed normal count differs";
+        return false;
+    }
+    const std::uint32_t hash = hash32(codes.data(), count, 0);
+    const std::uint32_t stored = reader.u32();
+    if (!reader.ok) {
+        error = "JT 10.5 packed normal hash is truncated";
+        return false;
+    }
+    if (hash != stored) {
+        error = "JT 10.5 packed normal hash does not match";
+        return false;
+    }
+    normals.assign(static_cast<std::size_t>(count) * 3, 0.f);
+    const std::uint32_t mask = (1u << quantBits) - 1u;
+    for (int i = 0; i < count; ++i) {
+        const std::uint32_t code = static_cast<std::uint32_t>(codes[static_cast<std::size_t>(i)]);
+        const int sextant = static_cast<int>((code >> (quantBits + quantBits + 3)) & 7u);
+        const int octant = static_cast<int>((code >> (quantBits + quantBits)) & 7u);
+        const int theta = static_cast<int>((code >> quantBits) & mask);
+        const int psi = static_cast<int>(code & mask);
+        float x = 0;
+        float y = 0;
+        float z = 0;
+        deering(sextant, octant, theta, psi, quantBits, x, y, z);
+        const float length = std::sqrt(x * x + y * y + z * z);
+        if (std::fabs(length - 1.f) > 0.02f) {
+            error = "JT 10.5 Deering normal is not a unit vector";
+            return false;
+        }
+        normals[static_cast<std::size_t>(i) * 3] = x;
+        normals[static_cast<std::size_t>(i) * 3 + 1] = y;
+        normals[static_cast<std::size_t>(i) * 3 + 2] = z;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool jtReadInt32Cdp(const std::uint8_t* data, std::size_t size, int generation, std::vector<std::int32_t>& values,
@@ -1717,8 +1927,12 @@ bool decodeTopologicalTriStrip(const std::uint8_t* data, std::size_t size, int m
     const int collectionVersion = reader.i16();
     reader.i32();
     const int repVersion = reader.i16();
-    if (!reader.ok || baseVersion != 1 || vertexVersion != 1 || collectionVersion != 2 || repVersion != 2) {
-        error = "tri-strip LOD is not a version 9 topological mesh";
+    const bool classic = collectionVersion == 2 && repVersion == 2;
+    const bool early = collectionVersion == 1 && repVersion == 1;
+    if (!reader.ok || baseVersion != 1 || vertexVersion != 1 || (!classic && !early)) {
+        error = "tri-strip LOD is not a version 9 topological mesh (" + std::to_string(baseVersion) + "," +
+                std::to_string(vertexVersion) + "," + std::to_string(collectionVersion) + "," +
+                std::to_string(repVersion) + ")";
         return false;
     }
     const bool hasPosition = (bindings & 0x2ull) != 0;
@@ -1770,6 +1984,105 @@ bool decodeTopologicalTriStrip(const std::uint8_t* data, std::size_t size, int m
                 return false;
             }
         }
+    }
+    return buildMesh(dual, coords, normals, mesh, error);
+}
+
+bool decodeJt105TriStrip(const std::uint8_t* data, std::size_t size, bool big, std::shared_ptr<MeshData>& mesh,
+                         std::string& error) {
+    error.clear();
+    mesh.reset();
+    if (big) {
+        error = "JT 10.5 big-endian tri-strip is not decoded";
+        return false;
+    }
+    if (data == nullptr || size < 16) {
+        error = "JT 10.5 tri-strip LOD is truncated";
+        return false;
+    }
+    ByteReader reader{data, data + size, true};
+    const int baseVersion = reader.u8();
+    const int vertexVersion = reader.u8();
+    const std::uint64_t bindings = reader.u64();
+    const std::uint32_t framed = reader.u32();
+    if (!reader.ok || baseVersion != 1 || vertexVersion != 1 || framed != static_cast<std::uint32_t>(size - 15)) {
+        error = "JT 10.5 tri-strip LOD is not the local-header layout";
+        return false;
+    }
+    if (data[size - 1] != 0x01) {
+        error = "JT 10.5 tri-strip trailing marker is missing";
+        return false;
+    }
+    reader.end = data + 14 + framed;
+    static const std::uint8_t kLocalGuid[16] = {0xad, 0xa5, 0x30, 0xf8, 0x4c, 0xbe, 0xbc, 0x4f,
+                                                0x9b, 0x5f, 0xb9, 0x26, 0x92, 0x78, 0xd2, 0xe1};
+    for (unsigned char byte : kLocalGuid) {
+        if (reader.u8() != byte) {
+            error = "JT 10.5 local header GUID is not the tri-strip payload";
+            return false;
+        }
+    }
+    const int preamble = reader.u8();
+    const std::int32_t preambleCount = reader.i32();
+    const int preambleFlag = reader.u8();
+    reader.u32();
+    const int preambleTail = reader.u8();
+    if (!reader.ok || preamble != 0x09 || preambleCount != 1 || preambleFlag != 0x01 || preambleTail != 0x01) {
+        error = "JT 10.5 local preamble is not the tri-strip payload";
+        return false;
+    }
+    constexpr std::uint64_t kKnownBindings = 0x2ull | 0x8ull | 0x40ull;
+    if ((bindings & 0x2ull) == 0) {
+        error = "JT 10.5 topological mesh has no coordinates";
+        return false;
+    }
+    if ((bindings & ~kKnownBindings) != 0) {
+        error = "JT 10.5 vertex binding includes a field that is not decoded";
+        return false;
+    }
+    SymbolCursor symbols;
+    if (!readSymbols(reader, 4, symbols, error)) {
+        return false;
+    }
+    DualMesh dual;
+    if (!walkDual(symbols, dual, error)) {
+        return false;
+    }
+    const std::uint64_t recordBindings = reader.u64();
+    reader.u8();
+    reader.u8();
+    reader.u8();
+    reader.u8();
+    const std::int32_t topologicalVertices = reader.i32();
+    const std::int32_t attributeCount = reader.i32();
+    if (!reader.ok || recordBindings != bindings || topologicalVertices != static_cast<std::int32_t>(dual.faces.size())) {
+        error = "JT 10.5 topological vertex count does not match the dual mesh";
+        return false;
+    }
+    std::vector<float> coords;
+    if (!readCoordinateArray(reader, 4, topologicalVertices, coords, error)) {
+        return false;
+    }
+    std::vector<float> normals;
+    if ((bindings & 0x8ull) != 0) {
+        if (!readPackedDeering(reader, 4, attributeCount, normals, error)) {
+            return false;
+        }
+    }
+    if ((bindings & 0x40ull) != 0) {
+        const std::int32_t flagCount = reader.i32();
+        std::vector<std::int32_t> flags;
+        if (!reader.ok || flagCount != attributeCount || !readCdp(reader, 4, 0, flags, error) ||
+            static_cast<int>(flags.size()) != flagCount) {
+            if (error.empty()) {
+                error = "JT 10.5 vertex flag packet is invalid";
+            }
+            return false;
+        }
+    }
+    if (!reader.ok || reader.left() != 0) {
+        error = "JT 10.5 tri-strip LOD has unread bytes";
+        return false;
     }
     return buildMesh(dual, coords, normals, mesh, error);
 }
