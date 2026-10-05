@@ -451,6 +451,56 @@ void ViewportWidget::paintGL() {
                 drawnTriangles_ += instance.triangles;
             }
         }
+        static const std::shared_ptr<MeshData> zoneSphere = makeSphereMesh(1.0, 12);
+        static const std::shared_ptr<MeshData> zoneBox = makeBoxMesh({1, 1, 1});
+        static const std::shared_ptr<MeshData> zoneCylinder = makeCylinderMesh(1.0, 1.0, 16);
+        for (const PlcZoneWatch& zone : scene_->softPlc.zones) {
+            const std::string shape = zone.shape == "box" || zone.shape == "cylinder" ? zone.shape : "sphere";
+            double sx = 0;
+            double sy = 0;
+            double sz = 0;
+            std::string key;
+            const std::shared_ptr<MeshData>* mesh = nullptr;
+            if (shape == "box") {
+                sx = std::max(zone.size.x, 0.0);
+                sy = std::max(zone.size.y, 0.0);
+                sz = std::max(zone.size.z, 0.0);
+                key = "plc-zone-box";
+                mesh = &zoneBox;
+            } else if (shape == "cylinder") {
+                sx = std::max(zone.size.x, 0.0);
+                sy = sx;
+                sz = std::max(zone.size.z, 0.0);
+                key = "plc-zone-cylinder";
+                mesh = &zoneCylinder;
+            } else {
+                sx = std::max(zone.radius, 0.0);
+                sy = sx;
+                sz = sx;
+                key = "plc-zone-sphere";
+                mesh = &zoneSphere;
+            }
+            if (sx < 1e-4 || sy < 1e-4 || sz < 1e-4 || mesh == nullptr || !ensureMesh(key, *mesh)) {
+                continue;
+            }
+            Mat4 world = Mat4::identity();
+            world(0, 0) = sx;
+            world(1, 1) = sy;
+            world(2, 2) = sz;
+            world(3, 0) = zone.center.x;
+            world(3, 1) = zone.center.y;
+            world(3, 2) = zone.center.z;
+            RenderInstance volume;
+            volume.meshKey = key;
+            volume.world = world;
+            volume.material.color = {0.93, 0.32, 0.26};
+            volume.material.opacity = 0.38f;
+            volume.material.roughness = 0.6f;
+            volume.worldBounds = transformedBounds((*mesh)->bounds, world);
+            volume.distanceMm = static_cast<float>(length(volume.worldBounds.center() - frame.eye));
+            volume.triangles = static_cast<int>((*mesh)->triangleCount());
+            instances.push_back(std::move(volume));
+        }
         renderer_->submitInstances(instances);
     }
 

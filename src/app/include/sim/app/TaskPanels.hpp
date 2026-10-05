@@ -154,6 +154,8 @@ public:
     void revealTags();
     // Scrolls the scan log into view.
     void revealLog();
+    // Scrolls the interference-zone editor into view.
+    void revealZones();
     // Refreshes the monitor column and the scan log without rewriting edits.
     void showRuntime(const std::vector<std::string>& log);
     // Decimal node id, bool only. False when the client has no session.
@@ -166,6 +168,7 @@ private:
     bool importText(const QString& text);
     void commitBindings();
     void commitForces();
+    void commitZones();
     Scene& scene_;
     QLabel* opcState_ = nullptr;
     QLabel* plcsimState_ = nullptr;
@@ -175,6 +178,7 @@ private:
     QComboBox* backendBox_ = nullptr;
     QScrollArea* scroll_ = nullptr;
     QTableWidget* mapTable_ = nullptr;
+    QTableWidget* zoneTable_ = nullptr;
     QTableWidget* forceTable_ = nullptr;
     QPlainTextEdit* logView_ = nullptr;
     OpcUaClient* client_ = nullptr;

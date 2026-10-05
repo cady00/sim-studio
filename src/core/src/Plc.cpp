@@ -145,9 +145,12 @@ nlohmann::json softPlcToJson(const SoftPlcDocument& doc) {
     if (!doc.zones.empty()) {
         json["zones"] = nlohmann::json::array();
         for (const PlcZoneWatch& zone : doc.zones) {
+            const std::string shape = zone.shape == "box" || zone.shape == "cylinder" ? zone.shape : "sphere";
             nlohmann::json item{{"name", zone.name},
+                                {"shape", shape},
                                 {"center", {zone.center.x, zone.center.y, zone.center.z}},
                                 {"radius", zone.radius},
+                                {"size", {zone.size.x, zone.size.y, zone.size.z}},
                                 {"watch", zone.watch}};
             if (!zone.address.empty()) {
                 item["address"] = zone.address;
@@ -322,10 +325,20 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
             PlcZoneWatch zone;
             zone.name = item.value("name", std::string{});
             zone.address = item.value("address", std::string{});
+            zone.shape = item.value("shape", std::string{"sphere"});
+            if (zone.shape != "box" && zone.shape != "cylinder") {
+                zone.shape = "sphere";
+            }
             zone.radius = item.value("radius", 150.0);
             if (item.contains("center") && item.at("center").is_array() && item.at("center").size() >= 3) {
                 zone.center = {item.at("center").at(0).get<double>(), item.at("center").at(1).get<double>(),
                                item.at("center").at(2).get<double>()};
+            }
+            if (item.contains("size") && item.at("size").is_array() && item.at("size").size() >= 3) {
+                zone.size = {item.at("size").at(0).get<double>(), item.at("size").at(1).get<double>(),
+                             item.at("size").at(2).get<double>()};
+            } else {
+                zone.size = {zone.radius, zone.radius, zone.radius};
             }
             if (item.contains("watch") && item.at("watch").is_array()) {
                 for (const auto& name : item.at("watch")) {

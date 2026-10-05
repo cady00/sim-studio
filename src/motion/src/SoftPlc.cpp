@@ -160,7 +160,17 @@ PlcTag* ensureBoolTag(SoftPlcDocument& doc, const std::string& address) {
 }
 
 bool pointInZone(Vec3 point, const PlcZoneWatch& zone) {
-    return length(point - zone.center) <= std::max(zone.radius, 0.0);
+    const Vec3 delta = point - zone.center;
+    if (zone.shape == "box") {
+        return std::abs(delta.x) <= std::max(zone.size.x, 0.0) && std::abs(delta.y) <= std::max(zone.size.y, 0.0) &&
+               std::abs(delta.z) <= std::max(zone.size.z, 0.0);
+    }
+    if (zone.shape == "cylinder") {
+        const double radius = std::max(zone.size.x, 0.0);
+        const double halfHeight = std::max(zone.size.z, 0.0);
+        return delta.x * delta.x + delta.y * delta.y <= radius * radius && std::abs(delta.z) <= halfHeight;
+    }
+    return length(delta) <= std::max(zone.radius, 0.0);
 }
 
 bool zoneOccupied(const Scene& scene, const PlcZoneWatch& zone) {
@@ -607,6 +617,71 @@ void appendRobotPlcDraft(SoftPlcDocument& doc, const KinematicResource& resource
     for (const std::string& axis : axes) {
         ensureDraft(doc, axis + "_InPos", "in");
     }
+}
+
+namespace {
+
+std::string csvCell(const std::string& text) {
+    if (text.find_first_of(",\"\n\r") == std::string::npos) {
+        return text;
+    }
+    std::string escaped = "\"";
+    for (char letter : text) {
+        if (letter == '"') {
+            escaped += "\"\"";
+        } else {
+            escaped += letter;
+        }
+    }
+    escaped += '"';
+    return escaped;
+}
+
+}  // namespace
+
+std::string softPlcScanCsv(const std::vector<std::string>& log) {
+    std::string csv = "time,scan,signal,value\n";
+    for (const std::string& line : log) {
+        if (line.size() < 4 || line.compare(0, 2, "t=") != 0) {
+            continue;
+        }
+        const std::size_t scanMark = line.find(" #");
+        if (scanMark == std::string::npos) {
+            continue;
+        }
+        const std::string time = line.substr(2, scanMark - 2);
+        std::size_t cursor = scanMark + 2;
+        std::size_t scanEnd = cursor;
+        while (scanEnd < line.size() && line[scanEnd] != ' ') {
+            ++scanEnd;
+        }
+        const std::string scan = line.substr(cursor, scanEnd - cursor);
+        cursor = scanEnd;
+        while (cursor < line.size()) {
+            while (cursor < line.size() && line[cursor] == ' ') {
+                ++cursor;
+            }
+            if (cursor >= line.size()) {
+                break;
+            }
+            const std::size_t tokenEnd = line.find(' ', cursor);
+            const std::size_t end = tokenEnd == std::string::npos ? line.size() : tokenEnd;
+            const std::string token = line.substr(cursor, end - cursor);
+            const std::size_t eq = token.find('=');
+            if (eq != std::string::npos && eq > 0) {
+                csv += csvCell(time);
+                csv += ',';
+                csv += csvCell(scan);
+                csv += ',';
+                csv += csvCell(token.substr(0, eq));
+                csv += ',';
+                csv += csvCell(token.substr(eq + 1));
+                csv += '\n';
+            }
+            cursor = end;
+        }
+    }
+    return csv;
 }
 
 }  // namespace sim
