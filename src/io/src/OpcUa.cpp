@@ -2,10 +2,7 @@
 
 #include "OpcUaCrypto.hpp"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "sim/core/Socket.hpp"
 
 #include <cctype>
 #include <cstring>
@@ -302,10 +299,10 @@ private:
     bool ok_ = true;
 };
 
-bool writeAll(int fd, const std::uint8_t* data, std::size_t size) {
+bool writeAll(SocketFd fd, const std::uint8_t* data, std::size_t size) {
     std::size_t sent = 0;
     while (sent < size) {
-        const ssize_t wrote = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
+        const SocketCount wrote = socketSend(fd, data + sent, size - sent);
         if (wrote <= 0) {
             return false;
         }
@@ -314,10 +311,10 @@ bool writeAll(int fd, const std::uint8_t* data, std::size_t size) {
     return true;
 }
 
-bool readAll(int fd, std::uint8_t* data, std::size_t size) {
+bool readAll(SocketFd fd, std::uint8_t* data, std::size_t size) {
     std::size_t got = 0;
     while (got < size) {
-        const ssize_t read = ::recv(fd, data + got, size - got, 0);
+        const SocketCount read = socketRecv(fd, data + got, size - got);
         if (read <= 0) {
             return false;
         }
@@ -335,7 +332,7 @@ struct Chunk {
     std::vector<std::uint8_t> body;
 };
 
-bool recvChunk(int fd, Chunk& chunk) {
+bool recvChunk(SocketFd fd, Chunk& chunk) {
     std::uint8_t header[8];
     if (!readAll(fd, header, sizeof(header))) {
         return false;
@@ -374,7 +371,7 @@ bool recvChunk(int fd, Chunk& chunk) {
     return true;
 }
 
-bool sendHello(int fd, const char* kind, const Writer& body) {
+bool sendHello(SocketFd fd, const char* kind, const Writer& body) {
     Writer message;
     message.u8(static_cast<std::uint8_t>(kind[0]));
     message.u8(static_cast<std::uint8_t>(kind[1]));
@@ -386,7 +383,7 @@ bool sendHello(int fd, const char* kind, const Writer& body) {
     return writeAll(fd, message.data(), message.size());
 }
 
-bool sendSecure(int fd, const char* kind, std::uint32_t channelId, bool messageToken, std::uint32_t tokenId,
+bool sendSecure(SocketFd fd, const char* kind, std::uint32_t channelId, bool messageToken, std::uint32_t tokenId,
                 const Writer* openPrefix, std::uint32_t sequence, std::uint32_t requestId, const Writer& body) {
     Writer message;
     message.u8(static_cast<std::uint8_t>(kind[0]));
@@ -467,7 +464,7 @@ void readEndpoint(Reader& reader) {
 
 bool readBoolValue(Reader& reader, bool& value) { return reader.dataValueBool(value) && reader.ok(); }
 
-bool readFrame(int fd, std::vector<std::uint8_t>& raw) {
+bool readFrame(SocketFd fd, std::vector<std::uint8_t>& raw) {
     std::uint8_t header[8];
     if (!readAll(fd, header, sizeof(header))) {
         return false;
@@ -499,13 +496,13 @@ OpcUaServer::~OpcUaServer() { close(); }
 
 bool OpcUaServer::listen(int port, std::string& error) {
     close();
+    startupSockets();
     listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listenFd_ < 0) {
+    if (!socketOk(listenFd_)) {
         error = "socket failed";
         return false;
     }
-    const int reuse = 1;
-    ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    setReuseAddress(listenFd_);
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<std::uint16_t>(port));
@@ -532,9 +529,9 @@ bool OpcUaServer::listen(int port, std::string& error) {
 }
 
 void OpcUaServer::close() {
-    if (listenFd_ >= 0) {
-        ::close(listenFd_);
-        listenFd_ = -1;
+    if (socketOk(listenFd_)) {
+        closeSocket(listenFd_);
+        listenFd_ = kInvalidSocket;
     }
 }
 
@@ -549,12 +546,12 @@ void OpcUaServer::setUser(const std::string& name, const std::string& password) 
 }
 
 bool OpcUaServer::serve(std::string& error) {
-    if (listenFd_ < 0) {
+    if (!socketOk(listenFd_)) {
         error = "server is not listening";
         return false;
     }
-    const int client = ::accept(listenFd_, nullptr, nullptr);
-    if (client < 0) {
+    const SocketFd client = ::accept(listenFd_, nullptr, nullptr);
+    if (!socketOk(client)) {
         error = "accept failed";
         return false;
     }
@@ -897,7 +894,7 @@ bool OpcUaServer::serve(std::string& error) {
             }
         }
     }
-    ::close(client);
+    closeSocket(client);
     error.clear();
     return true;
 }
@@ -907,16 +904,17 @@ OpcUaClient::OpcUaClient() = default;
 OpcUaClient::~OpcUaClient() { close(); }
 
 void OpcUaClient::close() {
-    if (fd_ >= 0) {
-        ::close(fd_);
-        fd_ = -1;
+    if (socketOk(fd_)) {
+        closeSocket(fd_);
+        fd_ = kInvalidSocket;
     }
 }
 
 bool OpcUaClient::connect(const std::string& host, int port, std::string& error) {
     close();
+    startupSockets();
     fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd_ < 0) {
+    if (!socketOk(fd_)) {
         error = "socket failed";
         return false;
     }

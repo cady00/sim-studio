@@ -74,6 +74,14 @@ if (Test-Path $brand) {
 if (Test-Path "samples") {
     Copy-Item "samples" (Join-Path $OutDir "samples") -Recurse
 }
+$manual = Join-Path $root "docs/manual"
+if (Test-Path $manual) {
+    Copy-Item $manual (Join-Path $OutDir "manual") -Recurse
+}
+$meshNote = Join-Path $root "docs/MESH_OFFLINE.txt"
+if (Test-Path $meshNote) {
+    Copy-Item $meshNote (Join-Path $OutDir "网格离线开关.txt")
+}
 
 $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "Hostx64\\x64" } |

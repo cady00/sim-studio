@@ -77,8 +77,10 @@ Qt Advanced Docking System 是 LGPL-2.1。闭源产品可以动态链接它，�
 | `actions/checkout@v4` | GitHub Action | MIT | CI。 |
 | `actions/upload-artifact@v4` | GitHub Action | MIT | 仅手动 `workflow_dispatch` 的 Windows 作业。 |
 | `actions/github-script@v7` | GitHub Action | MIT | 同上。 |
+| `actions/cache@v4` | GitHub Action | MIT | 缓存 vcpkg 工具本身。端口二进制仍走 vcpkg 的 GitHub Actions 二进制缓存。 |
 | `jurplel/install-qt-action@v4` | GitHub Action | 以该仓库许可证为准，安装的是官方预编译 Qt | 只下载 Qt，不把 Action 源码链进产品。 |
 | git | CI 拉 Jolt 标签 | GPL-2.0 | 构建机工具，不发行。 |
+| Windows `workflow_dispatch` | vcpkg 基线 `cd61e1e2` | 各端口自身许可 | 清单里的直接依赖：OpenSSL 3.6.3、zlib、liblzma 5.8.3、curl 8.21.0、Open CASCADE 8.0.0、Jolt、Python 3、pybind11、nlohmann-json、Catch2。Qt 6.8.3 是预编译包，不从源码编。Windows 上 curl 默认用 schannel，OPC UA 仍链接 OpenSSL。作业没有在这次整理里启动。 |
 | usd-core | 26.8，仅本机 `pip install --user` | TOST-1.0（Apache-2.0，商标条款不同） | 测试时用 `pxr.Usd.Stage.Open` 打开自写 USDA。不链接，不随产品发布。轮子里没有 `usdchecker`。 |
 
 ## 自写代码，不是拷来的片段

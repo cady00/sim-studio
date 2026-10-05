@@ -44,7 +44,11 @@ jobs:
     name: Windows package
     if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
-    timeout-minutes: 120
+    # First uncached run builds OCCT 8, Python 3, OpenSSL 3.6, Jolt, zlib, liblzma
+    # and curl from the vcpkg baseline. Expect about 90–120 minutes. Later runs
+    # restore the vcpkg binary cache and the Qt cache; expect about 20–30 minutes.
+    # This job is workflow_dispatch only. Do not start it from a push.
+    timeout-minutes: 180
     env:
       VCPKG_ROOT: C:\vcpkg
       VCPKG_DISABLE_METRICS: "1"
@@ -66,6 +70,11 @@ jobs:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL ?? '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN ?? '');
+      - name: Cache the vcpkg tool
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg
+          key: vcpkg-tool-${{ hashFiles('vcpkg.json') }}
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
