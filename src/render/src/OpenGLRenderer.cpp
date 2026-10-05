@@ -77,14 +77,10 @@ void main() {
         n = -n;
     }
     vec3 viewDir = normalize(uEye - vWorld);
-    vec3 keyDir = normalize(vec3(0.42, -0.55, 0.72));
-    vec3 fillDir = normalize(vec3(-0.78, 0.28, 0.46));
-    vec3 rimDir = normalize(vec3(-0.12, 0.82, 0.28));
-    float hemi = n.z * 0.5 + 0.5;
-    vec3 ambient = mix(vec3(0.20, 0.21, 0.23), vec3(0.40, 0.44, 0.50), hemi);
+    vec3 keyDir = normalize(vec3(0.30, -0.42, 0.85));
+    vec3 fillDir = normalize(vec3(-0.55, 0.25, 0.40));
     float ndotk = max(dot(n, keyDir), 0.0);
     float ndotf = max(dot(n, fillDir), 0.0);
-    float ndotr = max(dot(n, rimDir), 0.0);
     float keyShade = 1.0;
     if (uShadowStrength > 0.001) {
         vec3 shifted = vWorld + keyDir * (1.6 + (1.0 - ndotk) * 5.0);
@@ -101,20 +97,14 @@ void main() {
             keyShade = mix(1.0, sum / 9.0, clamp(uShadowStrength, 0.0, 1.0));
         }
     }
-    vec3 lit = vColor * (ambient + vec3(0.62, 0.60, 0.54) * ndotk * keyShade + vec3(0.16, 0.18, 0.22) * ndotf +
-                         vec3(0.07) * ndotr);
+    vec3 ambient = vec3(0.42, 0.43, 0.45);
+    vec3 lit = vColor * (ambient + vec3(0.48) * ndotk * keyShade + vec3(0.10) * ndotf);
     float rough = clamp(vRoughness, 0.05, 1.0);
-    float shininess = mix(128.0, 10.0, rough);
-    float metal = clamp(vMetallic, 0.0, 1.0);
+    float shininess = mix(48.0, 8.0, rough);
     vec3 halfKey = normalize(keyDir + viewDir);
-    vec3 halfFill = normalize(fillDir + viewDir);
     float specKey = pow(max(dot(n, halfKey), 0.0), shininess);
-    float specFill = pow(max(dot(n, halfFill), 0.0), max(shininess * 0.45, 4.0));
-    vec3 specTint = mix(vec3(1.0), max(vColor, vec3(0.22)), metal);
-    vec3 spec = specTint * (specKey * mix(0.42, 0.90, metal) * keyShade + specFill * 0.14);
+    vec3 spec = vec3(0.10) * specKey * keyShade;
     vec3 color = lit + spec;
-    float crease = smoothstep(0.22, 0.85, length(fwidth(n)));
-    color *= mix(1.0, 0.78, crease);
     if (vHighlight > 0.5) {
         color = mix(color, vec3(0.239, 0.525, 0.910), 0.42);
     }
@@ -741,7 +731,7 @@ bool OpenGLRenderer::ensureGeometry(int width, int height) {
 }
 
 Mat4 OpenGLRenderer::lightViewProjection(const Aabb& bounds) const {
-    const Vec3 key = normalize(Vec3{0.42, -0.55, 0.72});
+    const Vec3 key = normalize(Vec3{0.30, -0.42, 0.85});
     const Vec3 center = bounds.center();
     const double span = std::max(bounds.diagonal(), 1.0);
     const Vec3 eye = center + key * span;

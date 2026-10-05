@@ -1422,7 +1422,8 @@ void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int 
         return;
     }
     projectPath_.clear();
-    viewport_->frameImportedAssembly(startupView_);
+    viewport_->setStandardView(startupView_);
+    viewport_->fitAll();
     QString status = trk("msg.importOk").arg(nodes).arg(meshes).arg(triangles).arg(QString::number(elapsedMs, 'f', 0));
     if (!report.isEmpty()) {
         status += QStringLiteral(" · ");

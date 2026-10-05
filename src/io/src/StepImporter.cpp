@@ -121,21 +121,14 @@ Transform fromTrsf(const gp_Trsf& trsf, double toMillimeters) {
 }
 
 void applyCadSurface(SceneNode& node, bool fromFile, Vec3 color) {
+    // File colors stay as stored. Missing colors get a neutral gray. Neither is recast as metal.
     if (!fromFile) {
         node.color = {0.62, 0.64, 0.68};
-        node.metallic = 0.58f;
-        node.roughness = 0.38f;
-        return;
+    } else {
+        node.color = color;
     }
-    node.color = color;
-    const double luma = color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722;
-    if (luma < 0.05) {
-        node.metallic = 0.22f;
-        node.roughness = 0.30f;
-        return;
-    }
-    node.metallic = 0.16f;
-    node.roughness = 0.46f;
+    node.metallic = 0.0f;
+    node.roughness = 0.78f;
 }
 
 bool colorOf(const Handle(XCAFDoc_ColorTool)& colors, const TDF_Label& label, Vec3& out) {
