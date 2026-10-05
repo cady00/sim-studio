@@ -64,7 +64,7 @@
 
 ## 几何样件
 
-码垛龙门 `palletizer/Cartesian Gantry Palletizing.stp` 是 `ISO-10303-21`，AP214，`FILE_NAME` 为 `Cartesian Gantry Palletizing`，时间 `2018-08-28T18:54:57+07:00`。Open CASCADE 的 STEP 导入器能读出真实网格。读入时有一条未解析引用的警告，导入仍然成功，三角形数不为 0。同一份几何还在 `palletizer/源模型.zip` 里，另外有一份约 85 MB 的 `.igs` 和几张预览图。这一轮没有解出那份 IGES。
+码垛龙门 `palletizer/Cartesian Gantry Palletizing.stp` 是 `ISO-10303-21`，AP214，`FILE_NAME` 为 `Cartesian Gantry Palletizing`，时间 `2018-08-28T18:54:57+07:00`。对照是：文件产品 118、装配出现 323、实体 106；场景 696 个节点、106 个网格、289932 个三角形。4 个无网格零件都是 `BGHFB6206ZZ-80`，文件里没有面，节点还在。未解析引用是文件头 `authorisation = $`，不是丢掉的实体。装配层和 `Pallet` 的平移与文件一致。同一份几何还在 `palletizer/源模型.zip` 里，另外有一份约 85 MB 的 `.igs` 和几张预览图。这一轮没有解出那份 IGES。完整说明在 `docs/STEP.md`。
 
 同目录和 `cylinder/`、`suction/`、`path6/`、`stamping/` 里的 `.prt` 都读不了：
 

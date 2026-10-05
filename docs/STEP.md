@@ -1,0 +1,89 @@
+# STEP 装配导入
+
+导入器是 `StepImporter`（`src/io/src/StepImporter.cpp`）。实现用 Open CASCADE 7.6 的 `STEPCAFControl_Reader` 和 XCAF，不另写一套 STEP 解析器。头文件里没有 OCCT 类型。
+
+## 当前读什么
+
+读入前设置：
+
+- `read.step.product.mode = 1`：按产品结构读，不把整棵装配压成一个形状。
+- `read.step.product.context = 1`
+- `read.step.assembly.level = 1`：每一层装配都展开。
+- `read.stepcaf.subshapes.name = 1`
+- `xstep.cascade.unit = MM`
+- 名称、颜色、图层打开。
+
+`FILE_SCHEMA` 能对上这三类时，报告里写成短名：
+
+| 文件里的模式名 | 报告 |
+| --- | --- |
+| `AUTOMOTIVE_DESIGN` | AP214 |
+| `CONFIG_CONTROL_DESIGN` | AP203 |
+| 含 `AP242` | AP242 |
+
+这是 OCCT 7.6 的 XCAF 读程序能接受的应用协议，不是本仓库另做的模式表。AP203 的装配出现（`NEXT_ASSEMBLY_USAGE_OCCURRENCE`）比 AP214 少见，扁平文件会变成一串零件，再按实体拆开。
+
+网格画在被引用的形状上。一次出现的位姿只取 XCAF 的 `GetLocation`，不烘焙进共享网格。同一个零件被装多次时共用一份网格。一个产品里有多个实体、又没有下一级装配出现时，每个实体拆成子零件 `Solid 001`…，实体自己的 location 烘焙进那份网格。
+
+细分用 `BRepMesh_IncrementalMesh`。挠度是包围盒对角线的 0.0025，毫米，夹在 0.35 和 3 之间；对角线超过 800 mm 时上限放到 8 mm。已经分出三角形的实体不再跑 ShapeFix，样本夹具因此仍是 136 个三角形。第一次细分是空的、但形状上还有面时，才做 `ShapeFix_Shape`（精度 0.01、最大公差 1，文件单位按毫米），仍为空则用 `BRepBuilderAPI_Sewing`（公差 0.1 mm）再分一次。恢复了的形状记一条说明。仍然没有三角形的零件留在树上，不删节点。
+
+导入结果带一行对照和逐条警告。状态栏和视口旁注写这一行，警告全文在状态栏提示里。
+
+对照的含义：
+
+- 产品：文件里的 `PRODUCT` 个数。
+- 装配：文件里的 `NEXT_ASSEMBLY_USAGE_OCCURRENCE` 个数，也就是装配边上的出现次数。
+- 实体：`MANIFOLD_SOLID_BREP` 加 `BREP_WITH_VOIDS`。
+- 节点：挂到场景里的节点，不含世界根。世界根使 `Scene::nodeCount()` 比这个数大 1。
+- 网格：去重之后的网格份数。
+- 三角：这些网格的三角形和。
+- 空：零件节点里没有网格的个数。
+
+## 码垛龙门（本机，不入库）
+
+`testdata/local/mcd/palletizer/Cartesian Gantry Palletizing.stp`，约 16 MB。`ISO-10303-21`，`FILE_SCHEMA` 为 `AUTOMOTIVE_DESIGN {1 0 10303 214 3 1 1}`，`FILE_NAME` 为 `Cartesian Gantry Palletizing`，时间 `2018-08-28T18:54:57+07:00`，ST-DEVELOPER v16.7。定义实体 334670 个，文本扫描没有悬空的 `#` 号。
+
+这一次导入：
+
+| | 数量 |
+| --- | --- |
+| 产品 | 118 |
+| 装配出现 | 323 |
+| 实体 | 106（流形实体 99，带空腔 7） |
+| 导入节点 | 696（零件 590，装配 106） |
+| 网格 | 106 |
+| 三角形 | 289932 |
+| 无网格零件 | 4 |
+
+118 个产品名都在场景里。两个名字在文件里带尾随空格（`YET 203 `、`YAR 203_12-2F `），读入时去掉空格，节点还在。装配边和场景对得上：根 42 个子节点，`99MM2018A_E101` 59 个，`Camera Inspection` 8 个，`pick up cnv 2` 107 个。多出来的 10 个节点是一个多实体产品拆成的 `Solid 001`…`Solid 010`，不是丢掉的出现。
+
+`Pallet` 的局部平移是 743.282, −2411.961, 2107 mm，与文件里 `ITEM_DEFINED_TRANSFORMATION` 的目标点 `(743.282074715329, -2411.96069826268, 2106.99999999999)` 一致。
+
+两条警告，都能指到文件里的那一项：
+
+1. **未解析引用。** `FILE_NAME` 第 7 项 `authorisation` 写成 `$`，不是带引号的字符串。Open CASCADE 在读入检查里计 1 条失败，打印 `Unresolved Reference : Fails Count : 1`。它不指向任何一个实体号。几何没有因此少一份。
+2. **`BGHFB6206ZZ-80` ×4。** 这 4 次出现都留在树上，网格是空的。产品的 `SHAPE_REPRESENTATION` 只有一个 `AXIS2_PLACEMENT_3D`，没有 `MANIFOLD_SOLID_BREP`、壳或面。`SHAPE_REPRESENTATION_RELATIONSHIP` 把它连到父装配的形状上，用来放位置，不带来实体。文件里没有这份轴承的边界表示，缝合补不出面。
+
+另外 20 个产品自己的形状表示也没有直接的高级 B-rep。它们是装配（根、`99MM2018A_E101`、相机、输送以及若干子装配），几何在子零件上，子零件有网格。只有 `BGHFB6206ZZ-80` 是叶子并且没有面。
+
+## 已知缺口
+
+- 外部文件引用不下载、不拼接。这份龙门没有 `DOCUMENT` 外部几何。
+- 没有 `TESSELLATED_SHAPE_REPRESENTATION` 的专用路径。OCCT 若转不出拓扑，就不会凭空造网格。
+- PMI、几何公差、图层、校验属性不当成几何。龙门里 `number of annotations` 和 `number of views` 都是 0。
+- 不读 SHUO（指定更高层使用处的样式覆盖）当形状。
+- 名字尾随空格会去掉。`=>[0:1:1:1]` 这类 OCCT 占位名会改用被引用产品的名字。
+- 细分是显示用的挠度，不是 PDPS 的弦高设置，三角形个数不会和 Process Simulate 逐面相同。
+- 缝合只在第一次细分为空、且还有面时发生。已经分出的实体不改，避免把有效样件的三角形数改掉。
+- `.prt` 不是 STEP。见 `docs/LIMITATIONS.md` 和 `docs/MCD_COMPAT.md`。
+- 同一压缩包里的 IGES 这一轮没有导入。
+
+## 和 PDPS 的差距
+
+Process Simulate 打开的是自己的学习或 cojt/JT 组件，装配树、产品结构校验和显示细分是同一份学习数据。这里打开的是 STEP 交换文件：
+
+- 有产品、装配出现和实体的计数，能对上文件；对不上的项写成警告，不把空节点藏掉。
+- 没有 PDPS 的产品结构校验属性，也不核对 PMI 数量。
+- 没有 JT 的 LOD 和 XT B-rep。STEP 里的 B-rep 细分成显示网格后，B-rep 不进 `.simproj`。
+- 文件没有写出的实体（上面的轴承）补不回来。PDPS 若从原 NX 部件打开，那份实体可能还在；从这份 STEP 打开，两边都没有面。
+- 位姿来自装配出现上的 `ITEM_DEFINED_TRANSFORMATION`，不是 PDPS 的放置操作或运动学关节。

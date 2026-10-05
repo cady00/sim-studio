@@ -15,7 +15,7 @@
   - 左键：选择零件
   - 工具栏「适应全部」和前/后/左/右/俯/仰/等轴测
   - 「移动」「旋转」操作器，或在属性面板里改 X/Y/Z（mm）和 RX/RY/RZ（度）
-- 导入 STEP（`.stp` / `.step`），装配层级进入左侧树，曲面细分后显示。
+- 导入 STEP（`.stp` / `.step`），装配层级进入左侧树，曲面细分后显示。支持的模式、空零件警告和与 PDPS 的差距在 [docs/STEP.md](docs/STEP.md)。
 - 导入 OBJ。
 - 保存 / 打开 `.simproj`（JSON + 显示网格缓存，格式版本 6，仍能打开版本 1 到 5）。说明见 [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md)。
 - 示例装配 `samples/step/sample_fixture.step`（底板 + 两个共用网格的销）。

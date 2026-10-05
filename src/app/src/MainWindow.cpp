@@ -1364,9 +1364,14 @@ void MainWindow::importStepAsync(const QString& path) {
         const int meshes = result.meshCount;
         const int triangles = result.triangleCount;
         const double elapsed = result.elapsedMs;
+        const QString report = QString::fromStdString(result.report);
+        QStringList warnings;
+        for (const std::string& warning : result.warnings) {
+            warnings.push_back(QString::fromStdString(warning));
+        }
         QMetaObject::invokeMethod(
             this,
-            [this, alive, scene, ok, error, nodes, meshes, triangles, elapsed] {
+            [this, alive, scene, ok, error, nodes, meshes, triangles, elapsed, report, warnings] {
                 if (!alive->load()) {
                     return;
                 }
@@ -1376,7 +1381,7 @@ void MainWindow::importStepAsync(const QString& path) {
                     }
                     scene_.steal(*scene);
                 }
-                onImportFinished(ok, error, nodes, meshes, triangles, elapsed);
+                onImportFinished(ok, error, nodes, meshes, triangles, elapsed, report, warnings);
             },
             Qt::QueuedConnection);
     });
@@ -1396,7 +1401,8 @@ void MainWindow::onImportProgress(int percent, const QString& stageKey, int curr
     statusLabel_->setText(text);
 }
 
-void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs) {
+void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs,
+                                  const QString& report, const QStringList& warnings) {
     importing_ = false;
     importStepAction_->setEnabled(true);
     importObjAction_->setEnabled(true);
@@ -1418,7 +1424,16 @@ void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int 
     projectPath_.clear();
     viewport_->setStandardView(StandardView::Iso);
     viewport_->fitAll();
-    statusLabel_->setText(trk("msg.importOk").arg(nodes).arg(meshes).arg(triangles).arg(QString::number(elapsedMs, 'f', 0)));
+    QString status = trk("msg.importOk").arg(nodes).arg(meshes).arg(triangles).arg(QString::number(elapsedMs, 'f', 0));
+    if (!report.isEmpty()) {
+        status += QStringLiteral(" · ");
+        status += report;
+    }
+    statusLabel_->setText(status);
+    statusLabel_->setToolTip(warnings.join(QStringLiteral("\n")));
+    if (!report.isEmpty()) {
+        viewport_->setCallout(report);
+    }
     if (!screenshotPath_.isEmpty()) {
         resizeDocks({treeDock_, propertyDock_}, {460, 280}, Qt::Horizontal);
         QTimer::singleShot(1000, this, &MainWindow::captureScreenshot);

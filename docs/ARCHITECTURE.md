@@ -105,7 +105,7 @@ KR 420 R3080 / KR 280 R3080 的扁平 STEP 也在 `testdata/local/`，不进仓�
 
 ## STEP 与 OpenUSD
 
-`createGeometryKernel()` 返回 `IGeometryKernel`，当前名字是 `occt`。`createImporter("step")` 给出 `StepImporter`，头文件里没有 OCCT 类型。实现在 `StepImporter.cpp`，用 XCAF 读 AP214 / AP242。网格在引用形状上生成，变换只取该次出现的 location。一个产品里如果有多个实体、却没有装配出现（NAUO），导入器会把每个实体拆成独立零件，并把半径不小于 8 mm 的圆柱或圆记在 `faceAxes` 里。运动学页只看见这些轴线和网格。换内核时换 `IGeometryKernel` 的实现，场景和 `.simproj` 不动。`obj` 由仓库内的解析器读，不经过 OCCT。详见 [KR420.md](KR420.md)。
+`createGeometryKernel()` 返回 `IGeometryKernel`，当前名字是 `occt`。`createImporter("step")` 给出 `StepImporter`，头文件里没有 OCCT 类型。实现在 `StepImporter.cpp`，用 XCAF 读 AP214 / AP203 / AP242。网格在引用形状上生成，变换只取该次出现的 location。一个产品里如果有多个实体、却没有装配出现（NAUO），导入器会把每个实体拆成独立零件，并把半径不小于 8 mm 的圆柱或圆记在 `faceAxes` 里。运动学页只看见这些轴线和网格。导入结果带文件产品数、装配出现数、实体数，以及场景节点、网格、三角形和无网格零件；Open CASCADE 的检查和没有面的零件各写一条警告。第一次细分失败且仍有面时才做 ShapeFix 和缝合。换内核时换 `IGeometryKernel` 的实现，场景和 `.simproj` 不动。`obj` 由仓库内的解析器读，不经过 OCCT。范围和与 PDPS 的差距见 [STEP.md](STEP.md)，扁平机器人见 [KR420.md](KR420.md)。
 
 OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的另一个导入器里，把 USD 的 prim 层级写成现有场景节点和共享网格，单位换成毫米。不把 USD 的舞台对象留在场景图里，这样 `.simproj` 仍然只存自己的 JSON 和网格。导出时从场景图写 USD，而不是从 OCCT 文档转。
 

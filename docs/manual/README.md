@@ -20,7 +20,7 @@ simstudio --demo commission --play --sim-seconds 1.5 --lang zh_CN
 
 文件菜单里可以导入 STEP 或 OBJ，也可以打开 `.simproj`。导入在后台线程里进行，进度条可以取消。导入完成后视口会缩放到全部对象，状态栏给出节点数、网格数和三角形数。
 
-STEP 读入使用 Open CASCADE。装配会展开成零件节点。NX 或 MCD 的 `.prt` 不读，对应关系写在 `docs/MCD_COMPAT.md`。`--demo mcd-compat` 用光电、气缸和吸盘接软 PLC。机器人若还没有运动学，可以用连杆建议把相邻零件收成连杆，再套上数据表里的关节限位。示例里的 KR420 代理在没有本地 STEP 时仍能排布；本机若放了 `testdata/local/KR420_R3080_KR280_R3080.stp`，示例线会把该模型接到名为 `kr420` 的资源上。这个 STEP 不进版本库。
+STEP 读入使用 Open CASCADE。装配会展开成零件节点。导入后状态栏给出文件里的产品数、装配出现数、实体数，以及场景节点、网格、三角形和无网格零件；每一条警告都能对上文件里的一项。支持的模式和与 PDPS 的差距写在 `docs/STEP.md`。NX 或 MCD 的 `.prt` 不读，对应关系写在 `docs/MCD_COMPAT.md`。`--demo mcd-compat` 用光电、气缸和吸盘接软 PLC。机器人若还没有运动学，可以用连杆建议把相邻零件收成连杆，再套上数据表里的关节限位。示例里的 KR420 代理在没有本地 STEP 时仍能排布；本机若放了 `testdata/local/KR420_R3080_KR280_R3080.stp`，示例线会把该模型接到名为 `kr420` 的资源上。这个 STEP 不进版本库。
 
 也支持这些交换格式，各自有明确边界：
 

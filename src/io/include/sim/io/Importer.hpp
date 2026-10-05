@@ -5,6 +5,7 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace sim {
 
@@ -15,6 +16,16 @@ struct ImportResult {
     int meshCount = 0;
     int triangleCount = 0;
     double elapsedMs = 0;
+    // One line: schema, file products / assembly occurrences / solids, scene nodes / meshes / triangles / empty parts.
+    std::string report;
+    // Each entry names the file item and why it did not become a mesh, or quotes an Open CASCADE check.
+    std::vector<std::string> warnings;
+    int fileProductCount = 0;
+    int fileOccurrenceCount = 0;
+    int fileSolidCount = 0;
+    int partCount = 0;
+    int assemblyCount = 0;
+    int emptyPartCount = 0;
 };
 
 struct ImportProgress {
