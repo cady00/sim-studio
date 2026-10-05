@@ -446,9 +446,13 @@ TEST_CASE("soft plc ctd counts down and tof holds after power drops") {
     doc.enabled = true;
     doc.scanSeconds = 0.01;
     addTag(doc, "I0.0", sim::PlcValueKind::Bool);
-    sim::PlcTag* counter = addTag(doc, "C0", sim::PlcValueKind::Counter);
+    addTag(doc, "C0", sim::PlcValueKind::Counter);
+    addTag(doc, "T0", sim::PlcValueKind::Timer);
+    sim::PlcTag* counter = sim::findPlcTag(doc, "C0");
+    sim::PlcTag* timer = sim::findPlcTag(doc, "T0");
+    REQUIRE(counter != nullptr);
+    REQUIRE(timer != nullptr);
     counter->integer = 2;
-    sim::PlcTag* timer = addTag(doc, "T0", sim::PlcValueKind::Timer);
     timer->preset = 0.03;
 
     sim::PlcRung down;

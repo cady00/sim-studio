@@ -24,6 +24,7 @@ public:
     using Importer = std::function<QString(const std::vector<RobotLibraryEntry>&)>;
 
     explicit RobotLibraryDialog(Translate translate, QWidget* parent = nullptr);
+    ~RobotLibraryDialog() override;
 
     void setImporter(Importer importer);
     void setRoot(const QString& path, bool persist);

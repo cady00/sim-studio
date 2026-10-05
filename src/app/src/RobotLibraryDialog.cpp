@@ -11,6 +11,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QShowEvent>
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -92,9 +93,27 @@ RobotLibraryDialog::RobotLibraryDialog(Translate translate, QWidget* parent)
     }
 }
 
+RobotLibraryDialog::~RobotLibraryDialog() {
+    // Hiding the dialog in ~QDialog runs after these members are gone. A focus-out
+    // on the path box would otherwise scan again and free the catalog twice.
+    if (pathEdit_ != nullptr) {
+        pathEdit_->disconnect(this);
+    }
+    if (filterEdit_ != nullptr) {
+        filterEdit_->disconnect(this);
+    }
+    if (brandBox_ != nullptr) {
+        brandBox_->disconnect(this);
+    }
+    if (list_ != nullptr) {
+        list_->disconnect(this);
+    }
+}
+
 void RobotLibraryDialog::setImporter(Importer importer) { importer_ = std::move(importer); }
 
 void RobotLibraryDialog::setRoot(const QString& path, bool persist) {
+    const QSignalBlocker block(pathEdit_);
     pathEdit_->setText(path);
     if (persist) {
         QSettings settings;

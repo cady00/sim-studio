@@ -278,7 +278,8 @@ void addZipComponents(std::vector<RobotLibraryEntry>& out, const std::filesystem
             if (!folders.empty()) {
                 folders.pop_back();
             }
-            folders.insert(folders.end(), splitZipPath(nested).begin(), splitZipPath(nested).end());
+            const std::vector<std::string> nestedParts = splitZipPath(nested);
+            folders.insert(folders.end(), nestedParts.begin(), nestedParts.end());
             if (!folders.empty()) {
                 folders.pop_back();
             }
