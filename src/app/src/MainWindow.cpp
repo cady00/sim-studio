@@ -1728,6 +1728,8 @@ void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path
 
 void MainWindow::setStartupView(StandardView view) { startupView_ = view; }
 
+void MainWindow::setShadeStrength(float ao, float shadow) { viewport_->setShadeStrength(ao, shadow); }
+
 void MainWindow::arrangeLineDocks() {
     if (floorDock_ == nullptr || operationDock_ == nullptr || ganttDock_ == nullptr) {
         return;

@@ -93,6 +93,12 @@ void ViewportWidget::setStandardView(StandardView view) {
     update();
 }
 
+void ViewportWidget::setShadeStrength(float ao, float shadow) {
+    aoStrength_ = std::clamp(ao, 0.0f, 1.0f);
+    shadowStrength_ = std::clamp(shadow, 0.0f, 1.0f);
+    update();
+}
+
 void ViewportWidget::setGizmoMode(GizmoMode mode) {
     gizmoMode_ = mode;
     update();
@@ -287,8 +293,12 @@ void ViewportWidget::paintGL() {
     syncMeshes();
     const double aspect = height() > 0 ? static_cast<double>(width()) / height() : 1.0;
     FrameParams frame;
-    frame.viewProjection = mul(camera_.projectionMatrix(aspect), camera_.viewMatrix());
+    frame.projection = camera_.projectionMatrix(aspect);
+    frame.view = camera_.viewMatrix();
+    frame.viewProjection = mul(frame.projection, frame.view);
     frame.eye = camera_.eye();
+    frame.aoStrength = aoStrength_;
+    frame.shadowStrength = shadowStrength_;
     frame.width = std::max(width(), 1);
     frame.height = std::max(height(), 1);
     frame.frustumCull = true;

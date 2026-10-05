@@ -132,6 +132,8 @@ int main(int argc, char* argv[]) {
     QCommandLineOption screenshot("screenshot", "Save a window image and exit.", "png");
     QCommandLineOption view("view", "Standard view after import: front, back, left, right, top, bottom, iso.", "name",
                             "iso");
+    QCommandLineOption aoStrength("ao", "Screen-space occlusion strength from 0 to 1.", "strength", "0.5");
+    QCommandLineOption shadowStrength("shadow", "Key-light shadow strength from 0 to 1.", "strength", "0.72");
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
     QCommandLineOption play("play", "Start the simulation after opening a project.");
     QCommandLineOption simSeconds("sim-seconds", "Seconds to simulate before a screenshot.", "seconds", "2.5");
@@ -151,6 +153,8 @@ int main(int argc, char* argv[]) {
     parser.addOption(openProject);
     parser.addOption(screenshot);
     parser.addOption(view);
+    parser.addOption(aoStrength);
+    parser.addOption(shadowStrength);
     parser.addOption(language);
     parser.addOption(play);
     parser.addOption(simSeconds);
@@ -173,6 +177,8 @@ int main(int argc, char* argv[]) {
     application.processEvents();
 
     sim::MainWindow window(parser.value(language));
+    window.setShadeStrength(qBound(0.0f, parser.value(aoStrength).toFloat(), 1.0f),
+                            qBound(0.0f, parser.value(shadowStrength).toFloat(), 1.0f));
     window.setWindowIcon(icon);
     window.show();
     if (parser.isSet(theme)) {

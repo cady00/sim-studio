@@ -47,7 +47,7 @@ src/app         Qt 主窗口、导入线程、命令行
 | Diligent Engine | Apache-2.0，可私有商用 | 本基线没有官方 vcpkg 端口，需要整棵 vendored CMake（glslang、SPIRV-Cross） | 不采用。同样要和 Qt 的 OpenGL 上下文共存，依赖体积大。 |
 | 自有薄接口 `IRenderer` | 仓库自己的代码 | 不增加第三方库 | 采用。OpenGL 3.3 是现在的后端。Vulkan 或 Direct3D 12 以后实现同一个类，视口的输入和相机不用改。 |
 
-`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。网格着色是 Blinn-Phong：三盏方向光、按 Z 的半球环境光、双面法线，接缝处按屏幕空间法线变化略压暗。没有阴影贴图。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`selectLodLevel` 按距离选细节级别，当前每个零件只有一级网格，钩子先在提交路径里调用。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。同一网格的多个实例按记录逐个设置模型矩阵再画。软件 OpenGL 上实例化矩阵属性没有把平移送进着色器，所以这条路径用 uniform。Qt 类型只出现在 `src/app` 和 `src/render`（视口是 `QOpenGLWidget`）。`IRenderer` 本身没有 Qt 头文件。
+`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。网格着色是 Blinn-Phong：三盏方向光、按 Z 的半球环境光、双面法线。主光打一张方向光阴影，不透明网格再做一次屏幕空间遮蔽。接缝处按屏幕空间法线变化略压暗。阴影和遮蔽的强度在 `FrameParams`，命令行是 `--shadow` 和 `--ao`。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`selectLodLevel` 按距离选细节级别，当前每个零件只有一级网格，钩子先在提交路径里调用。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。同一网格的多个实例按记录逐个设置模型矩阵再画。软件 OpenGL 上实例化矩阵属性没有把平移送进着色器，所以这条路径用 uniform。Qt 类型只出现在 `src/app` 和 `src/render`（视口是 `QOpenGLWidget`）。`IRenderer` 本身没有 Qt 头文件。
 
 离屏读回是 `captureRgba`。截图时视口先走这个接口，失败再退回 Qt 的 `grabFramebuffer`。
 

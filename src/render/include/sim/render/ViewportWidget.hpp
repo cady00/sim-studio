@@ -36,6 +36,7 @@ public:
     OrbitCamera& camera() { return camera_; }
     void fitAll();
     void setStandardView(StandardView view);
+    void setShadeStrength(float ao, float shadow);
     void setGizmoMode(GizmoMode mode);
     GizmoMode gizmoMode() const { return gizmoMode_; }
     void setSimTime(double seconds);
@@ -85,6 +86,8 @@ private:
 
     Scene* scene_ = nullptr;
     OrbitCamera camera_;
+    float aoStrength_ = 0.50f;
+    float shadowStrength_ = 0.72f;
     GizmoMode gizmoMode_ = GizmoMode::Translate;
     std::unique_ptr<IRenderer> renderer_;
     std::uint64_t syncedRevision_ = 0;

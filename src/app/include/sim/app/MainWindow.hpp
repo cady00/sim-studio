@@ -60,6 +60,7 @@ public:
     bool importing() const { return importing_; }
     void setScreenshotPath(const QString& path);
     void setStartupView(StandardView view);
+    void setShadeStrength(float ao, float shadow);
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
     void beginHeadlessPlayback();
