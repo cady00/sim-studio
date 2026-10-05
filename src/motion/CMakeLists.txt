@@ -17,4 +17,5 @@ add_library(sim_motion
     src/Dynamics.cpp
 )
 target_include_directories(sim_motion PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(sim_motion PUBLIC sim_core sim_physics sim_collision)
+find_package(CURL REQUIRED)
+target_link_libraries(sim_motion PUBLIC sim_core sim_physics sim_collision CURL::libcurl)

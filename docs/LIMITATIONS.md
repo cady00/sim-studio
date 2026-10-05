@@ -11,7 +11,7 @@
 
 | 路径 | 实际行为 |
 | --- | --- |
-| JT（`JtImporter`） | `probeContent` 恒为假。`importFile` 返回失败，说明本构建没有解码器，也不链接 Siemens JT Open Toolkit。 |
+| JT（`JtImporter`） | 按公开的文件布局自写，不链接 Siemens JT Open Toolkit，也不使用 GPL/LGPL 的 JT 库。能读 8.x/9.x/10.x 的文件头、TOC 和段，zlib 与 XZ/LZMA 段，LSG 装配、几何变换和材质，以及量化 Tri-Strip（Null 与 Bitlength，Deering 法向）。算术编码和拓扑压缩的 Tri-Strip 不造三角形。XT B-rep 只跳过 Parasolid 字节并回退到网格。 |
 | IGES | `createImporter("iges")` 和资源注册表都走 OCCT `IGESControl_Reader`，读入后做三角化。读失败时返回错误，不造网格。 |
 | 二进制 DXF | 读到二进制头时返回 `binary DXF is not supported`。 |
 | 压缩 ZIP | 工程包只接受存储法（method 0）。压缩条目报错，不假装解压成功。 |
@@ -40,7 +40,7 @@
 - FANUC：只有 ASCII LS，没有二进制 TP。
 - 齿轮、凸轮、电子凸轮、位置/速度控制器、限位、气缸、抓手、发生器和收集器只在内置求解器里积分。Jolt 不跑这些装置。
 - Jolt 没有沿曲面骑行，网格碰撞体是凸包。网格对网格、连续碰撞和多点接触在内置求解器里。没有重写 Jolt 的 CCD。
-- 机器人目录有 KR6_R900、IRB120、LRMate200iD、GP8 四条。限位、速度和连杆原点抄自 `docs/ROBOTS.md` 里的公开页面，资源的 `source` 写着链接，待用户核实。LR Mate 的 J3 在 xacro 里是 −70° 到 +205°，产品页写的行程是 420°。这四条没有公开的关节扭矩和连杆惯量，加速度来源是速度限制，不是 180°/s²。几何只有方盒。导入 URDF 或 xacro 时，若关节写了 `effort` 且连杆写了质量，加速度改由扭矩和惯量估算，网格随视觉节点进入机器人资源。
+- 机器人目录有 KR6_R900、IRB120、LRMate200iD、GP8 四条。限位、速度和连杆原点抄自 `docs/ROBOTS.md` 里的公开页面，资源的 `source` 写着链接，待用户核实。LR Mate 的 J3 在 xacro 里是 −70° 到 +205°，产品页写的行程是 420°。这四条没有公开的关节扭矩和连杆惯量，加速度来源是速度限制，不是 180°/s²。连杆网格是 ROS-Industrial 的 STL，包许可证没有单独的网格再分发说明，所以不入库；首次使用下载到 `~/.local/share/SimStudio/catalog-meshes`，`SIM_CATALOG_MESH_DIR` 只读本地目录，`SIM_CATALOG_MESH_OFFLINE=1` 不访问网络。下载失败的连杆仍是方盒。没有找到 KR 280 R3080 的公开网格，双机演示里第二台仍是橙色方盒，用户可以自己导入 STEP。导入 URDF 或 xacro 时，若关节写了 `effort` 且连杆写了质量，加速度改由扭矩和惯量估算，网格随视觉节点进入机器人资源。
 - 序列编辑器用操作树旁边的时间轴画工序，过渡把后一道工序推迟到前一道结束加延迟，信号事件可以在工序开始或结束置位，另一道工序可以等这个信号。欢迎页的「打开示例工程」装入 IRB 120 焊装单元（布局、焊点、路径、夹具、`part_seen` / `weld_done` / `clamp`、节拍），不用 KR 420 的 STEP。
 - 示波器在仿真步进之后记下勾选的信号和关节指令，横轴是仿真时间。关节速度和加速度是相邻采样的后向差分，第一步记 0。游标读的是该时刻之前最近的一个采样。导出的 CSV 第一列是时间，关节列可以带 `.v` 和 `.a`。轨迹最多保留 240000 行。它不记录网格接触力。
 - 运动学页的关节滑块按当前关节的下限和上限拖动位置，松手之前就作用到连杆。视口拾取选中包含该零件的最内层连杆，以及以它为子连杆的关节。姿态库列出当前机构已记录的姿态，记录和运动到姿态读写同一份列表。`--demo devices` 里的转台、滚床和升降机只通过 `ensureResource`、`addLink`、`adoptParts`、`addJoint` 和 `capturePose` 搭出来。

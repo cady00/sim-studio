@@ -310,7 +310,7 @@ struct CatalogRobot {
 // KUKA KR 6 R900 sixx, ABB IRB 120, FANUC LR Mate 200iD, Yaskawa GP8.
 // Limits, speeds, and link origins are copied from the public pages named in `source`.
 // Acceleration is velocity-limited until a torque and an inertia are present, or the user types a value.
-// Geometry is a box on each link.
+// Link meshes are public STL files cached on first use. A link stays a box when the file is absent.
 const std::vector<CatalogRobot>& robotCatalog();
 bool addCatalogRobot(Scene& scene, const std::string& name, Vec3 station, std::string& error);
 // Layout, welds, a path, a clamp, OPC UA signal names, and a sequence. The robot is IRB120, not a private model.

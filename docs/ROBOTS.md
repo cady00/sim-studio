@@ -1,6 +1,17 @@
 # 机器人目录
 
-四条运动学都是参数加方盒，没有厂商 CAD。样本没有给出关节扭矩和连杆惯量，所以加速度来源是「未提供扭矩或惯量，节拍只受速度限制」，不再写 180°/s²。用户可以在关节上填写扭矩，或直接输入加速度；有质量时负载会按平行轴定理把加速度折低。每条的来源写在资源的 `source` 里，界面选中该机构时会显示。数字待用户对照原件核实。
+四条运动学的限位和连杆原点来自公开页面，没有厂商 CAD 授权。样本没有给出关节扭矩和连杆惯量，所以加速度来源是「未提供扭矩或惯量，节拍只受速度限制」，不再写 180°/s²。用户可以在关节上填写扭矩，或直接输入加速度；有质量时负载会按平行轴定理把加速度折低。每条的来源写在资源的 `source` 里，界面选中该机构时会显示。数字待用户对照原件核实。
+
+连杆网格用 ROS-Industrial 仓库里的 STL。各包的 `package.xml` 写了 BSD 或 Apache-2.0，但没有把网格再分发单独写清楚，ABB 的说明还写惯量来自厂商提供的 CAD。这些文件不放进本仓库。首次加入型号时从下面的公开地址下载到 `~/.local/share/SimStudio/catalog-meshes`（可用 `XDG_DATA_HOME`）。`SIM_CATALOG_MESH_DIR` 指向已有目录时只读那个目录。`SIM_CATALOG_MESH_OFFLINE=1` 不访问网络。某个连杆下载失败时，该连杆仍是方盒。视觉原点在这些 xacro 里是单位阵，STL 按米读入后乘 1000。
+
+| 型号 | 网格 | 地址 |
+| --- | --- | --- |
+| KR6_R900 | 碰撞 STL。底座、1、3、5、6 来自 `kr6_agilus`，2 和 4 来自 `kr6r900sixx`。视觉是 DAE，没有采用 | `kuka_experimental` 的 `indigo-devel`，`kuka_kr6_support/meshes/` |
+| IRB120 | `irb120_3_58/visual` 的 `base_link` 与 `link_1`…`link_6` | `abb` 的 `kinetic-devel` |
+| LRMate200iD | `lrmate200id/visual` 的 `base_link` 与 `link_1`…`link_6` | `fanuc` 的 `noetic-devel` |
+| GP8 | `meshes/visual/gp8_base_link` 与 `gp8_link_1_s`、`_2_l`、`_3_u`、`_4_r`、`_5_b`、`_6_t` | `motoman` 的 `noetic-devel` |
+
+没有找到 KR 280 R3080 的公开网格。双机演示里的第二台保持橙色方盒。用户可以自己导入 STEP。GP8 法兰在 T 轴前方 80 mm，没有对应的公开网格，这一小段仍是方盒。
 
 | 名称 | 限位和速度 | 连杆原点 |
 | --- | --- | --- |

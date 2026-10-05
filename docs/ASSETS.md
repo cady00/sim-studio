@@ -14,6 +14,6 @@
 | 图片 | 自写 | PNG/JPEG 字节写入项目 ZIP |
 | URDF | 自写 | 连杆、转动/移动/固定/连续关节、盒子、圆柱、球体、STL/OBJ 网格视觉、惯性（质量、质心、惯量张量，千克和千克·米²）。网格按米再乘 scale 换成毫米。`package://` 不解析 |
 | XML | 自写 | 本地名 product/part/component/item、process/operation/task/activity、plant/resource/station/robot/equipment。这不是某家产线软件的完整模式 |
-| JT | 插件槽 | 不解码。需要商业 JT Open Toolkit，或自行替换名为 `jt` 的导入器。不链接 GPL JT 库 |
+| JT | 自写 | 8.x/9.x/10.x 文件头、TOC、zlib 与 XZ/LZMA 段、LSG 装配/变换/材质、量化 Tri-Strip（Null、Bitlength、Deering 法向）。算术编码和拓扑压缩不生成三角形。XT B-rep 不解码，回退到网格。不链接 JT Open Toolkit，也不链接 GPL/LGPL JT 库 |
 
 导出：可见网格可写成二进制 STL 或 glTF/GLB（顶点烤成世界坐标，单位米）。节拍表仍是 CSV 和自写的 XLSX。

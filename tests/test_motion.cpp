@@ -12,10 +12,47 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace {
+
+class EnvGuard {
+public:
+    EnvGuard(const char* key, const std::string& value) : key_(key) {
+        const char* previous = std::getenv(key);
+        if (previous != nullptr) {
+            had_ = true;
+            previous_ = previous;
+        }
+        setenv(key_.c_str(), value.c_str(), 1);
+    }
+    ~EnvGuard() {
+        if (had_) {
+            setenv(key_.c_str(), previous_.c_str(), 1);
+        } else {
+            unsetenv(key_.c_str());
+        }
+    }
+    EnvGuard(const EnvGuard&) = delete;
+    EnvGuard& operator=(const EnvGuard&) = delete;
+
+private:
+    std::string key_;
+    std::string previous_;
+    bool had_ = false;
+};
+
+std::filesystem::path emptyMeshDir() {
+    const auto dir = std::filesystem::temp_directory_path() / "simstudio-catalog-empty";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
 
 sim::KinematicResource scaraResource() {
     sim::KinematicResource resource;
@@ -1146,6 +1183,8 @@ TEST_CASE("scope records signals, joint velocity, and csv") {
 }
 
 TEST_CASE("robot catalog copies published limits and link origins") {
+    const EnvGuard offline("SIM_CATALOG_MESH_OFFLINE", "1");
+    const EnvGuard pinned("SIM_CATALOG_MESH_DIR", emptyMeshDir().string());
     const std::vector<sim::CatalogRobot>& catalog = sim::robotCatalog();
     REQUIRE(catalog.size() == 4);
     sim::Scene scene;
@@ -1263,6 +1302,8 @@ TEST_CASE("joint acceleration comes from torque inertia payload or the user") {
 }
 
 TEST_CASE("the public example cell covers layout welds path clamp signals and cycle time") {
+    const EnvGuard offline("SIM_CATALOG_MESH_OFFLINE", "1");
+    const EnvGuard pinned("SIM_CATALOG_MESH_DIR", emptyMeshDir().string());
     sim::Scene scene;
     sim::buildPublicCell(scene);
     REQUIRE(sim::findResource(scene.resources, "kr420") == nullptr);
@@ -1301,4 +1342,163 @@ TEST_CASE("the public example cell covers layout welds path clamp signals and cy
     REQUIRE(weld != nullptr);
     REQUIRE(unload->start == Catch::Approx(weld->finish + 0.4));
     REQUIRE(report.makespan > weld->finish);
+    const sim::Operation* weldOp = nullptr;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.id == "weld") {
+            weldOp = &operation;
+        }
+    }
+    REQUIRE(weldOp != nullptr);
+    REQUIRE(weldOp->timeSource == "plan");
+    REQUIRE(weldOp->seconds == Catch::Approx(8.0 / 60.0));
+    REQUIRE(report.makespan == Catch::Approx(2.0 + 8.0 / 60.0 + 0.4 + 2.0));
+    REQUIRE(scene.findByName("IRB120_base") != nullptr);
+    REQUIRE(scene.mesh(scene.findByName("IRB120_base")->meshId)->triangleCount() == 12);
+}
+
+void writeTetrahedron(const std::filesystem::path& path) {
+    const float v[4][3] = {{0, 0, 0}, {0.01f, 0, 0}, {0, 0.01f, 0}, {0, 0, 0.01f}};
+    const int faces[4][3] = {{0, 1, 2}, {0, 3, 1}, {0, 2, 3}, {1, 3, 2}};
+    std::vector<char> bytes(84 + 4 * 50, 0);
+    const std::uint32_t count = 4;
+    std::memcpy(bytes.data() + 80, &count, 4);
+    for (int face = 0; face < 4; ++face) {
+        float values[12] = {};
+        values[0] = 0;
+        values[1] = 0;
+        values[2] = 1;
+        for (int corner = 0; corner < 3; ++corner) {
+            for (int axis = 0; axis < 3; ++axis) {
+                values[3 + corner * 3 + axis] = v[faces[face][corner]][axis];
+            }
+        }
+        std::memcpy(bytes.data() + 84 + face * 50, values, sizeof(values));
+    }
+    std::ofstream out(path, std::ios::binary);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+TEST_CASE("a provided catalog stl replaces the link box and collides") {
+    const auto root = std::filesystem::temp_directory_path() / "simstudio-catalog-stl";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "IRB120");
+    writeTetrahedron(root / "IRB120" / "base_link.stl");
+    const EnvGuard offline("SIM_CATALOG_MESH_OFFLINE", "1");
+    const EnvGuard pinned("SIM_CATALOG_MESH_DIR", root.string());
+
+    sim::Scene scene;
+    std::string error;
+    REQUIRE(sim::addCatalogRobot(scene, "IRB120", {}, error));
+    auto base = scene.findByName("IRB120_base");
+    REQUIRE(base);
+    const auto mesh = scene.mesh(base->meshId);
+    REQUIRE(mesh);
+    REQUIRE(mesh->triangleCount() == 4);
+    REQUIRE(mesh->positions[3] == Catch::Approx(10.0f));
+    REQUIRE(mesh->positions[7] == Catch::Approx(10.0f));
+    bool foundHeight = false;
+    for (std::size_t i = 2; i < mesh->positions.size(); i += 3) {
+        if (std::abs(mesh->positions[i] - 10.0f) < 1e-4f) {
+            foundHeight = true;
+        }
+    }
+    REQUIRE(foundHeight);
+    auto arm = scene.findByName("IRB120_A1");
+    REQUIRE(arm);
+    REQUIRE(scene.mesh(arm->meshId)->triangleCount() == 12);
+    const sim::KinematicResource* robot = sim::findResource(scene.resources, "IRB120");
+    REQUIRE(robot->source.find("本机网格 1/7") != std::string::npos);
+
+    auto obstacle = scene.makeNode(sim::NodeKind::Part, "obstacle");
+    obstacle->meshId = scene.addMesh(sim::makeBoxMesh({3, 3, 3}));
+    obstacle->local.translation = {2, 2, 2};
+    scene.addChild(scene.root(), obstacle);
+    auto query = sim::createCollisionQuery();
+    query->rebuild(scene);
+    bool hit = false;
+    for (const sim::ContactHit& contact : query->query(scene, 0)) {
+        const bool pair = (contact.a == "IRB120_base" && contact.b == "obstacle") ||
+                          (contact.b == "IRB120_base" && contact.a == "obstacle");
+        if (pair && contact.distance <= 0) {
+            hit = true;
+        }
+    }
+    REQUIRE(hit);
+
+    obstacle->local.translation = {500, 0, 0};
+    query->rebuild(scene);
+    bool far = false;
+    for (const sim::ContactHit& contact : query->query(scene, 0)) {
+        const bool pair = (contact.a == "IRB120_base" && contact.b == "obstacle") ||
+                          (contact.b == "IRB120_base" && contact.a == "obstacle");
+        if (pair && contact.distance <= 0) {
+            far = true;
+        }
+    }
+    REQUIRE_FALSE(far);
+}
+
+TEST_CASE("public catalog meshes keep the example cycle", "[live-mesh]") {
+    if (std::getenv("SIM_CATALOG_MESH_LIVE") == nullptr) {
+        SKIP("set SIM_CATALOG_MESH_LIVE=1 to download the public meshes");
+    }
+    unsetenv("SIM_CATALOG_MESH_OFFLINE");
+    unsetenv("SIM_CATALOG_MESH_DIR");
+    sim::Scene scene;
+    sim::buildPublicCell(scene);
+    const sim::KinematicResource* robot = sim::findResource(scene.resources, "IRB120");
+    REQUIRE(robot != nullptr);
+    REQUIRE(robot->source.find("本机网格 7/7") != std::string::npos);
+    int triangles = 0;
+    for (const char* link : {"base", "A1", "A2", "A3", "A4", "A5", "A6"}) {
+        auto part = scene.findByName(std::string("IRB120_") + link);
+        REQUIRE(part != nullptr);
+        const auto mesh = scene.mesh(part->meshId);
+        REQUIRE(mesh);
+        REQUIRE(mesh->triangleCount() > 12);
+        triangles += static_cast<int>(mesh->triangleCount());
+    }
+    const sim::MotionPlan plan = sim::planRobotPath(scene, *sim::findResource(scene.resources, "IRB120"), scene.robotPaths.front());
+    REQUIRE(plan.ok);
+    REQUIRE(plan.warnings.empty());
+    REQUIRE(plan.collisions.empty());
+    REQUIRE(plan.samples.size() == 9);
+    REQUIRE(plan.seconds == Catch::Approx(8.0 / 60.0));
+    REQUIRE(triangles == 40020);
+    const sim::ScheduleReport report = sim::scheduleSequence(scene.operations, scene.sequence, scene.layout);
+    REQUIRE(report.makespan == Catch::Approx(2.0 + 8.0 / 60.0 + 0.4 + 2.0));
+    auto base = scene.findByName("IRB120_base");
+    const auto baseMesh = scene.mesh(base->meshId);
+    const sim::Vec3 vertex{baseMesh->positions[0], baseMesh->positions[1], baseMesh->positions[2]};
+    auto fixture = scene.makeNode(sim::NodeKind::Part, "fixture");
+    fixture->meshId = scene.addMesh(sim::makeBoxMesh({30, 30, 30}));
+    fixture->local.translation = sim::transformPoint(base->worldMatrix(), vertex);
+    scene.addChild(scene.root(), fixture);
+    auto query = sim::createCollisionQuery();
+    query->rebuild(scene);
+    bool hit = false;
+    for (const sim::ContactHit& contact : query->query(scene, 0)) {
+        const bool pair = (contact.a == "IRB120_base" && contact.b == "fixture") ||
+                          (contact.b == "IRB120_base" && contact.a == "fixture");
+        if (pair && contact.distance <= 0) {
+            hit = true;
+        }
+    }
+    REQUIRE(hit);
+    scene.removeNode(fixture->id);
+
+    const char* others[] = {"KR6_R900", "LRMate200iD", "GP8"};
+    for (const char* name : others) {
+        std::string error;
+        REQUIRE(sim::addCatalogRobot(scene, name, {2000, 0, 0}, error));
+        REQUIRE(sim::findResource(scene.resources, name)->source.find("本机网格 7/7") != std::string::npos);
+        int modelTriangles = 0;
+        for (const char* link : {"base", "A1", "A2", "A3", "A4", "A5", "A6"}) {
+            auto part = scene.findByName(std::string(name) + "_" + link);
+            REQUIRE(part != nullptr);
+            modelTriangles += static_cast<int>(scene.mesh(part->meshId)->triangleCount());
+        }
+        const int expected = name == std::string("KR6_R900") ? 32288 : name == std::string("LRMate200iD") ? 25132 : 72498;
+        REQUIRE(modelTriangles == expected);
+    }
 }

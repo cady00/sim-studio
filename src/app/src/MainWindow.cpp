@@ -2222,15 +2222,15 @@ void MainWindow::loadDemo(const QString& name) {
             if (weld_ != nullptr) {
                 weld_->reload();
             }
-            viewport_->setCallout(QStringLiteral("示例焊点 %1 · 可达 %2 · %3 · 避障 %4 点 · 连杆包络 %5 · 互锁保持 %6 s · 节拍 %7 s · KRL %8 点")
+            viewport_->setCallout(QStringLiteral("节拍 %1 s · 互锁保持 %2 s · 示例焊点 %3 · 可达 %4 · KRL %5 点 · %6 · 避障 %7 点 · 连杆包络 %8")
+                                      .arg(schedule.makespan, 0, 'f', 1)
+                                      .arg(hold, 0, 'f', 1)
                                       .arg(static_cast<int>(scene_.welds.size()))
                                       .arg(reachable)
+                                      .arg(krlPoints)
                                       .arg(base)
                                       .arg(tourPoints)
-                                      .arg(envelopeSegments)
-                                      .arg(hold, 0, 'f', 1)
-                                      .arg(schedule.makespan, 0, 'f', 1)
-                                      .arg(krlPoints));
+                                      .arg(envelopeSegments));
             applyTaskMode(3);
         } else {
             applyTaskMode(0);
