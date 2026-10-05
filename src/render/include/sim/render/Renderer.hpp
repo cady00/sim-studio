@@ -37,6 +37,8 @@ struct RenderInstance {
     float distanceMm = 0;
     int lodLevels = 1;
     int triangles = 0;
+    // False keeps the instance in the shadow bounds so it can receive, but skips the depth pass.
+    bool castShadow = true;
 };
 
 struct LineVertex {

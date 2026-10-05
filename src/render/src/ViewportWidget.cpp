@@ -93,6 +93,21 @@ void ViewportWidget::setStandardView(StandardView view) {
     update();
 }
 
+void ViewportWidget::frameImportedAssembly(StandardView view) {
+    camera_.fovYDegrees = 55.0;
+    camera_.setStandardView(view);
+    if (view == StandardView::Iso) {
+        // Lower than the demo iso so the top, front and side are all visible.
+        camera_.eyeDirection = normalize(Vec3{0.78, -0.52, 0.42});
+        camera_.upHint = {0, 0, 1};
+    }
+    if (scene_ != nullptr) {
+        const double aspect = height() > 0 ? static_cast<double>(width()) / height() : 1.0;
+        camera_.fit(scene_->worldBounds(), aspect, 1.08);
+    }
+    update();
+}
+
 void ViewportWidget::setShadeStrength(float ao, float shadow) {
     aoStrength_ = std::clamp(ao, 0.0f, 1.0f);
     shadowStrength_ = std::clamp(shadow, 0.0f, 1.0f);
@@ -539,6 +554,55 @@ void ViewportWidget::paintGL() {
             volume.distanceMm = static_cast<float>(length(volume.worldBounds.center() - frame.eye));
             volume.triangles = static_cast<int>((*mesh)->triangleCount());
             instances.push_back(std::move(volume));
+        }
+        const Aabb floorBounds = scene_->worldBounds();
+        if (floorBounds.valid) {
+            static const std::shared_ptr<MeshData> groundMesh = [] {
+                auto mesh = std::make_shared<MeshData>();
+                mesh->positions = {-0.5f, -0.5f, 0.f, 0.5f, -0.5f, 0.f, 0.5f, 0.5f, 0.f, -0.5f, 0.5f, 0.f};
+                mesh->normals = {0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f};
+                mesh->indices = {0, 1, 2, 0, 2, 3};
+                mesh->recomputeBounds();
+                return mesh;
+            }();
+            if (ensureMesh("viewport-ground", groundMesh)) {
+                const Vec3 key = normalize(Vec3{0.42, -0.55, 0.72});
+                const double height = std::max(floorBounds.max.z - floorBounds.min.z, 1.0);
+                const double reach = height * std::hypot(key.x, key.y) / std::max(key.z, 0.2);
+                const double margin = 500.0;
+                const double extra = reach + 200.0;
+                const double fallLen = std::hypot(key.x, key.y);
+                const double fallX = fallLen > 1e-6 ? -key.x / fallLen : 0.0;
+                const double fallY = fallLen > 1e-6 ? -key.y / fallLen : 0.0;
+                const Vec3 eyeDir = normalize(camera_.eyeDirection);
+                const double camLen = std::hypot(eyeDir.x, eyeDir.y);
+                const double camX = camLen > 1e-6 ? eyeDir.x / camLen : 0.0;
+                const double camY = camLen > 1e-6 ? eyeDir.y / camLen : 0.0;
+                const double toward = std::max(reach * 0.7, 900.0);
+                const double minX = floorBounds.min.x - margin + std::min(fallX, 0.0) * extra + std::min(camX, 0.0) * toward;
+                const double maxX = floorBounds.max.x + margin + std::max(fallX, 0.0) * extra + std::max(camX, 0.0) * toward;
+                const double minY = floorBounds.min.y - margin + std::min(fallY, 0.0) * extra + std::min(camY, 0.0) * toward;
+                const double maxY = floorBounds.max.y + margin + std::max(fallY, 0.0) * extra + std::max(camY, 0.0) * toward;
+                Mat4 world = Mat4::identity();
+                world(0, 0) = std::max(maxX - minX, 1.0);
+                world(1, 1) = std::max(maxY - minY, 1.0);
+                world(3, 0) = (minX + maxX) * 0.5;
+                world(3, 1) = (minY + maxY) * 0.5;
+                world(3, 2) = floorBounds.min.z - std::min(height * 0.004, 8.0);
+                RenderInstance ground;
+                ground.meshKey = "viewport-ground";
+                ground.world = world;
+                ground.material.color = {0.30, 0.32, 0.36};
+                ground.material.metallic = 0.02f;
+                ground.material.roughness = 0.92f;
+                ground.castShadow = false;
+                ground.worldBounds = transformedBounds(groundMesh->bounds, world);
+                ground.distanceMm = static_cast<float>(length(ground.worldBounds.center() - frame.eye));
+                ground.triangles = 2;
+                instances.push_back(std::move(ground));
+            } else {
+                update();
+            }
         }
         renderer_->submitInstances(instances);
     }

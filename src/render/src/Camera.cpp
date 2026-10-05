@@ -159,7 +159,7 @@ void OrbitCamera::setStandardView(StandardView view) {
     }
 }
 
-void OrbitCamera::fit(const Aabb& bounds, double aspect) {
+void OrbitCamera::fit(const Aabb& bounds, double aspect, double margin) {
     if (!bounds.valid) {
         target = {};
         distance = 800;
@@ -171,7 +171,7 @@ void OrbitCamera::fit(const Aabb& bounds, double aspect) {
     const double fov = deg2rad(fovYDegrees);
     const double vertical = radius / std::max(std::sin(fov * 0.5), 1e-3);
     const double horizontal = radius / std::max(std::sin(fov * 0.5) * std::max(aspect, 0.2), 1e-3);
-    distance = std::max(vertical, horizontal) * 1.25;
+    distance = std::max(vertical, horizontal) * std::max(margin, 1.0);
     distance = std::clamp(distance, 1.0, 1.0e7);
 }
 

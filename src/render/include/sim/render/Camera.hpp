@@ -27,7 +27,8 @@ public:
     void pan(double dxPixels, double dyPixels);
     void zoomWheel(double notches);
     void setStandardView(StandardView view);
-    void fit(const Aabb& bounds, double aspect);
+    // margin scales the bounding-sphere distance. 1.25 is the demo framing.
+    void fit(const Aabb& bounds, double aspect, double margin = 1.25);
 };
 
 }  // namespace sim

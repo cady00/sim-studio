@@ -36,6 +36,8 @@ public:
     OrbitCamera& camera() { return camera_; }
     void fitAll();
     void setStandardView(StandardView view);
+    // STEP import framing: 50° perspective and, for iso, a higher three-quarter eye.
+    void frameImportedAssembly(StandardView view);
     void setShadeStrength(float ao, float shadow);
     void setGizmoMode(GizmoMode mode);
     GizmoMode gizmoMode() const { return gizmoMode_; }

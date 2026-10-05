@@ -333,7 +333,31 @@ bool invertMat4(const Mat4& m, Mat4& out) {
 
 constexpr int kShadowSize = 2048;
 
-bool blendKey(const std::string& key) { return key.size() >= 6 && key.compare(key.size() - 6, 6, "#blend") == 0; }
+bool endsWith(const std::string& key, const char* suffix) {
+    const std::size_t length = std::char_traits<char>::length(suffix);
+    return key.size() >= length && key.compare(key.size() - length, length, suffix) == 0;
+}
+
+bool blendKey(const std::string& key) { return endsWith(key, "#blend"); }
+
+bool noCastKey(const std::string& key) { return endsWith(key, "#nocast"); }
+
+std::string batchMeshKey(std::string key) {
+    if (noCastKey(key)) {
+        key.resize(key.size() - 7);
+    }
+    if (blendKey(key)) {
+        key.resize(key.size() - 6);
+    }
+    return key;
+}
+
+bool batchBlends(std::string key) {
+    if (noCastKey(key)) {
+        key.resize(key.size() - 7);
+    }
+    return blendKey(key);
+}
 
 }  // namespace
 
@@ -808,7 +832,9 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
         }
         float model[16];
         toGl(instance.world, model);
-        auto& batch = batches[key + (instance.material.opacity < 0.999f ? "#blend" : "")];
+        const std::string suffix = std::string(instance.material.opacity < 0.999f ? "#blend" : "") +
+                                   (instance.castShadow ? "" : "#nocast");
+        auto& batch = batches[key + suffix];
         batch.insert(batch.end(), model, model + 16);
         batch.push_back(static_cast<float>(instance.material.color.x));
         batch.push_back(static_cast<float>(instance.material.color.y));
@@ -839,10 +865,10 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
         glUseProgram(shadowProgram_);
         glUniformMatrix4fv(glGetUniformLocation(shadowProgram_, "uViewProj"), 1, GL_FALSE, lightMatrix);
         for (const auto& [key, batch] : batches) {
-            if (blendKey(key)) {
+            if (batchBlends(key) || noCastKey(key)) {
                 continue;
             }
-            const auto mesh = meshes_.find(key);
+            const auto mesh = meshes_.find(batchMeshKey(key));
             if (mesh == meshes_.end()) {
                 continue;
             }
@@ -882,16 +908,15 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
     glBindTexture(GL_TEXTURE_2D, shadowTex_);
     glUniform1i(glGetUniformLocation(meshProgram_, "uShadow"), 0);
     auto drawBatch = [&](const std::string& key, const std::vector<float>& batch, bool tally) {
-        const bool blend = blendKey(key);
-        const std::string meshKey = blend ? key.substr(0, key.size() - 6) : key;
-        const auto mesh = meshes_.find(meshKey);
+        const bool blend = batchBlends(key);
+        const auto mesh = meshes_.find(batchMeshKey(key));
         if (mesh == meshes_.end()) {
             return;
         }
         drawInstances(mesh->second, batch, blend, tally);
     };
     for (const auto& [key, batch] : batches) {
-        if (!blendKey(key)) {
+        if (!batchBlends(key)) {
             drawBatch(key, batch, true);
         }
     }
@@ -970,7 +995,7 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, shadowTex_);
     for (const auto& [key, batch] : batches) {
-        if (blendKey(key)) {
+        if (batchBlends(key)) {
             drawBatch(key, batch, true);
         }
     }
