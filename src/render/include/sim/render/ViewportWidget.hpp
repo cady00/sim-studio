@@ -36,6 +36,13 @@ public:
     OrbitCamera& camera() { return camera_; }
     void fitAll();
     void setStandardView(StandardView view);
+    // Iso import looks from the side opposite a cluster of large vertical plates.
+    void frameImportedAssembly(StandardView view);
+    struct ViewTag {
+        Vec3 world;
+        QString text;
+    };
+    void setViewTags(std::vector<ViewTag> tags);
     void setShadeStrength(float ao, float shadow);
     void setGizmoMode(GizmoMode mode);
     GizmoMode gizmoMode() const { return gizmoMode_; }
@@ -110,6 +117,7 @@ private:
     QRect faceRight_;
     QRect toolbarRect_;
     QString callout_;
+    std::vector<ViewTag> viewTags_;
     bool measureMode_ = false;
     bool previewMode_ = false;
     bool ghost_ = false;

@@ -132,6 +132,7 @@ int main(int argc, char* argv[]) {
     QCommandLineOption screenshot("screenshot", "Save a window image and exit.", "png");
     QCommandLineOption view("view", "Standard view after import: front, back, left, right, top, bottom, iso.", "name",
                             "iso");
+    QCommandLineOption annotate("annotate", "Tint pallet, gantry frame, conveyor and camera, and label them.");
     QCommandLineOption aoStrength("ao", "Screen-space occlusion strength from 0 to 1. Default 0.", "strength", "0");
     QCommandLineOption shadowStrength("shadow", "Key-light shadow strength from 0 to 1. Default 0.", "strength", "0");
     QCommandLineOption language("lang", "UI locale: zh_CN or en.", "locale");
@@ -153,6 +154,7 @@ int main(int argc, char* argv[]) {
     parser.addOption(openProject);
     parser.addOption(screenshot);
     parser.addOption(view);
+    parser.addOption(annotate);
     parser.addOption(aoStrength);
     parser.addOption(shadowStrength);
     parser.addOption(language);
@@ -218,6 +220,7 @@ int main(int argc, char* argv[]) {
             window.setStartupView(standard);
         }
     }
+    window.setAnnotateImport(parser.isSet(annotate));
     if (parser.isSet(screenshot)) {
         window.setScreenshotPath(parser.value(screenshot));
         const QFileInfo shot(parser.value(screenshot));

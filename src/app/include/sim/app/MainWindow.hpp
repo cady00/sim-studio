@@ -60,6 +60,7 @@ public:
     bool importing() const { return importing_; }
     void setScreenshotPath(const QString& path);
     void setStartupView(StandardView view);
+    void setAnnotateImport(bool enabled) { annotateImport_ = enabled; }
     void setShadeStrength(float ao, float shadow);
     void captureScreenshot();
     void setHeadlessSeconds(double seconds) { headlessSeconds_ = seconds; }
@@ -221,6 +222,8 @@ private:
     QString projectPath_;
     QString screenshotPath_;
     StandardView startupView_ = StandardView::Iso;
+    bool annotateImport_ = false;
+    void annotateImportedCell();
     QString benchShot_;
     int benchTries_ = 0;
     int benchPhase_ = 0;
