@@ -1,16 +1,19 @@
 ; NSIS installer for the directory staged by cmake/package_windows.ps1.
-!define APP "Sim Studio"
+; The executable file stays simstudio.exe. The shortcut and the Programs entry show 应点仿真.
+Unicode True
+!define APP "应点仿真"
+!define APP_EN "Ondot Sim"
+!define PUBLISHER "应点 Ondot"
 !ifndef STAGE
-  !define STAGE "dist\SimStudio"
+  !define STAGE "dist\OndotSim"
 !endif
 !ifndef OUTFILE
-  !define OUTFILE "dist\SimStudio-0.1.0-win64-setup.exe"
+  !define OUTFILE "dist\OndotSim-setup.exe"
 !endif
 
 Name "${APP}"
 OutFile "${OUTFILE}"
-Unicode True
-InstallDir "$PROGRAMFILES64\Sim Studio"
+InstallDir "$PROGRAMFILES64\${APP_EN}"
 RequestExecutionLevel admin
 
 Page directory
@@ -18,19 +21,19 @@ Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
 
-Section "Sim Studio"
+Section "${APP}"
   SetOutPath "$INSTDIR"
   File /r "${STAGE}\*.*"
   WriteUninstaller "$INSTDIR\uninstall.exe"
-  CreateShortcut "$SMPROGRAMS\Sim Studio.lnk" "$INSTDIR\simstudio.exe"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SimStudio" "DisplayName" "${APP}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SimStudio" "UninstallString" "$INSTDIR\uninstall.exe"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SimStudio" "DisplayVersion" "0.1.0"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SimStudio" "Publisher" "Sim Studio"
+  CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\simstudio.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OndotSim" "DisplayName" "${APP}"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OndotSim" "UninstallString" "$INSTDIR\uninstall.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OndotSim" "DisplayVersion" "0.7.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OndotSim" "Publisher" "${PUBLISHER}"
 SectionEnd
 
 Section "Uninstall"
-  Delete "$SMPROGRAMS\Sim Studio.lnk"
+  Delete "$SMPROGRAMS\${APP}.lnk"
   RMDir /r "$INSTDIR"
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SimStudio"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OndotSim"
 SectionEnd

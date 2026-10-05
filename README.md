@@ -1,6 +1,6 @@
-# Sim Studio
+# 应点仿真（Ondot Sim）
 
-Sim Studio 是一套私有、可离线使用的 Windows 桌面产线仿真软件。长期目标对齐 Siemens Tecnomatix Process Simulate / Process Designer 与 NX Mechatronics Concept Designer：机器人运动、碰撞、节拍、机电物理、PLC 虚拟调试，以及类似 MELSOFT Gemini / Visual Components 的 Python 脚本。
+应点仿真是应点 Ondot 品牌系列中的产线仿真软件，英文名 Ondot Sim。它是一套私有、可离线使用的 Windows 桌面程序。长期目标对齐 Siemens Tecnomatix Process Simulate / Process Designer 与 NX Mechatronics Concept Designer：机器人运动、碰撞、节拍、机电物理、PLC 虚拟调试，以及类似 MELSOFT Gemini / Visual Components 的 Python 脚本。
 
 当前仓库是 **0.4**：场景图、三维视口、STEP 装配导入、Jolt 刚体与关节、信号表、嵌入的 Python 脚本、用户定义的运动学和逻辑块、SCARA / 球腕六轴路径，以及默认关闭的命令 / AI 接口。没有遥测，运行时不访问网络。请保持仓库私有。
 
@@ -57,9 +57,9 @@ ctest --preset windows-msvc-release --output-on-failure
 
 ## 在 Windows 上直接运行（不用自己编译）
 
-Windows 安装包不随每次推送自动编。在 GitHub 的 Actions 页手动运行工作流 `CI`（`workflow_dispatch`）才会编 `SimStudio-win64`，里面是 `SimStudio-0.4.0-win64.zip`。这次还没有生成该压缩包：请在本机 Windows 上配置 `QT_ROOT_DIR` 后用 `windows-msvc` 预设编译，或等配额允许时只手动运行一次 `workflow_dispatch`。这台 Linux 环境不能交叉编译出 MSVC 的 win64 包。解压后运行 `SimStudio\simstudio.exe`。压缩包带有 Qt / OCCT / Jolt / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。私有仓库的 Windows 分钟按两倍计算，所以这条任务不要改回自动触发。上一版自动任务在链 OCCT 8 时找不到 `TKSTEPBase.lib`（7.8 起改为 `TKDESTEP`），配置阶段还从源码编了 Qt。现在只链接存在的 toolkit，Qt 用预编译包。拉取请求只跑 Linux 测试；只改 `docs/` 或 Markdown 不会启动任务。
+Windows 安装包不随每次推送自动编。在 GitHub 的 Actions 页手动运行工作流 `CI`（`workflow_dispatch`）才会编 `OndotSim-win64`，里面是 `OndotSim-<版本>-win64.zip`。这次还没有生成该压缩包：请在本机 Windows 上配置 `QT_ROOT_DIR` 后用 `windows-msvc` 预设编译，或等配额允许时只手动运行一次 `workflow_dispatch`。这台 Linux 环境不能交叉编译出 MSVC 的 win64 包。解压后运行 `OndotSim\simstudio.exe`。快捷方式和文件属性里的显示名是「应点仿真」。压缩包带有 Qt / OCCT / Jolt / Python 的 DLL、`Lib\` 标准库、`python3xx._pth`、`plugins\` 和 `samples\`。不需要安装 Python 或 Visual Studio。私有仓库的 Windows 分钟按两倍计算，所以这条任务不要改回自动触发。上一版自动任务在链 OCCT 8 时找不到 `TKSTEPBase.lib`（7.8 起改为 `TKDESTEP`），配置阶段还从源码编了 Qt。现在只链接存在的 toolkit，Qt 用预编译包。拉取请求只跑 Linux 测试；只改 `docs/` 或 Markdown 不会启动任务。
 
-1. 在该次 Actions 运行的 Artifacts 里下载 `SimStudio-win64` 并解压。
+1. 在该次 Actions 运行的 Artifacts 里下载 `OndotSim-win64` 并解压。
 2. 双击 `simstudio.exe`。
 3. 文件 → 打开，选择压缩包里的 `samples\conveyor_line.simproj`。
 4. 点工具栏「运行」。约 1.2 秒后零件落到输送面上并向 +X 移动；经过光栅时信号 `barrier` 变为真，推杆沿 +Y 伸出。速度倍率默认 x1。

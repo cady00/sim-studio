@@ -3,6 +3,7 @@
 #include <QWidget>
 
 class QButtonGroup;
+class QLabel;
 class QPushButton;
 
 namespace sim {
@@ -15,6 +16,7 @@ public:
     void setMode(int mode);
     void setAiEnabled(bool enabled);
     void setLocaleZh(bool zh);
+    void setProductName(const QString& name);
 
 signals:
     void modeChanged(int mode);
@@ -29,6 +31,7 @@ private:
     QButtonGroup* modes_ = nullptr;
     QPushButton* aiButton_ = nullptr;
     QPushButton* langButton_ = nullptr;
+    QLabel* brand_ = nullptr;
     bool zh_ = true;
 };
 

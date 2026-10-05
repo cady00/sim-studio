@@ -134,7 +134,7 @@ public:
 
     nlohmann::json complete(const nlohmann::json& request, std::string& error) override {
         if (!config_.enabled || config_.kind == "none") {
-            error = "AI provider is off. Sim Studio does not contact a model unless a provider is enabled.";
+            error = "AI provider is off. Ondot Sim does not contact a model unless a provider is enabled.";
             return nlohmann::json::object();
         }
         if (config_.endpoint.empty()) {

@@ -72,7 +72,7 @@ def titlebar(active, ai_on=False, crumb=('车身焊装线 A','侧围焊接站 OP
     ai = ('<div class="pill ai-on"><span class="dot"></span>AI 助手 · 本地</div>' if ai_on
           else '<div class="pill ai-off"><span class="dot"></span>AI 已关闭</div>')
     return f'''<div class="titlebar">
- <div class="brand"><img src="assets/snippin_logo_small_dark.svg"><span class="prod">Sim Studio</span></div>
+ <div class="brand"><img src="assets/snippin_logo_small_dark.svg"><span class="prod">应点仿真</span></div>
  <div class="crumb">{ic('chev','s')}<span>{crumb[0]}</span>{ic('chev','s')}<b>{crumb[1]}</b><span class="dirty"></span></div>
  <div class="modes">{ms}</div>
  <div class="tb-right">

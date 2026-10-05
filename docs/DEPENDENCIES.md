@@ -1,6 +1,6 @@
 # 依赖与闭源发行义务
 
-Sim Studio 本体是专有软件，见仓库根目录 `LICENSE.txt`。本文列出进入构建或发行物的第三方成分，包括传递依赖、只在 CI 里出现的工具，以及仓库里自己实现、但容易被误认为拷来的算法。短表在 `THIRD_PARTY_LICENSES.md`。
+应点仿真（Ondot Sim）本体是专有软件，见仓库根目录 `LICENSE.txt`。本文列出进入构建或发行物的第三方成分，包括传递依赖、只在 CI 里出现的工具，以及仓库里自己实现、但容易被误认为拷来的算法。短表在 `THIRD_PARTY_LICENSES.md`。
 
 本机核对日期：2026-10-04，系统是 Ubuntu 24.04，二进制是 `out/build/linux-system/src/app/simstudio` 的 `ldd`。Windows 端口版本以 `vcpkg.json` 的基线 `cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3` 为准；这台机器没有安装 vcpkg，没有在本机解析出 Windows 端口的精确版本号。
 

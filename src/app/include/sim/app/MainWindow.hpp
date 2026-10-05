@@ -66,6 +66,7 @@ public:
     void showCommandPalette();
     void showIntentBar();
     void showPlcConnection();
+    void showAbout();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -85,7 +86,6 @@ private slots:
     void onTransformEdited();
     void applyProperties();
     void cancelImport();
-    void showAbout();
     void showPhysics();
     void showScripting();
     void setLocale(const QString& locale);

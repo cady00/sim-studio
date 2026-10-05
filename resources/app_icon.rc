@@ -1,1 +1,30 @@
+#pragma code_page(65001)
+
 IDI_ICON1 ICON "branding/app.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,7,0,0
+PRODUCTVERSION 0,7,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "应点 Ondot"
+            VALUE "FileDescription", "应点仿真"
+            VALUE "FileVersion", "0.7.0"
+            VALUE "InternalName", "simstudio"
+            VALUE "OriginalFilename", "simstudio.exe"
+            VALUE "ProductName", "应点仿真"
+            VALUE "ProductVersion", "0.7.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
