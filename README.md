@@ -24,7 +24,7 @@
 - 装配树和属性面板可改机构类型（刚体、碰撞体、固定副、转动副、移动副、输送面、碰撞/距离传感器、光栅、发生器、销毁器）。底部是信号表和脚本编辑器。
 - 右侧「运动学 / 逻辑 / 机器人」：实体列表、「建议分组」、Ctrl 多选后「选中零件加入连杆」、可切换的「圆柱面定轴」，以及用数字或两次左键拾取定轴。记录姿态并按梯形或 S 曲线走过去；逻辑块只通过信号驱动这些姿态；机器人页规划 PTP / LIN / CIRC。没有预制的转台或堆垛机。
 - 文件菜单「机器人库」浏览本机 Process Simulate `.cojt` 和嵌套的 `.cojt.zip`，用 `preview.bmp` 做预览，导入后把运动学挂进工程。库路径存在本机设置里，不进 `.simproj`。说明见 [docs/manual/README.md](docs/manual/README.md) 第 8 章。
-- 虚拟调试使用内置软 PLC：与/或（支路里可再或一层）、上升沿和下降沿、CTU/CTD、TON/TOF、强制和 I/O 映射。导入机器人会追加未接线的 `Rn_AtHome`、`Rn_Busy`、`Rn_Fault`、`Rn_Start`、`Rn_Grip` 和外部轴 `En_InPos`。`--demo commission` 里光电联锁输送，并让 `R1_Start` 驱动一台两轴机器人；手臂进入包围盒干涉区 `Z1` 后软 PLC 拉低启动。网格碰撞可写成 `R1_Collision`。`--demo commission-force` 强制 `R1_Start`，光电没有件时手臂仍会动。欢迎页「虚拟调试演示」打开 commission 工程。详见手册第 9 章。
+- 虚拟调试使用内置软 PLC：与/或（支路里可再或一层）、上升沿和下降沿、CTU/CTD、TON/TOF、强制和 I/O 映射。导入机器人会追加未接线的 `Rn_AtHome`、`Rn_Busy`、`Rn_Fault`、`Rn_Start`、`Rn_Grip` 和外部轴 `En_InPos`。`--demo commission` 里光电联锁输送，并让 `R1_Start` 驱动一台两轴机器人；手臂进入包围盒干涉区 `Z1` 后软 PLC 拉低启动，甘特图按 `R1_Start` 上升、`R1_AtHome` 上升（且曾 Busy）和 `Z1_Occupied` 画出取放时长与干涉阻塞。网格碰撞可写成 `R1_Collision`。`--demo commission-force` 强制 `R1_Start`，光电没有件时手臂仍会动。欢迎页「虚拟调试演示」打开 commission 工程。详见手册第 9 章。
 - 内置演示（不写入仓库）：`--demo turntable` 是用户定义的转台加升降，由逻辑块驱动；`--demo scara` 是通用 SCARA 抓放路径；`--demo collision` 是两组盒子，一组重叠（红），一组间隙小于近距阈值（黄）；`--demo kr420` 在本机有 `testdata/local/KR420_R3080_KR280_R3080.stp` 时导入这台扁平 STEP，建议 6 根转轴并走一段 PTP/LIN；`--demo kr420track` 把同一台手臂挂到用户建的约 10 m 地轨上，走一条比臂展更长的直线。地轨不是预制组件，见 [docs/EXTERNAL.md](docs/EXTERNAL.md)。底部「碰撞 / 近距」可改碰撞集和毫米阈值。这些 STEP 不进 git。KR 6 的装配 STEP 仍只显示成树，不自动猜轴。KR 420 的分组方法和样本来源见 [docs/KR420.md](docs/KR420.md)。
 
 导入大 STEP 时，读取和细分在后台线程进行。状态栏显示阶段进度，可点「取消」。取消发生在零件之间；Open CASCADE 正在读文件或传输装配时，取消要等到该阶段结束。界面事件循环保持可响应。

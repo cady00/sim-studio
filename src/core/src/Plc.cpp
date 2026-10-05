@@ -164,6 +164,21 @@ nlohmann::json softPlcToJson(const SoftPlcDocument& doc) {
             json["collisions"].push_back(nlohmann::json{{"address", watch.address}, {"resource", watch.resource}});
         }
     }
+    if (!doc.cycles.empty()) {
+        json["cycles"] = nlohmann::json::array();
+        for (const PlcCycleRule& rule : doc.cycles) {
+            json["cycles"].push_back(nlohmann::json{{"id", rule.id},
+                                                    {"name", rule.name},
+                                                    {"station", rule.station},
+                                                    {"stationName", rule.stationName},
+                                                    {"startSignal", rule.startSignal},
+                                                    {"startEdge", rule.startEdge},
+                                                    {"endSignal", rule.endSignal},
+                                                    {"endEdge", rule.endEdge},
+                                                    {"busySignal", rule.busySignal},
+                                                    {"blockSignal", rule.blockSignal}});
+        }
+    }
     return json;
 }
 
@@ -361,6 +376,33 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
             watch.address = item.value("address", std::string{});
             watch.resource = item.value("resource", std::string{});
             doc.collisions.push_back(std::move(watch));
+        }
+    }
+    if (json.contains("cycles") && json.at("cycles").is_array()) {
+        for (const auto& item : json.at("cycles")) {
+            if (!item.is_object()) {
+                continue;
+            }
+            PlcCycleRule rule;
+            rule.id = item.value("id", std::string{});
+            rule.name = item.value("name", std::string{});
+            rule.station = item.value("station", std::string{});
+            rule.stationName = item.value("stationName", std::string{});
+            rule.startSignal = item.value("startSignal", std::string{});
+            rule.startEdge = item.value("startEdge", std::string{"rising"});
+            rule.endSignal = item.value("endSignal", std::string{});
+            rule.endEdge = item.value("endEdge", std::string{"rising"});
+            rule.busySignal = item.value("busySignal", std::string{});
+            rule.blockSignal = item.value("blockSignal", std::string{});
+            if (rule.startEdge != "falling") {
+                rule.startEdge = "rising";
+            }
+            if (rule.endEdge != "falling") {
+                rule.endEdge = "rising";
+            }
+            if (!rule.id.empty() && !rule.startSignal.empty()) {
+                doc.cycles.push_back(std::move(rule));
+            }
         }
     }
     error.clear();

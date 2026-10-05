@@ -1,4 +1,5 @@
 #include "sim/core/DemoScene.hpp"
+#include "sim/core/LineModel.hpp"
 #include "sim/core/Plc.hpp"
 #include "sim/io/ProjectStore.hpp"
 #include "sim/motion/Motion.hpp"
@@ -867,6 +868,192 @@ TEST_CASE("a box and a vertical cylinder write occupied bits", "[plc]") {
     REQUIRE(loaded.zones[0].size.y == Approx(20));
     REQUIRE(loaded.zones[1].shape == "cylinder");
     REQUIRE(loaded.zones[1].size.z == Approx(20));
+}
+
+TEST_CASE("cycle edges refresh a pick bar and a blocking bar", "[plc]") {
+    sim::Scene scene;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    auto add = [&](const char* address, bool flag) {
+        sim::PlcTag tag;
+        tag.address = address;
+        tag.flag = flag;
+        doc.tags.push_back(std::move(tag));
+    };
+    add("R1_Start", false);
+    add("R1_AtHome", true);
+    add("R1_Busy", false);
+    add("Z1_Occupied", false);
+    sim::PlcCycleRule rule;
+    rule.id = "r1_pick";
+    rule.name = "取放";
+    rule.station = "st_r1";
+    rule.stationName = "机器人";
+    rule.startSignal = "R1_Start";
+    rule.endSignal = "R1_AtHome";
+    rule.busySignal = "R1_Busy";
+    rule.blockSignal = "Z1_Occupied";
+    doc.cycles.push_back(rule);
+
+    auto set = [&](const char* address, bool flag) { sim::findPlcTag(doc, address)->flag = flag; };
+    auto task = [&](const char* note) -> const sim::Operation* {
+        for (const sim::Operation& operation : scene.operations) {
+            if (operation.kind == sim::OpKind::Task && operation.timeNote == note) {
+                return &operation;
+            }
+        }
+        return nullptr;
+    };
+
+    sim::SoftPlcRuntime plc;
+    std::string error;
+    REQUIRE(plc.start(doc, error));
+    plc.scan(scene, 0.00, 0.01);
+    REQUIRE(scene.operations.empty());
+
+    set("R1_Start", true);
+    plc.scan(scene, 0.10, 0.01);
+    REQUIRE(scene.operations.empty());
+
+    set("R1_AtHome", false);
+    plc.scan(scene, 0.20, 0.01);
+    REQUIRE(task("软 PLC 边沿") != nullptr);
+    REQUIRE(task("软 PLC 边沿")->seconds == Approx(0.10));
+    REQUIRE(task("干涉阻塞") == nullptr);
+
+    set("R1_AtHome", true);
+    plc.scan(scene, 0.30, 0.01);
+    REQUIRE(task("软 PLC 边沿")->seconds == Approx(0.20));
+    REQUIRE(task("干涉阻塞") == nullptr);
+
+    set("R1_AtHome", false);
+    set("R1_Busy", true);
+    plc.scan(scene, 0.40, 0.01);
+    set("Z1_Occupied", true);
+    plc.scan(scene, 0.50, 0.01);
+    REQUIRE(task("软 PLC 边沿")->seconds == Approx(0.40));
+    REQUIRE(task("软 PLC 边沿")->wait == Approx(0.10));
+
+    plc.scan(scene, 0.80, 0.01);
+    REQUIRE(task("干涉阻塞") != nullptr);
+    REQUIRE(task("干涉阻塞")->seconds == Approx(0.30));
+
+    set("Z1_Occupied", false);
+    set("R1_AtHome", true);
+    plc.scan(scene, 1.00, 0.01);
+    const sim::Operation* pick = task("软 PLC 边沿");
+    const sim::Operation* block = task("干涉阻塞");
+    REQUIRE(pick != nullptr);
+    REQUIRE(block != nullptr);
+    REQUIRE(pick->name == "取放");
+    REQUIRE(pick->seconds == Approx(0.40));
+    REQUIRE(pick->wait == Approx(0.10));
+    REQUIRE(pick->timeSource == "plc");
+    REQUIRE(pick->parent == "r1_pick");
+    REQUIRE(block->name == "干涉阻塞");
+    REQUIRE(block->seconds == Approx(0.50));
+    REQUIRE(block->wait == Approx(0.0));
+    REQUIRE(block->timeNote == "干涉阻塞");
+    int copies = 0;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.id == "r1_pick") {
+            ++copies;
+            REQUIRE(operation.kind == sim::OpKind::Sequence);
+            REQUIRE(operation.timeSource == "plc");
+        }
+    }
+    REQUIRE(copies == 1);
+    REQUIRE(scene.operations.size() == 3);
+    const sim::Station* station = sim::findStation(scene.layout, "st_r1");
+    REQUIRE(station != nullptr);
+    REQUIRE(station->name == "机器人");
+    REQUIRE(scene.layout.title == "软 PLC 节拍");
+
+    const sim::ScheduleReport report = sim::scheduleOperations(scene.operations, scene.layout);
+    REQUIRE(report.error.empty());
+    REQUIRE(report.bars.size() == 2);
+    REQUIRE(report.bars[0].name == "取放");
+    REQUIRE(report.bars[0].start == Approx(0.10));
+    REQUIRE(report.bars[0].finish == Approx(0.50));
+    REQUIRE(report.bars[1].name == "干涉阻塞");
+    REQUIRE(report.bars[1].start == Approx(0.50));
+    REQUIRE(report.bars[1].finish == Approx(1.00));
+
+    plc.scan(scene, 1.20, 0.01);
+    REQUIRE(task("软 PLC 边沿")->seconds == Approx(0.40));
+    REQUIRE(task("干涉阻塞")->seconds == Approx(0.50));
+
+    nlohmann::json json = sim::softPlcToJson(scene.softPlc);
+    sim::SoftPlcDocument loaded;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.cycles.size() == 1);
+    REQUIRE(loaded.cycles[0].id == "r1_pick");
+    REQUIRE(loaded.cycles[0].startSignal == "R1_Start");
+    REQUIRE(loaded.cycles[0].startEdge == "rising");
+    REQUIRE(loaded.cycles[0].endSignal == "R1_AtHome");
+    REQUIRE(loaded.cycles[0].busySignal == "R1_Busy");
+    REQUIRE(loaded.cycles[0].blockSignal == "Z1_Occupied");
+    json["cycles"][0]["endEdge"] = "falling";
+    json["cycles"][0]["startEdge"] = "nope";
+    sim::SoftPlcDocument edges;
+    REQUIRE(sim::softPlcFromJson(json, edges, error));
+    REQUIRE(edges.cycles[0].startEdge == "rising");
+    REQUIRE(edges.cycles[0].endEdge == "falling");
+    json.erase("cycles");
+    sim::SoftPlcDocument legacy;
+    REQUIRE(sim::softPlcFromJson(json, legacy, error));
+    REQUIRE(legacy.cycles.empty());
+}
+
+TEST_CASE("commission gantt shows the pick and the zone block", "[plc]") {
+    sim::Scene scene;
+    sim::buildCommissionLine(scene);
+    sim::attachCommissionRobot(scene);
+    REQUIRE(scene.softPlc.cycles.size() == 1);
+    REQUIRE(scene.softPlc.cycles[0].startSignal == "R1_Start");
+    REQUIRE(scene.softPlc.cycles[0].blockSignal == "Z1_Occupied");
+    REQUIRE(scene.layout.title == "虚拟调试");
+    auto engine = sim::createPhysicsEngine(sim::PhysicsBackend::Builtin);
+    sim::Simulation simulation(scene, *engine);
+    sim::SoftPlcRuntime plc;
+    sim::LogicMachine logic;
+    std::string error;
+    simulation.setHooks([&] { REQUIRE(plc.start(scene.softPlc, error)); },
+                        [&](double dt) {
+                            plc.scan(scene, simulation.time(), dt);
+                            logic.step(scene, dt);
+                        },
+                        [] {});
+    simulation.play();
+    for (int i = 0; i < 90 && simulation.time() < 1.2; ++i) {
+        simulation.tick(0.02);
+    }
+    REQUIRE(simulation.time() >= 1.15);
+    const sim::Operation* pick = nullptr;
+    const sim::Operation* block = nullptr;
+    for (const sim::Operation& operation : scene.operations) {
+        if (operation.kind != sim::OpKind::Task || operation.timeSource != "plc") {
+            continue;
+        }
+        if (operation.timeNote == "干涉阻塞") {
+            block = &operation;
+        } else if (operation.name == "取放") {
+            pick = &operation;
+        }
+    }
+    REQUIRE(pick != nullptr);
+    REQUIRE(block != nullptr);
+    REQUIRE(pick->seconds > 0.15);
+    REQUIRE(pick->seconds < 0.8);
+    REQUIRE(block->seconds > 0.4);
+    REQUIRE(pick->station == "st_r1");
+    REQUIRE(sim::findStation(scene.layout, "st_r1")->name == "机器人");
+    const sim::ScheduleReport report = sim::scheduleOperations(scene.operations, scene.layout);
+    REQUIRE(report.error.empty());
+    REQUIRE(report.makespan > pick->seconds + block->seconds - 0.05);
+    REQUIRE(scene.findSignal("Z1_Occupied")->flag);
+    REQUIRE_FALSE(scene.findSignal("r1_start")->flag);
 }
 
 TEST_CASE("scan log exports time, scan number, and signals", "[plc]") {

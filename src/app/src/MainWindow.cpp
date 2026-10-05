@@ -2131,6 +2131,14 @@ void MainWindow::onSimTick() {
         plc_->showRuntime(plcBackend_ != nullptr ? plcBackend_->log() : softPlc_.log());
         refreshSignals();
     }
+    if (!scene_.softPlc.cycles.empty()) {
+        if (operations_ != nullptr) {
+            operations_->reload();
+        }
+        if (gantt_ != nullptr) {
+            gantt_->reload();
+        }
+    }
     const std::string log = scripting_->takeLog();
     if (!log.empty() && scriptLog_ != nullptr) {
         scriptLog_->appendPlainText(QString::fromStdString(log));
@@ -2446,6 +2454,22 @@ void MainWindow::loadDemo(const QString& name) {
         if (signalDock_ != nullptr) {
             signalDock_->show();
             signalDock_->raise();
+        }
+        if (operationDock_ != nullptr) {
+            operationDock_->show();
+            operationDock_->raise();
+            resizeDocks({operationDock_}, {460}, Qt::Horizontal);
+        }
+        if (ganttDock_ != nullptr) {
+            ganttDock_->show();
+            ganttDock_->raise();
+            resizeDocks({ganttDock_}, {280}, Qt::Vertical);
+        }
+        if (operations_ != nullptr) {
+            operations_->reload();
+        }
+        if (gantt_ != nullptr) {
+            gantt_->reload();
         }
     } else if (name == QStringLiteral("plc")) {
         demoPath_.clear();
@@ -3006,20 +3030,60 @@ void MainWindow::beginHeadlessPlayback() {
             if (scope_ != nullptr) {
                 scope_->update();
             }
-            const Signal* photo = scene_.findSignal("photo");
-            const Signal* belt = scene_.findSignal("belt_run");
-            const Signal* zone = scene_.findSignal("Z1_Occupied");
-            const Signal* start = scene_.findSignal("r1_start");
             const KinematicResource* robot = findResource(scene_.resources, "r1");
             const double shoulder = robot != nullptr && !robot->joints.empty() ? robot->joints.front().position : 0;
-            viewport_->setCallout(QStringLiteral("光电 %1 · 输送 %2 · 干涉区 %3 · 启动 %4 · A1 %5°")
-                                      .arg(photo != nullptr && photo->flag ? QStringLiteral("通") : QStringLiteral("断"))
-                                      .arg(belt != nullptr && belt->flag ? QStringLiteral("运行") : QStringLiteral("停"))
-                                      .arg(zone != nullptr && zone->flag ? QStringLiteral("占用") : QStringLiteral("空"))
-                                      .arg(start != nullptr && start->flag ? QStringLiteral("1") : QStringLiteral("0"))
+            double pickSeconds = 0;
+            double blockSeconds = 0;
+            for (const Operation& operation : scene_.operations) {
+                if (operation.kind != OpKind::Task) {
+                    continue;
+                }
+                if (operation.timeNote == "干涉阻塞") {
+                    blockSeconds += operation.seconds;
+                } else if (operation.timeSource == "plc") {
+                    pickSeconds += operation.seconds;
+                }
+            }
+            viewport_->setCallout(QStringLiteral("取放 %1 s · 干涉阻塞 %2 s · A1 %3°")
+                                      .arg(pickSeconds, 0, 'f', 2)
+                                      .arg(blockSeconds, 0, 'f', 2)
                                       .arg(shoulder, 0, 'f', 0));
-            if (plc_ != nullptr) {
-                plc_->revealZones();
+            if (sequenceDock_ != nullptr) {
+                sequenceDock_->hide();
+            }
+            if (scopeDock_ != nullptr) {
+                scopeDock_->hide();
+            }
+            if (plcDock_ != nullptr) {
+                plcDock_->hide();
+            }
+            if (signalDock_ != nullptr) {
+                signalDock_->hide();
+            }
+            if (collisionDock_ != nullptr) {
+                collisionDock_->hide();
+            }
+            if (scriptDock_ != nullptr) {
+                scriptDock_->hide();
+            }
+            if (propertyDock_ != nullptr) {
+                propertyDock_->hide();
+            }
+            if (operationDock_ != nullptr) {
+                operationDock_->show();
+                operationDock_->raise();
+                resizeDocks({operationDock_}, {520}, Qt::Horizontal);
+            }
+            if (ganttDock_ != nullptr) {
+                ganttDock_->show();
+                ganttDock_->raise();
+                resizeDocks({ganttDock_}, {360}, Qt::Vertical);
+            }
+            if (operations_ != nullptr) {
+                operations_->reload();
+            }
+            if (gantt_ != nullptr) {
+                gantt_->reload();
             }
             viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
             viewport_->fitAll();

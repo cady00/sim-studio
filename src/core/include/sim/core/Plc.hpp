@@ -82,6 +82,23 @@ struct PlcZoneWatch {
     std::vector<std::string> watch;
 };
 
+// Edges that refresh the operation tree and the Gantt chart.
+// startEdge and endEdge are "rising" or "falling". An empty busySignal means the
+// end edge can close the operation immediately. While blockSignal is true, that
+// interval is a blocking segment. An empty id is ignored.
+struct PlcCycleRule {
+    std::string id;
+    std::string name;
+    std::string station;
+    std::string stationName;
+    std::string startSignal;
+    std::string startEdge = "rising";
+    std::string endSignal;
+    std::string endEdge = "rising";
+    std::string busySignal;
+    std::string blockSignal;
+};
+
 // Mesh collision of one kinematic resource, written as a boolean input.
 // An empty address becomes R1_Collision, R2_Collision, ... in list order.
 // An empty resource name tests every resource.
@@ -100,6 +117,7 @@ struct SoftPlcDocument {
     std::vector<PlcRung> rungs;
     std::vector<PlcZoneWatch> zones;
     std::vector<PlcCollisionWatch> collisions;
+    std::vector<PlcCycleRule> cycles;
 };
 
 const char* plcValueKindName(PlcValueKind kind);
