@@ -38,6 +38,8 @@ void Simulation::setHooks(std::function<void()> onStart, std::function<void(doub
     onStop_ = std::move(onStop);
 }
 
+void Simulation::setAfterStep(std::function<void()> afterStep) { afterStep_ = std::move(afterStep); }
+
 void Simulation::setSpeed(double factor) { speed_ = std::clamp(factor, 0.0, 16.0); }
 
 void Simulation::captureRest() {
@@ -106,15 +108,20 @@ void Simulation::tick(double realDtSeconds) {
     if (state_ != SimState::Playing) {
         return;
     }
+    const double stepDt = scene_.physicsDoc.timestep > 1e-4 && scene_.physicsDoc.timestep < 0.1 ? scene_.physicsDoc.timestep
+                                                                                                : kFixedDt;
     accumulator_ += std::min(std::max(realDtSeconds, 0.0), 2.0) * speed_;
     int steps = 0;
-    while (accumulator_ >= kFixedDt && steps < 240) {
+    while (accumulator_ >= stepDt && steps < 240) {
         if (onStep_) {
-            onStep_(kFixedDt);
+            onStep_(stepDt);
         }
-        engine_.step(kFixedDt);
-        time_ += kFixedDt;
-        accumulator_ -= kFixedDt;
+        engine_.step(stepDt);
+        if (afterStep_) {
+            afterStep_();
+        }
+        time_ += stepDt;
+        accumulator_ -= stepDt;
         ++steps;
     }
     scene_.notify(ChangeKind::Simulation);

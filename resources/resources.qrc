@@ -1,8 +1,13 @@
 <RCC>
   <qresource prefix="/">
     <file>branding/logo.png</file>
+    <file>branding/logo_256.png</file>
     <file>branding/logo.svg</file>
+    <file>branding/logo_small.svg</file>
+    <file>branding/logo_16.svg</file>
     <file>branding/app.ico</file>
+    <file>branding/tray.ico</file>
+    <file>branding/tray.svg</file>
     <file>i18n/zh_CN.json</file>
     <file>i18n/en.json</file>
   </qresource>

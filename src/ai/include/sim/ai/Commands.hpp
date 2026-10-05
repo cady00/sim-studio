@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sim/core/Scene.hpp"
+#include "sim/motion/Motion.hpp"
 #include "sim/physics/PhysicsEngine.hpp"
 
 #include <nlohmann/json.hpp>
@@ -30,6 +31,7 @@ private:
     Scene& scene_;
     Simulation* simulation_ = nullptr;
     IPhysicsEngine* physics_ = nullptr;
+    mutable LogicMachine logic_;
 };
 
 }  // namespace sim

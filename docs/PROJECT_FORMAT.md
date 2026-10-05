@@ -1,6 +1,6 @@
 # .simproj 项目格式
 
-当前版本 2，格式标识 `simstudio.project`。扩展名 `.simproj`。读取器接受版本 1 和 2。版本 1 没有机构、信号和脚本字段，打开后这些内容为空。
+当前版本 7，格式标识 `simstudio.project`。扩展名 `.simproj`。读取器接受版本 1 到 7。版本 1 没有机构、信号和脚本字段，打开后这些内容为空。版本 2 没有运动学、逻辑块和路径。版本 3 没有碰撞集和凸分解缓存，打开后近距阈值用默认 5 mm，碰撞集为空。版本 4 的节点没有 `faceAxes`，打开后该数组为空。版本 5 没有外部轴字段，打开后关节不是外部轴，冗余模式是固定，路径锁住外部轴。版本 6 没有文档级 `physics` 和 `motors`；打开后物理用默认步长，电机列表为空。没有 `motion` 字段的旧机构按 `kinematic` 和种类推断运动方式。
 
 文件是 **store-only ZIP**（压缩方法 0，UTF-8 文件名标志，CRC32）。不使用 ZIP64，单个成员建议小于 4 GiB。读取器拒绝方法 8，因此不要用通用压缩工具重新打包。
 
@@ -106,3 +106,56 @@
 | `interval` / `prototype` | 发生器间隔（秒，最小 0.05）和原型节点名 |
 
 运行中由发生器克隆出来的零件带 `transient` 标记，不写入项目。停止或复位会删掉它们，并把非临时节点的局部变换恢复到按下「运行」之前。
+
+## 版本 3：运动学、逻辑块、路径
+
+`project.json` 增加可选数组 `kinematics`、`logic`、`paths`。转动副的位置是度，移动副是毫米。耦合关节的位置由主关节乘 `coupleRatio` 得到，不单独插值。逻辑块的 `python` 只是随项目保存的文本。机构库 `.simlib` 是另一份 JSON（`format` 为 `simstudio.library`），只含资源、逻辑和路径，不含网格。
+
+## 版本 4：碰撞集与凸分解缓存
+
+`project.json` 增加可选对象 `proximity` 和可选数组 `convexCache`。旧文件没有这两项时，近距阈值为 5 mm，集合为空。
+
+`proximity`：
+
+```json
+{
+  "clearanceMm": 15,
+  "sets": [
+    {"name": "movers", "objects": ["OverlapA", "ClearA"]},
+    {"name": "fixtures", "objects": ["OverlapB", "ClearB"]}
+  ],
+  "pairs": [["movers", "fixtures"]]
+}
+```
+
+`objects` 是零件节点名。`pairs` 的每一项是两个碰撞集的名字。集合为空时，查询按机器人相关配对（连杆对非相邻连杆，或连杆对外面的零件）过滤；集合非空时只查这些对。
+
+`convexCache` 按网格 id 保存局部坐标的凸片，避免每次打开都分解：
+
+```json
+[{"mesh": "mesh-1", "fingerprint": 1, "pieces": [[[0, 0, 0], [1, 0, 0]]]}]
+```
+
+`fingerprint` 由顶点坐标算出。网格变了就会重算。符号距离网格不写入项目。界面目前只编辑前两个碰撞集和第一对，文件里可以有更多。
+
+## 版本 5：圆柱面轴线
+
+零件节点可以带可选数组 `faceAxes`。旧文件没有这项时为空。每项是导入时从圆柱面或平面上的圆提取的轴线，坐标在该零件网格的局部系，单位毫米：
+
+```json
+"faceAxes": [
+  {"origin": [0, 0, 120], "direction": [0, 0, 1], "radius": 40}
+]
+```
+
+运动学编辑器用它做「圆柱面定轴」和按轴分组。它不是 B-rep，改了网格也不会自动重算。
+
+## 版本 6：外部轴
+
+运动学关节可以带 `external`（`E1`…`E6` 或空）和 `externalKind`（`track`、`positioner` 或空）。连杆可以带 `mountedOn` 和 `mount`（安装到另一根连杆上的静止变换，中间没有关节）。命名坐标系可以带 `link`，空表示链的末端。资源可以带 `redundancy`：
+
+```json
+"redundancy": {"mode": "fixed", "travel": 1, "midrange": 0.2, "manipulability": 0.2, "fixed": [0]}
+```
+
+`mode` 是 `fixed`、`travel`、`midrange` 或 `manipulability`。路径可以带 `external`（`locked`、`sync`、`positioner`）和 `workpiece`。路径点可以带 `external` 和 `externalValues`。旧文件没有这些字段时按上面的默认值。说明见 [EXTERNAL.md](EXTERNAL.md)。

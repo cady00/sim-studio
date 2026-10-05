@@ -1,5 +1,9 @@
 #include "sim/ai/Commands.hpp"
 
+#include "sim/collision/Query.hpp"
+
+#include "sim/motion/Motion.hpp"
+
 #include <vector>
 
 namespace sim {
@@ -54,6 +58,28 @@ nlohmann::json CommandExecutor::catalog() {
         op("sim_pause", "Pause. Time does not advance.", nlohmann::json::array(), true),
         op("sim_stop", "Stop, restore rest poses, delete transient bodies.", nlohmann::json::array(), true),
         op("sim_state", "state, time, and speed.", nlohmann::json::array(), true),
+        op("kin_list", "Kinematic resources, joints, poses, logic blocks, and paths.", nlohmann::json::array(), true),
+        op("kin_set_joint", "Set one independent joint and apply it to the scene.", {"resource", "joint", "value"}, true),
+        op("kin_fk", "Forward kinematics of a scara or spherical-wrist resource.", {"resource"}, true),
+        op("kin_ik", "Inverse kinematics. Returns joint values and writes them when apply is true.",
+           {"resource", "x", "y", "z", "qw", "qx", "qy", "qz"}, true),
+        op("kin_ik_numeric", "Bounded numeric inverse kinematics. solver is quasi-newton or sqp.",
+           {"resource", "x", "y", "z", "solver", "apply"}, true),
+        op("physics_set_motion", "Set anchored, driven, free, or surface on a named body.", {"name", "motion"}, true),
+        op("physics_pair", "Write one friction pair. Order does not matter.", {"a", "b", "friction", "restitution"}, true),
+        op("motor_profile", "Stopping distance, stopping time, and time to reach speed.", {"speed", "decel"}, true),
+        op("motor_set", "Create or update a named motor. Speeds match the owner, mm/s or deg/s.",
+           {"name", "owner", "target", "running"}, true),
+        op("kin_move_pose", "Move to a named pose with a trapezoid or scurve profile.", {"resource", "pose", "profile"}, true),
+        op("logic_start", "Start one logic block. Blocks still exchange only signals.", {"name"}, true),
+        op("logic_step", "Advance logic blocks by fixed steps. dt defaults to the simulation step.", {"dt", "steps"}, true),
+        op("robot_plan", "Plan a PTP/LIN/CIRC path and return cycle time, warnings, and collision pairs.", {"path"}, true),
+        op("attach_tool", "Parent a named node under the resource flange, keeping its world pose.", {"resource", "name"}, true),
+        op("detach_tool", "Parent a named node back under the world, keeping its world pose.", {"name"}, true),
+        op("collision_query", "Overlap and near-miss pairs. Clearance defaults to the scene value, millimeters.", {"clearance"}, true),
+        op("min_distance", "Signed distance, witness points, and gradient between two named parts.", {"name", "other"}, true),
+        op("sweep_check", "Continuous sweep of a part between local translations, or of a named robot path.",
+           {"name", "path", "x0", "y0", "z0", "x1", "y1", "z1"}, true),
         op("nl_to_logic", "Future: natural language to a logic block or script.", {"text"}, false),
         op("layout_suggest", "Future: suggest a line layout. Does not edit the scene.", {"text"}, false),
         op("cycle_optimize", "Future: suggest cycle-time changes.", {"text"}, false),
@@ -199,6 +225,326 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             return fail(simulation_->lastError());
         }
         return execute(nlohmann::json{{"op", "sim_state"}});
+    }
+    if (op == "kin_list") {
+        nlohmann::json resources = nlohmann::json::array();
+        for (const KinematicResource& resource : scene_.resources) {
+            nlohmann::json joints = nlohmann::json::array();
+            for (const KinJoint& joint : resource.joints) {
+                joints.push_back({{"name", joint.name}, {"position", jointCommand(resource, joint)}});
+            }
+            resources.push_back({{"name", resource.name}, {"ik", resource.ik}, {"joints", std::move(joints)}});
+        }
+        nlohmann::json blocks = nlohmann::json::array();
+        for (const LogicBlock& block : scene_.logicBlocks) {
+            blocks.push_back(block.name);
+        }
+        nlohmann::json paths = nlohmann::json::array();
+        for (const RobotPath& path : scene_.robotPaths) {
+            paths.push_back(path.name);
+        }
+        return okValue({{"resources", std::move(resources)}, {"logic", std::move(blocks)}, {"paths", std::move(paths)}});
+    }
+    if (op == "kin_set_joint") {
+        KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
+        if (resource == nullptr) {
+            return fail("no resource named " + command.value("resource", ""));
+        }
+        KinJoint* joint = findJoint(*resource, command.value("joint", ""));
+        if (joint == nullptr) {
+            return fail("no joint named " + command.value("joint", ""));
+        }
+        if (!joint->coupledTo.empty()) {
+            return fail(joint->name + " is coupled to " + joint->coupledTo);
+        }
+        joint->position = clampJoint(*joint, command.value("value", 0.0));
+        applyResource(scene_, *resource);
+        return okValue(jointCommand(*resource, *joint));
+    }
+    if (op == "kin_fk") {
+        const KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
+        if (resource == nullptr) {
+            return fail("no resource named " + command.value("resource", ""));
+        }
+        const CartesianPose pose = forwardModel(*resource);
+        return okValue({{"x", pose.position.x},
+                        {"y", pose.position.y},
+                        {"z", pose.position.z},
+                        {"qw", pose.rotation.w},
+                        {"qx", pose.rotation.x},
+                        {"qy", pose.rotation.y},
+                        {"qz", pose.rotation.z}});
+    }
+    if (op == "kin_ik") {
+        KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
+        if (resource == nullptr) {
+            return fail("no resource named " + command.value("resource", ""));
+        }
+        CartesianPose target;
+        target.position = {command.value("x", 0.0), command.value("y", 0.0), command.value("z", 0.0)};
+        target.rotation = Quat{command.value("qw", 1.0), command.value("qx", 0.0), command.value("qy", 0.0), command.value("qz", 0.0)}.normalized();
+        const IkResult solved = inverseModel(*resource, target, jointVector(*resource));
+        if (command.value("apply", true) && solved.ok) {
+            setJointVector(*resource, solved.joints);
+            applyResource(scene_, *resource);
+        }
+        return solved.ok ? okValue({{"joints", solved.joints}, {"warning", solved.warning}, {"approximated", solved.approximated}})
+                         : fail(solved.warning.empty() ? "inverse kinematics failed" : solved.warning);
+    }
+    if (op == "kin_ik_numeric") {
+        KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
+        if (resource == nullptr) {
+            return fail("no resource named " + command.value("resource", ""));
+        }
+        const CartesianPose targetPose{{command.value("x", 0.0), command.value("y", 0.0), command.value("z", 0.0)},
+                                       Quat::identity()};
+        std::vector<double> seed = jointVector(*resource);
+        std::vector<double> lower;
+        std::vector<double> upper;
+        lower.reserve(resource->joints.size());
+        upper.reserve(resource->joints.size());
+        for (const KinJoint& joint : resource->joints) {
+            lower.push_back(joint.limited ? std::min(joint.lower, joint.upper) : -1e6);
+            upper.push_back(joint.limited ? std::max(joint.lower, joint.upper) : 1e6);
+        }
+        const std::string solverName = command.value("solver", std::string("quasi-newton"));
+        const IkSolverKind kind = solverName == "sqp" ? IkSolverKind::SequentialQuadratic : IkSolverKind::QuasiNewton;
+        IkSolverSettings settings;
+        settings.iterations = command.value("iterations", 40);
+        settings.epsilon = command.value("epsilon", 1e-2);
+        settings.penalty = command.value("penalty", 8.0);
+        const IkNumberResult solved = solveBoundedIk(
+            [&](const std::vector<double>& values, std::vector<double>& residual) {
+                KinematicResource trial = *resource;
+                setJointVector(trial, values);
+                const CartesianPose pose = forwardModel(trial);
+                residual = {pose.position.x - targetPose.position.x, pose.position.y - targetPose.position.y,
+                            pose.position.z - targetPose.position.z};
+            },
+            3, seed, lower, upper, kind, settings);
+        if (command.value("apply", true) && solved.ok) {
+            setJointVector(*resource, solved.values);
+            applyResource(scene_, *resource);
+        }
+        return solved.ok ? okValue({{"joints", solved.values}, {"residual", solved.residual}, {"solver", solved.solver},
+                                    {"iterations", solved.iterations}})
+                         : fail("numeric inverse kinematics residual " + std::to_string(solved.residual));
+    }
+    if (op == "physics_set_motion") {
+        CommandResult error;
+        auto node = named(scene_, command, error);
+        if (!node) {
+            return error;
+        }
+        BodyMotion motion = BodyMotion::Free;
+        if (!bodyMotionFromName(command.value("motion", std::string("free")), motion)) {
+            return fail("unknown body motion");
+        }
+        node->mech.motion = motion;
+        syncMotionFlags(node->mech);
+        return okValue(bodyMotionName(node->mech.motion));
+    }
+    if (op == "physics_pair") {
+        const std::string a = command.value("a", "");
+        const std::string b = command.value("b", "");
+        if (a.empty() || b.empty()) {
+            return fail("pair needs a and b");
+        }
+        const double friction = command.value("friction", scene_.physicsDoc.defaultFriction);
+        const double restitution = command.value("restitution", scene_.physicsDoc.defaultRestitution);
+        for (GradePair& pair : scene_.physicsDoc.pairs) {
+            if ((pair.a == a && pair.b == b) || (pair.a == b && pair.b == a)) {
+                pair.friction = friction;
+                pair.restitution = restitution;
+                return okValue(pair.friction);
+            }
+        }
+        scene_.physicsDoc.pairs.push_back(GradePair{a, b, friction, restitution});
+        return okValue(friction);
+    }
+    if (op == "motor_profile") {
+        const double speed = command.value("speed", 0.0);
+        const double decel = command.value("decel", 0.0);
+        return okValue({{"distance", stoppingDistance(speed, decel)},
+                        {"time", stoppingTime(speed, decel)},
+                        {"timeToSpeed", timeToSpeed(0, speed, command.value("accel", decel))}});
+    }
+    if (op == "motor_set") {
+        const std::string name = command.value("name", "");
+        if (name.empty()) {
+            return fail("motor needs a name");
+        }
+        MotorAspect* motor = nullptr;
+        for (MotorAspect& candidate : scene_.motors) {
+            if (candidate.name == name) {
+                motor = &candidate;
+                break;
+            }
+        }
+        if (motor == nullptr) {
+            scene_.motors.push_back(MotorAspect{});
+            motor = &scene_.motors.back();
+            motor->name = name;
+        }
+        if (command.contains("owner")) {
+            motor->owner = command.value("owner", "");
+        }
+        if (command.contains("target")) {
+            motor->targetSpeed = command.value("target", 0.0);
+        }
+        if (command.contains("running")) {
+            motor->running = command.value("running", false);
+        }
+        return okValue({{"name", motor->name}, {"target", motor->targetSpeed}, {"running", motor->running}});
+    }
+    if (op == "kin_move_pose") {
+        KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
+        if (resource == nullptr) {
+            return fail("no resource named " + command.value("resource", ""));
+        }
+        ActiveMove move;
+        std::string error;
+        const ProfileKind profile = command.value("profile", std::string("trapezoid")) == "scurve" ? ProfileKind::SCurve : ProfileKind::Trapezoid;
+        if (!beginPoseMove(*resource, command.value("pose", ""), profile, move, error)) {
+            return fail(error);
+        }
+        for (int guard = 0; guard < 20000 && move.active; ++guard) {
+            advanceMove(*resource, move, Simulation::kFixedDt);
+        }
+        applyResource(scene_, *resource);
+        return okValue(jointVector(*resource));
+    }
+    if (op == "logic_start") {
+        std::string error;
+        if (!logic_.start(scene_, command.value("name", ""), error)) {
+            return fail(error);
+        }
+        return okValue(true);
+    }
+    if (op == "logic_step") {
+        const double dt = command.value("dt", Simulation::kFixedDt);
+        const int steps = std::max(1, command.value("steps", 1));
+        for (int i = 0; i < steps; ++i) {
+            logic_.step(scene_, dt);
+        }
+        if (!logic_.lastError().empty()) {
+            return fail(logic_.lastError());
+        }
+        return okValue(true);
+    }
+    if (op == "robot_plan") {
+        const std::string pathName = command.value("path", "");
+        const RobotPath* path = nullptr;
+        for (const RobotPath& candidate : scene_.robotPaths) {
+            if (candidate.name == pathName) {
+                path = &candidate;
+                break;
+            }
+        }
+        if (path == nullptr) {
+            return fail("no path named " + pathName);
+        }
+        KinematicResource* resource = findResource(scene_.resources, path->resource);
+        if (resource == nullptr) {
+            return fail("no resource named " + path->resource);
+        }
+        const MotionPlan plan = planRobotPath(scene_, *resource, *path);
+        nlohmann::json hits = nlohmann::json::array();
+        for (const auto& [a, b] : plan.collisions) {
+            hits.push_back({{"a", a}, {"b", b}});
+        }
+        return okValue({{"ok", plan.ok}, {"seconds", plan.seconds}, {"warnings", plan.warnings}, {"collisions", std::move(hits)}});
+    }
+    if (op == "attach_tool" || op == "detach_tool") {
+        std::string error;
+        if (op == "detach_tool") {
+            CommandResult missing;
+            auto node = named(scene_, command, missing);
+            if (!node) {
+                return missing;
+            }
+            if (!detachTool(scene_, node->id, error)) {
+                return fail(error);
+            }
+            return okValue(true);
+        }
+        KinematicResource* resource = findResource(scene_.resources, command.value("resource", ""));
+        if (resource == nullptr) {
+            return fail("no resource named " + command.value("resource", ""));
+        }
+        CommandResult missing;
+        auto node = named(scene_, command, missing);
+        if (!node) {
+            return missing;
+        }
+        if (!attachTool(scene_, *resource, node->id, error)) {
+            return fail(error);
+        }
+        return okValue(true);
+    }
+    if (op == "collision_query" || op == "min_distance" || op == "sweep_check") {
+        auto query = createCollisionQuery();
+        query->rebuild(scene_);
+        if (op == "min_distance") {
+            const DistanceResult distance = query->minDistance(scene_, command.value("name", ""), command.value("other", ""));
+            if (!distance.ok) {
+                return fail(distance.error.empty() ? "distance failed" : distance.error);
+            }
+            return okValue({{"distance", distance.distance},
+                            {"pointA", {distance.pointA.x, distance.pointA.y, distance.pointA.z}},
+                            {"pointB", {distance.pointB.x, distance.pointB.y, distance.pointB.z}},
+                            {"normal", {distance.normal.x, distance.normal.y, distance.normal.z}},
+                            {"gradient", {distance.gradient.x, distance.gradient.y, distance.gradient.z}},
+                            {"gradientFromSdf", distance.gradientFromSdf}});
+        }
+        if (op == "sweep_check" && command.contains("path")) {
+            const std::string pathName = command.value("path", "");
+            const RobotPath* path = nullptr;
+            for (const RobotPath& candidate : scene_.robotPaths) {
+                if (candidate.name == pathName) {
+                    path = &candidate;
+                }
+            }
+            if (path == nullptr) {
+                return fail("no path named " + pathName);
+            }
+            KinematicResource* resource = findResource(scene_.resources, path->resource);
+            if (resource == nullptr) {
+                return fail("no resource named " + path->resource);
+            }
+            const MotionPlan plan = planRobotPath(scene_, *resource, *path);
+            return okValue({{"hit", plan.sweepHit},
+                            {"time", plan.sweepTime},
+                            {"a", plan.sweepA},
+                            {"b", plan.sweepB}});
+        }
+        if (op == "sweep_check") {
+            const SweepHit hit = query->sweep(scene_, command.value("name", ""),
+                                              {command.value("x0", 0.0), command.value("y0", 0.0), command.value("z0", 0.0)},
+                                              {command.value("x1", 0.0), command.value("y1", 0.0), command.value("z1", 0.0)});
+            if (!hit.error.empty()) {
+                return fail(hit.error);
+            }
+            return okValue({{"hit", hit.hit},
+                            {"time", hit.time},
+                            {"a", hit.a},
+                            {"b", hit.b},
+                            {"point", {hit.point.x, hit.point.y, hit.point.z}}});
+        }
+        const double clearance = command.contains("clearance") ? command.value("clearance", scene_.proximity.clearanceMm)
+                                                               : scene_.proximity.clearanceMm;
+        nlohmann::json hits = nlohmann::json::array();
+        for (const ContactHit& hit : query->query(scene_, clearance)) {
+            hits.push_back({{"a", hit.a},
+                            {"b", hit.b},
+                            {"kind", hit.kind == HitKind::Overlap ? "overlap" : "clearance"},
+                            {"distance", hit.distance},
+                            {"penetration", hit.penetration},
+                            {"volume", hit.volume},
+                            {"volumeEstimated", hit.volumeEstimated}});
+        }
+        query->commitCache(scene_);
+        return okValue(hits);
     }
     if (op == "nl_to_logic" || op == "layout_suggest" || op == "cycle_optimize" || op == "explain_anomaly") {
         return fail(op + " is a documented hook and is not implemented");

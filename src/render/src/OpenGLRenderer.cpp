@@ -9,24 +9,20 @@ namespace {
 const char* kMeshVertex = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
-layout(location = 2) in vec4 iM0;
-layout(location = 3) in vec4 iM1;
-layout(location = 4) in vec4 iM2;
-layout(location = 5) in vec4 iM3;
-layout(location = 6) in vec4 iColor;
 uniform mat4 uViewProj;
+uniform mat4 uModel;
+uniform vec4 uColor;
 uniform vec3 uEye;
 out vec3 vNormal;
 out vec3 vWorld;
 out vec3 vColor;
 out float vHighlight;
 void main() {
-    mat4 model = mat4(iM0, iM1, iM2, iM3);
-    vec4 world = model * vec4(aPos, 1.0);
+    vec4 world = uModel * vec4(aPos, 1.0);
     vWorld = world.xyz;
-    vNormal = normalize(mat3(model) * aNormal);
-    vColor = iColor.rgb;
-    vHighlight = iColor.a;
+    vNormal = normalize(mat3(uModel) * aNormal);
+    vColor = uColor.rgb;
+    vHighlight = uColor.a;
     gl_Position = uViewProj * world;
 }
 )";
@@ -37,6 +33,7 @@ in vec3 vWorld;
 in vec3 vColor;
 in float vHighlight;
 uniform vec3 uEye;
+uniform float uOpacity;
 out vec4 fragColor;
 void main() {
     vec3 n = normalize(vNormal);
@@ -47,9 +44,9 @@ void main() {
     float spec = pow(max(dot(n, normalize(lightA + viewDir)), 0.0), 32.0) * 0.22;
     vec3 color = vColor * (0.28 + diffuse) + vec3(spec);
     if (vHighlight > 0.5) {
-        color = mix(color, vec3(0.58, 0.60, 0.98), 0.42);
+        color = mix(color, vec3(0.239, 0.525, 0.910), 0.42);
     }
-    fragColor = vec4(color, 1.0);
+    fragColor = vec4(color, uOpacity);
 }
 )";
 
@@ -132,7 +129,6 @@ bool OpenGLRenderer::initialize(std::string& error) {
     }
     glGenVertexArrays(1, &lineVao_);
     glGenBuffers(1, &lineVbo_);
-    glGenBuffers(1, &instanceVbo_);
     ready_ = true;
     return true;
 }
@@ -151,10 +147,6 @@ void OpenGLRenderer::clearMeshes() {
 
 void OpenGLRenderer::shutdown() {
     clearMeshes();
-    if (instanceVbo_ != 0) {
-        glDeleteBuffers(1, &instanceVbo_);
-        instanceVbo_ = 0;
-    }
     if (lineVbo_ != 0) {
         glDeleteBuffers(1, &lineVbo_);
         lineVbo_ = 0;
@@ -212,33 +204,39 @@ void OpenGLRenderer::beginFrame(const FrameParams& frame) {
     submitted_ = 0;
     culled_ = 0;
     glViewport(0, 0, frame.width, frame.height);
+    glClearColor(static_cast<float>(frame.clearColor.x), static_cast<float>(frame.clearColor.y),
+                 static_cast<float>(frame.clearColor.z), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
 void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>& instances) {
-    const int count = static_cast<int>(instances.size() / 20);
-    if (count <= 0) {
+    const int count = static_cast<int>(instances.size() / 21);
+    if (count <= 0 || meshProgram_ == 0) {
         return;
     }
+    // One uniform draw per copy. Instanced matrix attributes did not deliver
+    // translation on the software GL context, so a moving base stayed put.
+    const int modelLoc = glGetUniformLocation(meshProgram_, "uModel");
+    const int colorLoc = glGetUniformLocation(meshProgram_, "uColor");
+    const int opacityLoc = glGetUniformLocation(meshProgram_, "uOpacity");
     glBindVertexArray(mesh.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVbo_);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(instances.size() * sizeof(float)), instances.data(),
-                 GL_DYNAMIC_DRAW);
-    const auto stride = static_cast<int>(20 * sizeof(float));
-    for (int column = 0; column < 4; ++column) {
-        const unsigned location = static_cast<unsigned>(2 + column);
-        glEnableVertexAttribArray(location);
-        glVertexAttribPointer(location, 4, GL_FLOAT, GL_FALSE, stride,
-                              reinterpret_cast<void*>(static_cast<std::size_t>(column) * 4 * sizeof(float)));
-        glVertexAttribDivisor(location, 1);
-    }
-    glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(16 * sizeof(float)));
-    glVertexAttribDivisor(6, 1);
-    glDrawElementsInstanced(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr, count);
-    for (unsigned location = 2; location <= 6; ++location) {
-        glVertexAttribDivisor(location, 0);
-        glDisableVertexAttribArray(location);
+    for (int i = 0; i < count; ++i) {
+        const float* record = instances.data() + static_cast<std::size_t>(i) * 21;
+        const float opacity = record[20];
+        const bool translucent = opacity < 0.999f;
+        if (translucent) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(GL_FALSE);
+        }
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, record);
+        glUniform4fv(colorLoc, 1, record + 16);
+        glUniform1f(opacityLoc, opacity);
+        glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr);
+        if (translucent) {
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+        }
     }
     glBindVertexArray(0);
     submitted_ += count;
@@ -264,6 +262,7 @@ void OpenGLRenderer::submitInstances(const std::vector<RenderInstance>& instance
         batch.push_back(static_cast<float>(instance.material.color.y));
         batch.push_back(static_cast<float>(instance.material.color.z));
         batch.push_back(instance.material.highlight);
+        batch.push_back(instance.material.opacity);
     }
     float viewProj[16];
     toGl(frame_.viewProjection, viewProj);

@@ -1,5 +1,15 @@
 #include "sim/app/MainWindow.hpp"
+#include "sim/app/PhysicsShelf.hpp"
 
+#include "sim/ai/CommandRegistry.hpp"
+#include "sim/ai/Commands.hpp"
+#include "sim/app/ChromeBar.hpp"
+#include "sim/app/CollisionPanel.hpp"
+#include "sim/app/CommandPalette.hpp"
+#include "sim/app/IntentBar.hpp"
+#include "sim/app/MotionPanel.hpp"
+#include "sim/app/TaskPanels.hpp"
+#include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ObjImporter.hpp"
 #include "sim/io/ProjectStore.hpp"
@@ -16,7 +26,9 @@
 #include <QDockWidget>
 #include <QEventLoop>
 #include <QPlainTextEdit>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QTableWidget>
 #include <QTimer>
 #include <QDoubleSpinBox>
@@ -38,12 +50,14 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
+#include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -70,6 +84,7 @@ MainWindow::MainWindow(QString locale) {
     physics_ = createPhysicsEngine();
     scripting_ = createScriptHost();
     simulation_ = std::make_unique<Simulation>(scene_, *physics_);
+    robot_ = std::make_unique<BuiltinRobotSolver>();
     scripting_->bind(&scene_);
     scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
                                 [this](const std::string& id) { physics_->releaseBody(id); });
@@ -94,7 +109,9 @@ MainWindow::MainWindow(QString locale) {
     buildUi();
     bindScene();
     retranslate();
-    resize(1400, 900);
+    resize(1440, 900);
+    applyTaskMode(0);
+    setThemeName("dark");
     refreshStatus();
 }
 
@@ -215,10 +232,10 @@ void MainWindow::buildUi() {
 
     signalTable_ = new QTableWidget(0, 3);
     signalTable_->horizontalHeader()->setStretchLastSection(true);
-    auto* signalDock = new QDockWidget(this);
-    signalDock->setObjectName("dock.signals");
-    signalDock->setWidget(signalTable_);
-    addDockWidget(Qt::BottomDockWidgetArea, signalDock);
+    signalDock_ = new QDockWidget(this);
+    signalDock_->setObjectName("dock.signals");
+    signalDock_->setWidget(signalTable_);
+    addDockWidget(Qt::BottomDockWidgetArea, signalDock_);
 
     scriptCombo_ = new QComboBox;
     scriptEdit_ = new QPlainTextEdit;
@@ -232,11 +249,143 @@ void MainWindow::buildUi() {
     scriptLayout->addWidget(scriptCombo_);
     scriptLayout->addWidget(scriptEdit_, 1);
     scriptLayout->addWidget(scriptLog_);
-    auto* scriptDock = new QDockWidget(this);
-    scriptDock->setObjectName("dock.script");
-    scriptDock->setWidget(scriptHost);
-    addDockWidget(Qt::BottomDockWidgetArea, scriptDock);
-    splitDockWidget(signalDock, scriptDock, Qt::Horizontal);
+    scriptDock_ = new QDockWidget(this);
+    scriptDock_->setObjectName("dock.script");
+    scriptDock_->setWidget(scriptHost);
+    addDockWidget(Qt::BottomDockWidgetArea, scriptDock_);
+    splitDockWidget(signalDock_, scriptDock_, Qt::Horizontal);
+
+    collision_ = new CollisionPanel(scene_, i18n_, this);
+    collision_->setViewport(viewport_);
+    collisionDock_ = new QDockWidget(this);
+    collisionDock_->setObjectName("dock.collision");
+    collisionDock_->setWidget(collision_);
+    addDockWidget(Qt::BottomDockWidgetArea, collisionDock_);
+
+    motion_ = new MotionPanel(scene_, i18n_, logic_, *robot_, this);
+    motion_->setViewport(viewport_);
+    motion_->setPlayRequest([this](const std::string& path) {
+        pendingPath_ = path;
+        playSimulation();
+    });
+    connect(motion_, &MotionPanel::pythonRequested, this, [this](const QString& source) {
+        if (scene_.scripts.empty()) {
+            scene_.scripts.push_back(ProjectScript{"logic", source.toStdString()});
+        } else if (scriptIndex_ >= 0 && scriptIndex_ < static_cast<int>(scene_.scripts.size())) {
+            scene_.scripts[static_cast<std::size_t>(scriptIndex_)].source = source.toStdString();
+        } else {
+            scene_.scripts.front().source = source.toStdString();
+        }
+        loadScriptEditor(scriptIndex_);
+    });
+    motionDock_ = new QDockWidget(this);
+    motionDock_->setObjectName("dock.motion");
+    motionDock_->setWidget(motion_);
+    addDockWidget(Qt::RightDockWidgetArea, motionDock_);
+    splitDockWidget(propertyDock_, motionDock_, Qt::Vertical);
+
+    logicCanvas_ = new LogicCanvas(scene_, this);
+    logicDock_ = new QDockWidget(this);
+    logicDock_->setObjectName("dock.logic");
+    logicDock_->setWidget(logicCanvas_);
+    addDockWidget(Qt::LeftDockWidgetArea, logicDock_);
+
+    pathTimeline_ = new PathTimeline(scene_, this);
+    pathDock_ = new QDockWidget(this);
+    pathDock_->setObjectName("dock.path");
+    pathDock_->setWidget(pathTimeline_);
+    addDockWidget(Qt::BottomDockWidgetArea, pathDock_);
+
+    plc_ = new PlcCards(this);
+    plcDock_ = new QDockWidget(this);
+    plcDock_->setObjectName("dock.plc");
+    plcDock_->setWidget(plc_);
+    addDockWidget(Qt::RightDockWidgetArea, plcDock_);
+
+    physicsShelf_ = new PhysicsShelf(scene_, [this](const char* key) { return trk(key); }, this);
+    physicsShelf_->setEngineRequested([this](const std::string& engine) {
+        usePhysicsBackend(engine == "builtin" ? PhysicsBackend::Builtin : PhysicsBackend::Jolt);
+    });
+    physicsDock_ = new QDockWidget(this);
+    physicsDock_->setObjectName("dock.physics");
+    physicsDock_->setWidget(physicsShelf_);
+    addDockWidget(Qt::RightDockWidgetArea, physicsDock_);
+    splitDockWidget(propertyDock_, physicsDock_, Qt::Vertical);
+
+    tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
+    tray_->setToolTip(QStringLiteral("Sim Studio"));
+    if (tray_->icon().isNull()) {
+        tray_->setIcon(QIcon(":/branding/logo_256.png"));
+    }
+    if (QSystemTrayIcon::isSystemTrayAvailable()) {
+        tray_->show();
+    }
+
+    treeDock_->setObjectName("dock.tree");
+    propertyDock_->setObjectName("dock.properties");
+
+    chrome_ = new ChromeBar(this);
+    setMenuWidget(chrome_);
+    palette_ = new CommandPalette(this);
+    intent_ = new IntentBar(this);
+    connect(chrome_, &ChromeBar::modeChanged, this, [this](int mode) { applyTaskMode(mode); });
+    connect(chrome_, &ChromeBar::commandPaletteRequested, this, [this] { showCommandPalette(); });
+    connect(chrome_, &ChromeBar::intentRequested, this, [this] { showIntentBar(); });
+    connect(chrome_, &ChromeBar::themeToggled, this, [this] { setThemeName(themeName_ == "dark" ? "light" : "dark"); });
+    connect(chrome_, &ChromeBar::localeToggled, this, [this] { setLocale(i18n_.locale() == "zh_CN" ? "en" : "zh_CN"); });
+    connect(chrome_, &ChromeBar::aboutRequested, this, &MainWindow::showAbout);
+    connect(chrome_, &ChromeBar::focusRequested, this, [this] {
+        focusMode_ = !focusMode_;
+        applyTaskMode(taskMode_);
+    });
+    palette_->setHandler([this](const std::string& id) { runUiCommand(id); });
+    intent_->setApplyHandler([this](const std::string& text) { return applyIntent(text); });
+    connect(intent_, &IntentBar::undoRequested, this, [this] { undoIntent(); });
+    connect(intent_, &IntentBar::closed, this, [this] {
+        if (viewport_ != nullptr) {
+            viewport_->setPreviewMode(false);
+            viewport_->setGhost(false);
+        }
+    });
+    connect(viewport_, &ViewportWidget::overlayCommand, this, [this](const QString& id) { runUiCommand(id.toStdString()); });
+
+    auto* paletteShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_K), this);
+    paletteShortcut->setContext(Qt::ApplicationShortcut);
+    connect(paletteShortcut, &QShortcut::activated, this, [this] { showCommandPalette(); });
+    auto* intentShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_I), this);
+    intentShortcut->setContext(Qt::ApplicationShortcut);
+    connect(intentShortcut, &QShortcut::activated, this, [this] { showIntentBar(); });
+    auto* focusShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Backslash), this);
+    focusShortcut->setContext(Qt::ApplicationShortcut);
+    connect(focusShortcut, &QShortcut::activated, this, [this] {
+        focusMode_ = !focusMode_;
+        applyTaskMode(taskMode_);
+    });
+    for (int mode = 0; mode < 6; ++mode) {
+        auto* shortcut = new QShortcut(QKeySequence(Qt::CTRL | (Qt::Key_1 + mode)), this);
+        shortcut->setContext(Qt::ApplicationShortcut);
+        connect(shortcut, &QShortcut::activated, this, [this, mode] { applyTaskMode(mode); });
+    }
+    auto* measureShortcut = new QShortcut(QKeySequence(Qt::Key_M), viewport_);
+    connect(measureShortcut, &QShortcut::activated, this, [this] { runUiCommand("ui.measure"); });
+    auto* teachShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_T), this);
+    connect(teachShortcut, &QShortcut::activated, this, [this] { runUiCommand("ui.teach"); });
+    auto* undoAction = new QAction(this);
+    undoAction->setShortcut(QKeySequence::Undo);
+    undoAction->setShortcutContext(Qt::WindowShortcut);
+    addAction(undoAction);
+    connect(undoAction, &QAction::triggered, this, [this] {
+        QWidget* focus = QApplication::focusWidget();
+        if (auto* line = qobject_cast<QLineEdit*>(focus)) {
+            line->undo();
+            return;
+        }
+        if (auto* plain = qobject_cast<QPlainTextEdit*>(focus)) {
+            plain->undo();
+            return;
+        }
+        undoIntent();
+    });
 
     newAction_ = new QAction(this);
     openAction_ = new QAction(this);
@@ -273,7 +422,7 @@ void MainWindow::buildUi() {
     openAction_->setShortcut(QKeySequence::Open);
     saveAction_->setShortcut(QKeySequence::Save);
     saveAsAction_->setShortcut(QKeySequence::SaveAs);
-    importStepAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_I));
+    importStepAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
     quitAction_->setShortcut(QKeySequence::Quit);
     fitAction_->setShortcut(QKeySequence(Qt::Key_F));
 
@@ -356,6 +505,8 @@ void MainWindow::buildUi() {
     statusBar()->addPermanentWidget(cancelButton_);
     statusBar()->addPermanentWidget(nodeLabel_);
     statusBar()->addPermanentWidget(unitLabel_);
+    offlineLabel_ = new QLabel("本地 · 离线");
+    statusBar()->addPermanentWidget(offlineLabel_);
 
     connect(newAction_, &QAction::triggered, this, &MainWindow::newProject);
     connect(openAction_, &QAction::triggered, this, &MainWindow::openProjectInteractive);
@@ -375,6 +526,12 @@ void MainWindow::buildUi() {
     connect(cancelButton_, &QPushButton::clicked, this, &MainWindow::cancelImport);
     connect(tree_, &QTreeWidget::currentItemChanged, this, &MainWindow::onTreeCurrentChanged);
     connect(viewport_, &ViewportWidget::selectionChanged, this, &MainWindow::onViewportSelection);
+    connect(viewport_, &ViewportWidget::pointPicked, this,
+            [this](double x, double y, double z, double nx, double ny, double nz, const QString& nodeId) {
+                if (motion_ != nullptr) {
+                    motion_->notePick({x, y, z}, {nx, ny, nz}, nodeId.toStdString());
+                }
+            });
     connect(viewport_, &ViewportWidget::transformEdited, this, &MainWindow::onTransformEdited);
     connect(viewport_, &ViewportWidget::glError, this, [this](const QString& message) { statusLabel_->setText(message); });
     connect(nameEdit_, &QLineEdit::editingFinished, this, &MainWindow::applyProperties);
@@ -438,7 +595,15 @@ void MainWindow::bindScene() {
         if (kind == ChangeKind::Simulation) {
             viewport_->update();
             refreshSignals();
+            shelfReload_ = false;
             refreshProperties();
+            shelfReload_ = true;
+            if (physicsShelf_ != nullptr) {
+                physicsShelf_->setStats(scene_.physicsDoc.stats);
+            }
+            if (motion_ != nullptr) {
+                motion_->refreshLive();
+            }
             if (timeLabel_ != nullptr && simulation_) {
                 timeLabel_->setText(trk("status.simTime").arg(simulation_->time(), 0, 'f', 2));
             }
@@ -451,8 +616,14 @@ void MainWindow::bindScene() {
             if (scriptCombo_ != nullptr && scriptCombo_->count() != static_cast<int>(scene_.scripts.size())) {
                 loadScriptEditor(-1);
             }
+            if (motion_ != nullptr) {
+                motion_->refresh();
+            }
         } else if (kind == ChangeKind::Selection) {
             refreshProperties();
+            if (motion_ != nullptr) {
+                motion_->syncSelection();
+            }
             if (tree_->currentItem() == nullptr ||
                 tree_->currentItem()->data(0, Qt::UserRole).toString().toStdString() != scene_.selectedId()) {
                 selectNode(QString::fromStdString(scene_.selectedId()), false);
@@ -514,6 +685,33 @@ void MainWindow::retranslate() {
     if (auto* dock = findChild<QDockWidget*>("dock.script")) {
         dock->setWindowTitle(trk("dock.script"));
     }
+    if (auto* dock = findChild<QDockWidget*>("dock.motion")) {
+        dock->setWindowTitle(trk("dock.motion"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.collision")) {
+        dock->setWindowTitle(trk("dock.collision"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.logic")) {
+        dock->setWindowTitle(trk("dock.logic"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.path")) {
+        dock->setWindowTitle(trk("dock.path"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.plc")) {
+        dock->setWindowTitle(trk("dock.plc"));
+    }
+    if (auto* dock = findChild<QDockWidget*>("dock.physics")) {
+        dock->setWindowTitle(trk("dock.physics"));
+    }
+    if (physicsShelf_ != nullptr) {
+        physicsShelf_->reload();
+    }
+    if (collision_ != nullptr) {
+        collision_->retranslate();
+    }
+    if (motion_ != nullptr) {
+        motion_->retranslate();
+    }
     signalTable_->setHorizontalHeaderLabels({trk("signal.name"), trk("signal.type"), trk("signal.value")});
     fillMechCombos();
     treeDock_->setWindowTitle(trk("dock.tree"));
@@ -555,6 +753,9 @@ void MainWindow::setLocale(const QString& locale) {
     QSettings settings;
     settings.setValue("locale", locale);
     retranslate();
+    if (chrome_ != nullptr) {
+        chrome_->setLocaleZh(locale == "zh_CN");
+    }
 }
 
 void MainWindow::rebuildTree() {
@@ -614,7 +815,7 @@ void MainWindow::selectNode(const QString& id, bool fromTree) {
         tree_->setCurrentItem(match);
         tree_->blockSignals(false);
     }
-    if (scene_.selectedId() != id.toStdString()) {
+    if (fromTree && scene_.selectedId() != id.toStdString()) {
         scene_.setSelected(id.toStdString());
     }
     refreshProperties();
@@ -656,6 +857,9 @@ void MainWindow::refreshProperties() {
         vertexLabel_->setText("-");
         triangleLabel_->setText("-");
         refreshing_ = false;
+        if (physicsShelf_ != nullptr && shelfReload_) {
+            physicsShelf_->reload();
+        }
         return;
     }
     nameEdit_->setText(node->id == "root" && node->name == "World" ? trk("tree.world")
@@ -714,6 +918,9 @@ void MainWindow::refreshProperties() {
     intervalSpin_->setValue(node->mech.interval);
     prototypeEdit_->setText(QString::fromUtf8(node->mech.prototype.c_str()));
     refreshing_ = false;
+    if (physicsShelf_ != nullptr && shelfReload_) {
+        physicsShelf_->reload();
+    }
 }
 
 void MainWindow::applyProperties() {
@@ -738,6 +945,11 @@ void MainWindow::applyProperties() {
     node->mech.mass = massSpin_->value();
     node->mech.autoMass = autoMassBox_->isChecked();
     node->mech.kinematic = kinematicBox_->isChecked();
+    if (node->mech.kinematic && node->mech.motion == BodyMotion::Free) {
+        node->mech.motion = BodyMotion::Driven;
+    } else if (!node->mech.kinematic && (node->mech.motion == BodyMotion::Driven || node->mech.motion == BodyMotion::Surface)) {
+        node->mech.motion = BodyMotion::Free;
+    }
     if (shapeCombo_->currentData().isValid()) {
         node->mech.shape = static_cast<CollisionShape>(shapeCombo_->currentData().toInt());
     }
@@ -1041,11 +1253,12 @@ void MainWindow::showScripting() {
 void MainWindow::setScreenshotPath(const QString& path) { screenshotPath_ = path; }
 
 void MainWindow::captureScreenshot() {
-    viewport_->update();
-    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    QImage view = viewport_->captureView();
+    // update() only queues a paint. The simulation clock is advanced before the
+    // event loop runs, so the widget FBO would still show the pose from fitAll.
+    viewport_->repaint();
+    QImage view = viewport_->grabFramebuffer();
     if (view.isNull()) {
-        view = viewport_->grabFramebuffer();
+        view = viewport_->captureView();
     }
     QImage window = grab().toImage();
     if (!view.isNull() && !window.isNull()) {
@@ -1054,6 +1267,15 @@ void MainWindow::captureScreenshot() {
         QPainter painter(&window);
         painter.drawImage(QRectF(topLeft.x() * dpr, topLeft.y() * dpr, viewport_->width() * dpr, viewport_->height() * dpr),
                           view);
+        auto stamp = [&](QWidget* floater) {
+            if (floater != nullptr && floater->isVisible()) {
+                const QPoint origin = floater->mapTo(this, QPoint(0, 0));
+                painter.drawPixmap(QRectF(origin.x() * dpr, origin.y() * dpr, floater->width() * dpr, floater->height() * dpr),
+                                   floater->grab(), QRectF(floater->rect()));
+            }
+        };
+        stamp(palette_);
+        stamp(intent_);
     }
     const QImage& output = window.isNull() ? view : window;
     const bool saved = !output.isNull() && output.save(screenshotPath_);
@@ -1068,6 +1290,7 @@ QString MainWindow::mechLabel(MechKind kind) const {
         case MechKind::FixedJoint: return trk("mech.fixed");
         case MechKind::Hinge: return trk("mech.hinge");
         case MechKind::Slider: return trk("mech.slider");
+        case MechKind::Ball: return trk("mech.ball");
         case MechKind::Conveyor: return trk("mech.conveyor");
         case MechKind::CollisionSensor: return trk("mech.collisionSensor");
         case MechKind::DistanceSensor: return trk("mech.distanceSensor");
@@ -1095,6 +1318,7 @@ void MainWindow::fillMechCombos() {
                       {trk("mech.fixed"), static_cast<int>(MechKind::FixedJoint)},
                       {trk("mech.hinge"), static_cast<int>(MechKind::Hinge)},
                       {trk("mech.slider"), static_cast<int>(MechKind::Slider)},
+                      {trk("mech.ball"), static_cast<int>(MechKind::Ball)},
                       {trk("mech.conveyor"), static_cast<int>(MechKind::Conveyor)},
                       {trk("mech.collisionSensor"), static_cast<int>(MechKind::CollisionSensor)},
                       {trk("mech.distanceSensor"), static_cast<int>(MechKind::DistanceSensor)},
@@ -1104,7 +1328,10 @@ void MainWindow::fillMechCombos() {
     fill(shapeCombo_, {{trk("shape.box"), static_cast<int>(CollisionShape::Box)},
                        {trk("shape.sphere"), static_cast<int>(CollisionShape::Sphere)},
                        {trk("shape.capsule"), static_cast<int>(CollisionShape::Capsule)},
-                       {trk("shape.convex"), static_cast<int>(CollisionShape::ConvexHull)}});
+                       {trk("shape.convex"), static_cast<int>(CollisionShape::ConvexHull)},
+                       {trk("shape.cylinder"), static_cast<int>(CollisionShape::Cylinder)},
+                       {trk("shape.extrusion"), static_cast<int>(CollisionShape::Extrusion)},
+                       {trk("shape.mesh"), static_cast<int>(CollisionShape::Mesh)}});
     axisCombo_->clear();
     axisCombo_->addItems({trk("axis.x"), trk("axis.y"), trk("axis.z")});
     fill(driveCombo_, {{trk("drive.none"), static_cast<int>(DriveMode::None)},
@@ -1222,8 +1449,43 @@ void MainWindow::playSimulation() {
     if (!scripting_->load(source, error)) {
         scriptLog_->appendPlainText(QString::fromStdString(error));
     }
-    simulation_->setHooks([this] { scripting_->onStart(); }, [this](double dt) { scripting_->onStep(dt); },
+    if (simulation_->state() == SimState::Stopped) {
+        jointRest_.clear();
+        for (const KinematicResource& resource : scene_.resources) {
+            for (const KinJoint& joint : resource.joints) {
+                jointRest_.push_back(joint.position);
+            }
+        }
+    }
+    simulation_->setHooks([this] { scripting_->onStart(); },
+                          [this](double dt) {
+                              scripting_->onStep(dt);
+                              logic_.step(scene_, dt);
+                              if (robot_ != nullptr) {
+                                  robot_->step(dt);
+                              }
+                          },
                           [this] { scripting_->onStop(); });
+    simulation_->setAfterStep([this] { scripting_->onContacts(); });
+    std::string robotError;
+    robot_->build(scene_, robotError);
+    const std::string path = !pendingPath_.empty() ? pendingPath_ : demoPath_;
+    pendingPath_.clear();
+    if (robot_ != nullptr) {
+        robot_->setHideAllDuringQuery(kr420TrackDemo_);
+    }
+    const auto hidden = kr420TrackDemo_ ? hideAllMeshedParts(scene_)
+                                        : (kr420Demo_ ? hidePartsOutsideProximity(scene_) : std::vector<std::shared_ptr<SceneNode>>{});
+    if (!path.empty()) {
+        if (!robot_->arm(path, robotError) && !robotError.empty()) {
+            statusLabel_->setText(QString::fromStdString(robotError));
+        }
+    }
+    for (const auto& node : hidden) {
+        if (node) {
+            node->visible = true;
+        }
+    }
     simulation_->play();
     if (!simulation_->lastError().empty()) {
         statusLabel_->setText(QString::fromStdString(simulation_->lastError()));
@@ -1234,6 +1496,15 @@ void MainWindow::pauseSimulation() { simulation_->pause(); }
 
 void MainWindow::stopSimulation() {
     simulation_->stop();
+    std::size_t cursor = 0;
+    for (KinematicResource& resource : scene_.resources) {
+        for (KinJoint& joint : resource.joints) {
+            if (cursor < jointRest_.size()) {
+                joint.position = jointRest_[cursor++];
+            }
+        }
+    }
+    logic_.reset();
     if (timeLabel_ != nullptr) {
         timeLabel_->setText(trk("status.simTime").arg(0.0, 0, 'f', 2));
     }
@@ -1247,6 +1518,22 @@ void MainWindow::onSimTick() {
         return;
     }
     simulation_->tick(0.016);
+    if (viewport_ != nullptr && simulation_ != nullptr) {
+        viewport_->setSimTime(simulation_->time());
+        const PhysicsStats& stats = scene_.physicsDoc.stats;
+        viewport_->setPhysicsLine(trk("phys.hud")
+                                      .arg(stats.contacts)
+                                      .arg(stats.detectMs, 0, 'f', 3)
+                                      .arg(stats.solveMs, 0, 'f', 3)
+                                      .arg(stats.continuous)
+                                      .arg(QString::fromLatin1(physics_->backendName())));
+    }
+    if (logicCanvas_ != nullptr) {
+        logicCanvas_->update();
+    }
+    if (pathTimeline_ != nullptr) {
+        pathTimeline_->update();
+    }
     const std::string log = scripting_->takeLog();
     if (!log.empty() && scriptLog_ != nullptr) {
         scriptLog_->appendPlainText(QString::fromStdString(log));
@@ -1261,6 +1548,122 @@ void MainWindow::onSpeedChanged(double speed) {
 
 void MainWindow::runScriptSnippet() {}
 
+void MainWindow::usePhysicsBackend(PhysicsBackend backend) {
+    if (simulation_ && simulation_->state() != SimState::Stopped) {
+        simulation_->stop();
+    }
+    physics_ = createPhysicsEngine(backend);
+    simulation_ = std::make_unique<Simulation>(scene_, *physics_);
+    if (scripting_ != nullptr) {
+        scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
+                                    [this](const std::string& id) { physics_->releaseBody(id); });
+    }
+    scene_.physicsDoc.engine = physicsBackendName(backend);
+}
+
+void MainWindow::loadDemo(const QString& name) {
+    collisionDemo_ = name == QStringLiteral("collision");
+    kr420Demo_ = name == QStringLiteral("kr420");
+    kr420TrackDemo_ = name == QStringLiteral("kr420track");
+    transferDemo_ = name == QStringLiteral("transfer");
+    meshDemo_ = name == QStringLiteral("mesh");
+    slipDemo_ = name == QStringLiteral("slip");
+    if (name == QStringLiteral("scara")) {
+        buildScaraDemo(scene_);
+        demoPath_ = "pick_place";
+    } else if (collisionDemo_) {
+        buildCollisionDemo(scene_);
+        demoPath_.clear();
+    } else if (kr420Demo_) {
+        scene_.clear();
+        demoPath_.clear();
+        const QString stepPath = QString::fromUtf8(SIM_SOURCE_DIR "/testdata/local/KR420_R3080_KR280_R3080.stp");
+        if (!QFile::exists(stepPath)) {
+            statusLabel_->setText(trk("motion.kr420Missing"));
+        } else {
+            StepImporter importer;
+            const ImportResult imported = importer.importFile(stepPath.toStdString(), scene_);
+            if (!imported.ok) {
+                statusLabel_->setText(QString::fromStdString(imported.message));
+            } else {
+                const SuggestResult suggestion = suggestLinkGroups(scene_);
+                std::string error;
+                if (!applyLinkSuggestions(scene_, "kr420", suggestion, kr420DatasheetLimits(), error)) {
+                    statusLabel_->setText(QString::fromStdString(error.empty() ? suggestion.note : error));
+                } else {
+                    addKr420Demonstration(scene_);
+                    demoPath_ = "cycle";
+                    statusLabel_->setText(QString::fromStdString(suggestion.note));
+                }
+            }
+        }
+    } else if (kr420TrackDemo_) {
+        scene_.clear();
+        demoPath_.clear();
+        const QString stepPath = QString::fromUtf8(SIM_SOURCE_DIR "/testdata/local/KR420_R3080_KR280_R3080.stp");
+        if (!QFile::exists(stepPath)) {
+            statusLabel_->setText(trk("motion.kr420Missing"));
+        } else {
+            StepImporter importer;
+            const ImportResult imported = importer.importFile(stepPath.toStdString(), scene_);
+            if (!imported.ok) {
+                statusLabel_->setText(QString::fromStdString(imported.message));
+            } else {
+                const SuggestResult suggestion = suggestLinkGroups(scene_);
+                std::string error;
+                if (!applyLinkSuggestions(scene_, "kr420", suggestion, kr420DatasheetLimits(), error)) {
+                    statusLabel_->setText(QString::fromStdString(error.empty() ? suggestion.note : error));
+                } else if (!addKr420TrackDemonstration(scene_, error)) {
+                    statusLabel_->setText(QString::fromStdString(error));
+                } else {
+                    demoPath_ = "long";
+                    statusLabel_->setText(QString::fromStdString(suggestion.note));
+                }
+            }
+        }
+    } else if (transferDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildTransferLine(scene_);
+        demoPath_.clear();
+        applyTaskMode(4);
+    } else if (meshDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildMeshGapDemo(scene_);
+        demoPath_.clear();
+        applyTaskMode(4);
+    } else if (slipDemo_) {
+        usePhysicsBackend(PhysicsBackend::Builtin);
+        buildSlipDemo(scene_);
+        demoPath_.clear();
+        applyTaskMode(4);
+    } else {
+        buildTurntableLiftDemo(scene_);
+        demoPath_.clear();
+    }
+    if (motion_ != nullptr) {
+        motion_->refresh();
+    }
+    if (collision_ != nullptr && collisionDemo_) {
+        collision_->reload();
+        viewport_->setCallout(collision_->summaryText());
+    }
+    if (collisionDemo_) {
+        applyTaskMode(4);
+    } else if (kr420Demo_ || kr420TrackDemo_ || name == QStringLiteral("scara")) {
+        applyTaskMode(3);
+    } else if (name == QStringLiteral("turntable")) {
+        applyTaskMode(1);
+    }
+    if (logicCanvas_ != nullptr) {
+        logicCanvas_->update();
+    }
+    if (pathTimeline_ != nullptr) {
+        pathTimeline_->update();
+    }
+    rebuildTree();
+    viewport_->fitAll();
+}
+
 void MainWindow::beginHeadlessPlayback() {
     QTimer::singleShot(200, this, [this] {
         resizeDocks({treeDock_, propertyDock_}, {280, 300}, Qt::Horizontal);
@@ -1269,18 +1672,316 @@ void MainWindow::beginHeadlessPlayback() {
                 resizeDocks({signals, scripts}, {380, 720}, Qt::Horizontal);
             }
         }
-        viewport_->setStandardView(StandardView::Iso);
+        viewport_->setStandardView(kr420TrackDemo_ ? StandardView::Front : StandardView::Iso);
         viewport_->fitAll();
-        if (const auto pusher = scene_.findByName("Pusher")) {
+        if (collisionDemo_ && collision_ != nullptr) {
+            if (auto* dock = findChild<QDockWidget*>("dock.collision")) {
+                if (auto* signals = findChild<QDockWidget*>("dock.signals")) {
+                    tabifyDockWidget(signals, dock);
+                }
+                dock->show();
+                dock->raise();
+                resizeDocks({dock}, {280}, Qt::Vertical);
+            }
+            collision_->reload();
+            viewport_->fitAll();
+        }
+        if (transferDemo_ || meshDemo_ || slipDemo_) {
+            const char* focus = transferDemo_ ? "RubberBox" : meshDemo_ ? "Supported" : "GripBox";
+            if (const auto box = scene_.findByName(focus)) {
+                scene_.setSelected(box->id);
+            }
+            if (physicsDock_ != nullptr) {
+                physicsDock_->show();
+                physicsDock_->raise();
+                resizeDocks({physicsDock_}, {360}, Qt::Horizontal);
+            }
+        } else if (const auto pusher = scene_.findByName("Pusher")) {
             scene_.setSelected(pusher->id);
         }
         playSimulation();
         if (screenshotPath_.isEmpty()) {
             return;
         }
-        const int delay = static_cast<int>(std::max(headlessSeconds_, 0.2) * 1000.0) + 400;
-        QTimer::singleShot(delay, this, &MainWindow::captureScreenshot);
+        // Catch up on the simulation clock before the first software-GL paint.
+        // A wall-clock timer expires during that paint and both shots land at time 0.
+        const double target = std::max(headlessSeconds_, 0.0);
+        int guard = 0;
+        while (simulation_ && simulation_->time() + 1e-4 < target && guard < 8) {
+            const double remain = target - simulation_->time();
+            simulation_->tick(std::min(remain, 2.0));
+            ++guard;
+        }
+        if (viewport_ != nullptr) {
+            if (meshDemo_ || slipDemo_) {
+                viewport_->fitAll();
+            }
+            const PhysicsStats& stats = scene_.physicsDoc.stats;
+            viewport_->setPhysicsLine(trk("phys.hud")
+                                          .arg(stats.contacts)
+                                          .arg(stats.detectMs, 0, 'f', 3)
+                                          .arg(stats.solveMs, 0, 'f', 3)
+                                          .arg(stats.continuous)
+                                          .arg(QString::fromLatin1(physics_ ? physics_->backendName() : "")));
+        }
+        QTimer::singleShot(0, this, &MainWindow::captureScreenshot);
     });
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+    positionFloaters();
+}
+
+void MainWindow::positionFloaters() {
+    if (palette_ != nullptr) {
+        palette_->move(std::max(12, (width() - palette_->width()) / 2), 64);
+    }
+    if (intent_ != nullptr) {
+        intent_->move(std::max(12, (width() - intent_->width()) / 2), std::max(80, height() - intent_->height() - 40));
+    }
+}
+
+void MainWindow::setTaskModeName(const QString& mode) {
+    const QString key = mode.trimmed().toLower();
+    int index = 0;
+    if (key == "kinematics" || key == "2") {
+        index = 1;
+    } else if (key == "logic" || key == "3") {
+        index = 2;
+    } else if (key == "robot" || key == "4") {
+        index = 3;
+    } else if (key == "debug" || key == "5") {
+        index = 4;
+    } else if (key == "commission" || key == "6") {
+        index = 5;
+    }
+    applyTaskMode(index);
+}
+
+void MainWindow::applyTaskMode(int mode) {
+    taskMode_ = std::clamp(mode, 0, 5);
+    auto show = [this](QDockWidget* dock, bool visible) {
+        if (dock != nullptr) {
+            dock->setVisible(visible && !focusMode_);
+        }
+    };
+    show(treeDock_, taskMode_ == 0 || taskMode_ == 1 || taskMode_ == 3 || taskMode_ == 4);
+    show(propertyDock_, taskMode_ != 2);
+    show(motionDock_, taskMode_ == 1 || taskMode_ == 3);
+    show(logicDock_, taskMode_ == 2);
+    show(pathDock_, taskMode_ == 3);
+    show(collisionDock_, taskMode_ == 4 || taskMode_ == 5);
+    show(signalDock_, taskMode_ == 2 || taskMode_ == 4 || taskMode_ == 5);
+    show(scriptDock_, taskMode_ == 5);
+    show(plcDock_, taskMode_ == 5);
+    show(physicsDock_, taskMode_ == 0 || taskMode_ == 4);
+    if (chrome_ != nullptr) {
+        chrome_->setMode(taskMode_);
+    }
+    if (logicCanvas_ != nullptr && taskMode_ == 2) {
+        logicCanvas_->reload();
+        resizeDocks({logicDock_}, {720}, Qt::Horizontal);
+    }
+    if (pathTimeline_ != nullptr && taskMode_ == 3) {
+        pathTimeline_->reload();
+        resizeDocks({pathDock_}, {260}, Qt::Vertical);
+    }
+    if (taskMode_ == 5 && plcDock_ != nullptr) {
+        resizeDocks({plcDock_}, {300}, Qt::Horizontal);
+    }
+    saveWorkspace();
+}
+
+void MainWindow::setThemeName(const QString& theme) {
+    themeName_ = theme == "light" ? "light" : "dark";
+    QFile file(QString::fromLatin1(SIM_SOURCE_DIR) + "/resources/theme/" + themeName_ + ".qss");
+    if (file.open(QIODevice::ReadOnly)) {
+        qApp->setStyleSheet(QString::fromUtf8(file.readAll()));
+    }
+    if (viewport_ != nullptr) {
+        viewport_->setDarkChrome(themeName_ == "dark");
+    }
+    if (logicCanvas_ != nullptr) {
+        logicCanvas_->setDark(themeName_ == "dark");
+    }
+    if (pathTimeline_ != nullptr) {
+        pathTimeline_->setDark(themeName_ == "dark");
+    }
+    saveWorkspace();
+}
+
+void MainWindow::showCommandPalette() {
+    if (palette_ == nullptr) {
+        return;
+    }
+    positionFloaters();
+    palette_->openFor(&scene_);
+}
+
+void MainWindow::showIntentBar() {
+    if (intent_ == nullptr) {
+        return;
+    }
+    positionFloaters();
+    if (viewport_ != nullptr) {
+        viewport_->setPreviewMode(true);
+        viewport_->setGhost(true);
+    }
+    intent_->openBar();
+}
+
+void MainWindow::runUiCommand(const std::string& id) {
+    if (id.rfind("object:", 0) == 0) {
+        selectNode(QString::fromStdString(id.substr(7)), false);
+        return;
+    }
+    if (id.rfind("signal:", 0) == 0) {
+        applyTaskMode(5);
+        return;
+    }
+    if (id == "ui.new") {
+        newProject();
+    } else if (id == "ui.open") {
+        openProjectInteractive();
+    } else if (id == "ui.save") {
+        saveProjectInteractive();
+    } else if (id == "ui.import_step") {
+        importStepInteractive();
+    } else if (id == "ui.import_obj") {
+        importObjInteractive();
+    } else if (id == "ui.play" || id == "sim_play") {
+        playSimulation();
+    } else if (id == "ui.pause" || id == "sim_pause") {
+        pauseSimulation();
+    } else if (id == "ui.stop" || id == "sim_stop") {
+        stopSimulation();
+    } else if (id == "ui.reset") {
+        resetSimulation();
+    } else if (id == "ui.fit" || id == "ui.fit_all") {
+        viewport_->fitAll();
+    } else if (id == "ui.move") {
+        moveAction_->setChecked(true);
+        viewport_->setGizmoMode(GizmoMode::Translate);
+    } else if (id == "ui.rotate") {
+        rotateAction_->setChecked(true);
+        viewport_->setGizmoMode(GizmoMode::Rotate);
+    } else if (id == "ui.measure") {
+        viewport_->setMeasureMode(true);
+    } else if (id == "ui.focus") {
+        focusMode_ = !focusMode_;
+        applyTaskMode(taskMode_);
+    } else if (id == "ui.theme") {
+        setThemeName(themeName_ == "dark" ? "light" : "dark");
+    } else if (id == "ui.mode.model") {
+        applyTaskMode(0);
+    } else if (id == "ui.mode.kinematics") {
+        applyTaskMode(1);
+    } else if (id == "ui.mode.logic") {
+        applyTaskMode(2);
+    } else if (id == "ui.mode.robot") {
+        applyTaskMode(3);
+    } else if (id == "ui.mode.debug") {
+        applyTaskMode(4);
+    } else if (id == "ui.mode.commission") {
+        applyTaskMode(5);
+    } else if (id == "ui.palette") {
+        showCommandPalette();
+    } else if (id == "ui.intent") {
+        showIntentBar();
+    } else if (id == "ui.teach") {
+        if (!scene_.robotPaths.empty()) {
+            auto node = scene_.find(scene_.selectedId());
+            PathPoint point;
+            point.name = "T" + std::to_string(scene_.robotPaths.front().points.size() + 1);
+            point.move = PathMove::Lin;
+            if (node) {
+                const Mat4 world = node->worldMatrix();
+                point.position = {world(3, 0), world(3, 1), world(3, 2)};
+            }
+            scene_.robotPaths.front().points.push_back(point);
+            scene_.notify(ChangeKind::Structure);
+            if (pathTimeline_ != nullptr) {
+                pathTimeline_->reload();
+            }
+        }
+    } else {
+        CommandExecutor executor(scene_, simulation_.get(), physics_.get());
+        executor.execute({{"op", id}});
+    }
+}
+
+bool MainWindow::applyIntent(const std::string& text) {
+    const CommandPlan plan = CommandRegistry::planIntent(text);
+    if (plan.needsClarify) {
+        return false;
+    }
+    intentPoses_.clear();
+    std::vector<std::shared_ptr<SceneNode>> stack{scene_.root()};
+    while (!stack.empty()) {
+        auto node = stack.back();
+        stack.pop_back();
+        if (!node) {
+            continue;
+        }
+        intentPoses_.push_back({node->id, node->local});
+        for (const auto& child : node->children) {
+            stack.push_back(child);
+        }
+    }
+    intentSignals_ = scene_.signals;
+    intentUndoValid_ = true;
+    CommandExecutor executor(scene_, simulation_.get(), physics_.get());
+    bool any = false;
+    for (const PlanStep& step : plan.steps) {
+        if (step.risk == "R3" || (step.risk == "R2" && intent_ != nullptr && !intent_->allowsStructuralEdits())) {
+            continue;
+        }
+        nlohmann::json command = step.args;
+        command["op"] = step.op;
+        if (executor.execute(command).ok) {
+            any = true;
+        }
+    }
+    if (viewport_ != nullptr) {
+        viewport_->setPreviewMode(false);
+        viewport_->setGhost(false);
+        viewport_->setSimTime(simulation_ ? simulation_->time() : 0);
+    }
+    refreshSignals();
+    return any;
+}
+
+void MainWindow::undoIntent() {
+    if (!intentUndoValid_) {
+        if (intent_ != nullptr) {
+            intent_->note("没有可撤销的意图事务");
+        }
+        return;
+    }
+    for (const auto& [id, pose] : intentPoses_) {
+        if (auto node = scene_.find(id)) {
+            node->local = pose;
+        }
+    }
+    scene_.signals = intentSignals_;
+    intentUndoValid_ = false;
+    if (viewport_ != nullptr) {
+        viewport_->setGhost(false);
+        viewport_->setPreviewMode(false);
+        viewport_->update();
+    }
+    if (intent_ != nullptr) {
+        intent_->note("已撤销上一次意图事务");
+    }
+    refreshSignals();
+}
+
+void MainWindow::saveWorkspace() {
+    QSettings settings;
+    settings.setValue("ui/mode", taskMode_);
+    settings.setValue("ui/focus", focusMode_);
+    settings.setValue("ui/theme", themeName_);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

@@ -21,6 +21,8 @@ namespace sim {
 struct RenderMaterial {
     Vec3 color{0.7, 0.7, 0.7};
     float highlight = 0;
+    // 1 is opaque. Below 1 the backend blends and skips the depth write.
+    float opacity = 1;
 };
 
 struct RenderInstance {
@@ -55,6 +57,7 @@ struct FrameParams {
     int height = 1;
     // When true, submitInstances drops boxes that sit fully outside the clip volume.
     bool frustumCull = true;
+    Vec3 clearColor{0.10, 0.11, 0.14};
 };
 
 // Highest detail is 0. Coarse levels are for distant repeated parts on a long line.

@@ -150,4 +150,183 @@ void buildConveyorLine(Scene& scene) {
     scene.markClean();
 }
 
+void buildTransferLine(Scene& scene) {
+    scene.clear();
+    scene.name = "transfer_line";
+    scene.physicsDoc.engine = "builtin";
+    scene.physicsDoc.referenceFriction = 0.5;
+    scene.physicsDoc.defaultFriction = 0.2;
+    scene.physicsDoc.grades = {{"rubber", 0.6, 0.05}, {"steel", 0.3, 0.02}, {"slick", 0.05, 0.01}};
+    scene.physicsDoc.pairs = {
+        {"rubber", "rubber", 0.8, 0.05},
+        {"slick", "rubber", 0.05, 0.02},
+        {"rubber", "steel", 0.4, 0.04},
+        {"slick", "steel", 0.02, 0.01},
+    };
+
+    Mech roller;
+    roller.kind = MechKind::Conveyor;
+    roller.motion = BodyMotion::Driven;
+    roller.kinematic = true;
+    roller.surface = "rubber";
+    roller.direction = {1, 0, 0};
+    roller.speed = 300;
+    roller.grip = 1;
+    roller.guide = 90;
+    roller.nextName = "Belt";
+    roller.motor = "rollerDrive";
+    roller.halfExtents = {400, 90, 20};
+    addBox(scene, "Roller", roller.halfExtents, {0, 0, 20}, {0.18, 0.32, 0.62}, roller);
+
+    Mech belt;
+    belt.kind = MechKind::Conveyor;
+    belt.motion = BodyMotion::Driven;
+    belt.kinematic = true;
+    belt.surface = "steel";
+    belt.direction = {1, 0, 0};
+    belt.speed = 220;
+    belt.grip = 1;
+    belt.guide = 90;
+    belt.halfExtents = {400, 90, 20};
+    addBox(scene, "Belt", belt.halfExtents, {920, 0, 20}, {0.45, 0.48, 0.52}, belt);
+
+    Mech gate;
+    gate.kind = MechKind::Collision;
+    gate.motion = BodyMotion::Anchored;
+    gate.kinematic = true;
+    gate.handoff = true;
+    gate.halfExtents = {70, 120, 40};
+    addBox(scene, "Handoff", gate.halfExtents, {460, 0, 70}, {0.95, 0.62, 0.2}, gate);
+
+    Mech rubber;
+    rubber.kind = MechKind::Rigid;
+    rubber.motion = BodyMotion::Surface;
+    rubber.surfaceRide = true;
+    rubber.kinematic = true;
+    rubber.surface = "rubber";
+    rubber.autoMass = true;
+    rubber.density = 600;
+    rubber.nextName = "Belt";
+    rubber.halfExtents = {30, 30, 30};
+    addBox(scene, "RubberBox", rubber.halfExtents, {-220, -36, 65}, {0.72, 0.28, 0.22}, rubber);
+
+    Mech slick = rubber;
+    slick.surface = "slick";
+    slick.density = 400;
+    addBox(scene, "SlickBox", slick.halfExtents, {-220, 36, 65}, {0.85, 0.82, 0.45}, slick);
+
+    MotorAspect drive;
+    drive.name = "rollerDrive";
+    drive.owner = "Roller";
+    drive.running = true;
+    drive.targetSpeed = 300;
+    drive.speed = 300;
+    drive.accel = 800;
+    drive.decel = 1200;
+    drive.pulseDistance = 25;
+    drive.highRatio = 0.4;
+    drive.grayCode = true;
+    drive.countSignal = "encoder_count";
+    drive.pulseSignal = "encoder_pulse";
+    drive.graySignal = "encoder_gray";
+    drive.runningSignal = "encoder_run";
+    drive.speedSignal = "encoder_speed";
+    drive.distanceSignal = "encoder_tick";
+    drive.startedSignal = "drive_on";
+    drive.stoppedSignal = "drive_off";
+    drive.changedSignal = "drive_changed";
+    drive.notifyEvery = 100;
+    scene.motors.push_back(drive);
+    scene.markClean();
+}
+
+void buildMeshGapDemo(Scene& scene) {
+    scene.clear();
+    scene.name = "mesh_gap";
+    scene.physicsDoc.engine = "builtin";
+    scene.physicsDoc.defaultRestitution = 0.02;
+
+    auto mesh = makeBoxMesh({40, 40, 15});
+    for (std::size_t i = 0; i + 2 < mesh->positions.size(); i += 3) {
+        mesh->positions[i] += 120.f;
+    }
+    const auto base = static_cast<std::uint32_t>(mesh->vertexCount());
+    const Vec3 far[3] = {{-240, -8, -4}, {-210, 8, -4}, {-225, 0, 12}};
+    for (const Vec3& point : far) {
+        mesh->positions.push_back(static_cast<float>(point.x));
+        mesh->positions.push_back(static_cast<float>(point.y));
+        mesh->positions.push_back(static_cast<float>(point.z));
+        mesh->normals.push_back(0);
+        mesh->normals.push_back(0);
+        mesh->normals.push_back(1);
+    }
+    mesh->indices.insert(mesh->indices.end(), {base, base + 1, base + 2});
+    mesh->recomputeBounds();
+
+    Mech plate;
+    plate.kind = MechKind::Collision;
+    plate.motion = BodyMotion::Anchored;
+    plate.kinematic = true;
+    plate.shape = CollisionShape::Mesh;
+    plate.halfExtents = {280, 120, 80};
+    plate.surface = "steel";
+    auto plateNode = scene.makeNode(NodeKind::Part, "Plate");
+    plateNode->mech = plate;
+    plateNode->meshId = scene.addMesh(mesh);
+    plateNode->color = {0.35, 0.42, 0.55};
+    scene.addChild(scene.root(), plateNode);
+
+    Mech supported;
+    supported.kind = MechKind::Rigid;
+    supported.motion = BodyMotion::Free;
+    supported.surface = "rubber";
+    supported.halfExtents = {18, 18, 18};
+    supported.allowSleep = true;
+    addBox(scene, "Supported", supported.halfExtents, {120, 0, 40}, {0.18, 0.62, 0.38}, supported);
+
+    Mech falling = supported;
+    falling.surface = "rubber";
+    addBox(scene, "FallingGap", falling.halfExtents, {0, 0, 90}, {0.86, 0.42, 0.22}, falling);
+    scene.markClean();
+}
+
+void buildSlipDemo(Scene& scene) {
+    scene.clear();
+    scene.name = "slip_line";
+    scene.physicsDoc.engine = "builtin";
+    scene.physicsDoc.defaultFriction = 0.2;
+    scene.physicsDoc.defaultRestitution = 0;
+    scene.physicsDoc.grades = {{"rubber", 0.9, 0}, {"steel", 0.3, 0}, {"slick", 0.02, 0}};
+    scene.physicsDoc.pairs = {{"rubber", "steel", 1.0, 0}, {"slick", "steel", 0.02, 0}};
+
+    Mech belt;
+    belt.kind = MechKind::Conveyor;
+    belt.motion = BodyMotion::Driven;
+    belt.kinematic = true;
+    belt.surface = "steel";
+    belt.direction = {1, 0, 0};
+    belt.speed = 400;
+    belt.grip = 1;
+    belt.halfExtents = {520, 90, 20};
+    addBox(scene, "Belt", belt.halfExtents, {0, 0, 20}, {0.42, 0.45, 0.5}, belt);
+
+    Mech grip;
+    grip.kind = MechKind::Rigid;
+    grip.motion = BodyMotion::Free;
+    grip.surface = "rubber";
+    grip.surfaceRide = false;
+    grip.kinematic = false;
+    grip.autoMass = false;
+    grip.mass = 2;
+    grip.halfExtents = {24, 24, 24};
+    grip.allowSleep = false;
+    addBox(scene, "GripBox", grip.halfExtents, {-180, -36, 63}, {0.72, 0.28, 0.22}, grip);
+
+    Mech slick = grip;
+    slick.surface = "slick";
+    slick.mass = 2;
+    addBox(scene, "SlipBox", slick.halfExtents, {-180, 36, 63}, {0.85, 0.82, 0.45}, slick);
+    scene.markClean();
+}
+
 }  // namespace sim
