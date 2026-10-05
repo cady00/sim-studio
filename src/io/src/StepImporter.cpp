@@ -120,6 +120,24 @@ Transform fromTrsf(const gp_Trsf& trsf, double toMillimeters) {
     return transform;
 }
 
+void applyCadSurface(SceneNode& node, bool fromFile, Vec3 color) {
+    if (!fromFile) {
+        node.color = {0.62, 0.64, 0.68};
+        node.metallic = 0.58f;
+        node.roughness = 0.38f;
+        return;
+    }
+    node.color = color;
+    const double luma = color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722;
+    if (luma < 0.05) {
+        node.metallic = 0.22f;
+        node.roughness = 0.30f;
+        return;
+    }
+    node.metallic = 0.16f;
+    node.roughness = 0.46f;
+}
+
 bool colorOf(const Handle(XCAFDoc_ColorTool)& colors, const TDF_Label& label, Vec3& out) {
     if (colors.IsNull() || label.IsNull()) {
         return false;
@@ -504,10 +522,11 @@ int importLabel(ImportContext& context, const TDF_Label& label, const std::share
     auto node = context.scene.makeNode(assembly ? NodeKind::Assembly : NodeKind::Part, name);
     node->local = fromTrsf(XCAFDoc_ShapeTool::GetLocation(label).Transformation(), context.toMillimeters);
     Vec3 color = node->color;
-    if (!colorOf(context.colors, label, color)) {
-        colorOf(context.colors, defined, color);
+    bool fromFile = colorOf(context.colors, label, color);
+    if (!fromFile) {
+        fromFile = colorOf(context.colors, defined, color);
     }
-    node->color = color;
+    applyCadSurface(*node, fromFile, color);
 
     if (assembly) {
         context.scene.addChild(parent, node);
@@ -562,6 +581,8 @@ int importLabel(ImportContext& context, const TDF_Label& label, const std::share
         adoptMesh(context, std::string(suffix) + " " + name, entry, child->meshId);
         child->faceAxes = collectFaceAxes(solid, context.toMillimeters, solid.Location().Transformation());
         child->color = node->color;
+        child->metallic = node->metallic;
+        child->roughness = node->roughness;
         context.scene.addChild(node, child);
         ++context.created;
         ++context.partCount;

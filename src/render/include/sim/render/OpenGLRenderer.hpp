@@ -36,10 +36,13 @@ private:
 
     bool compileProgram(unsigned& program, const char* vertex, const char* fragment, std::string& error);
     void drawInstances(const GpuMesh& mesh, const std::vector<float>& instances, bool blend);
+    void drawBackground();
 
     std::unordered_map<std::string, GpuMesh> meshes_;
     unsigned meshProgram_ = 0;
     unsigned lineProgram_ = 0;
+    unsigned backgroundProgram_ = 0;
+    unsigned backgroundVao_ = 0;
     unsigned lineVao_ = 0;
     unsigned lineVbo_ = 0;
     unsigned instanceVbo_ = 0;

@@ -170,8 +170,8 @@ void ViewportWidget::drawGrid() {
         }
     }
     LineBatch lines;
-    const Vec3 minor{0.22f, 0.24f, 0.28f};
-    const Vec3 major{0.34f, 0.37f, 0.44f};
+    const Vec3 minor{0.28f, 0.32f, 0.38f};
+    const Vec3 major{0.48f, 0.54f, 0.62f};
     const auto majorAt = [](double coordinate, double spacing) {
         long index = std::lround(coordinate / spacing) % 5;
         if (index < 0) {

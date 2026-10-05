@@ -42,7 +42,10 @@ void main() {
     mat4 uModel = mat4(iM0, iM1, iM2, iM3);
     vec4 world = uModel * vec4(aPos, 1.0);
     vWorld = world.xyz;
-    vNormal = normalize(mat3(uModel) * aNormal);
+    mat3 linear = mat3(uModel);
+    float det = determinant(linear);
+    mat3 normalMatrix = abs(det) > 1e-12 ? transpose(inverse(linear)) : linear;
+    vNormal = normalMatrix * aNormal;
     vColor = iColor.rgb;
     vHighlight = iColor.a;
     vOpacity = iOpacity;
@@ -63,16 +66,33 @@ in float vRoughness;
 uniform vec3 uEye;
 out vec4 fragColor;
 void main() {
-    vec3 n = normalize(vNormal);
-    vec3 lightA = normalize(vec3(0.35, -0.45, 0.82));
-    vec3 lightB = normalize(vec3(-0.55, -0.15, 0.35));
-    float diffuse = max(dot(n, lightA), 0.0) * 0.72 + max(dot(n, lightB), 0.0) * 0.22;
+    vec3 geo = cross(dFdx(vWorld), dFdy(vWorld));
+    vec3 n = dot(vNormal, vNormal) > 1e-8 ? normalize(vNormal) : normalize(geo);
+    if (!gl_FrontFacing) {
+        n = -n;
+    }
     vec3 viewDir = normalize(uEye - vWorld);
-    float shininess = mix(48.0, 4.0, clamp(vRoughness, 0.0, 1.0));
-    float spec = pow(max(dot(n, normalize(lightA + viewDir)), 0.0), shininess) * mix(0.12, 0.85, clamp(vMetallic, 0.0, 1.0));
-    vec3 dielectric = vColor * (0.28 + diffuse);
-    vec3 metal = vColor * (0.08 + diffuse) + vColor * spec;
-    vec3 color = mix(dielectric, metal, clamp(vMetallic, 0.0, 1.0)) + vec3(spec * (1.0 - vMetallic));
+    vec3 keyDir = normalize(vec3(0.42, -0.55, 0.72));
+    vec3 fillDir = normalize(vec3(-0.78, 0.28, 0.46));
+    vec3 rimDir = normalize(vec3(-0.12, 0.82, 0.28));
+    float hemi = n.z * 0.5 + 0.5;
+    vec3 ambient = mix(vec3(0.20, 0.21, 0.23), vec3(0.40, 0.44, 0.50), hemi);
+    float ndotk = max(dot(n, keyDir), 0.0);
+    float ndotf = max(dot(n, fillDir), 0.0);
+    float ndotr = max(dot(n, rimDir), 0.0);
+    vec3 lit = vColor * (ambient + vec3(0.62, 0.60, 0.54) * ndotk + vec3(0.16, 0.18, 0.22) * ndotf + vec3(0.07) * ndotr);
+    float rough = clamp(vRoughness, 0.05, 1.0);
+    float shininess = mix(128.0, 10.0, rough);
+    float metal = clamp(vMetallic, 0.0, 1.0);
+    vec3 halfKey = normalize(keyDir + viewDir);
+    vec3 halfFill = normalize(fillDir + viewDir);
+    float specKey = pow(max(dot(n, halfKey), 0.0), shininess);
+    float specFill = pow(max(dot(n, halfFill), 0.0), max(shininess * 0.45, 4.0));
+    vec3 specTint = mix(vec3(1.0), max(vColor, vec3(0.22)), metal);
+    vec3 spec = specTint * (specKey * mix(0.42, 0.90, metal) + specFill * 0.14);
+    vec3 color = lit + spec;
+    float crease = smoothstep(0.18, 0.72, length(fwidth(n)));
+    color *= mix(1.0, 0.58, crease);
     if (vHighlight > 0.5) {
         color = mix(color, vec3(0.239, 0.525, 0.910), 0.42);
     }
@@ -95,6 +115,26 @@ const char* kLineFragment = R"(#version 330 core
 in vec3 vColor;
 out vec4 fragColor;
 void main() { fragColor = vec4(vColor, 1.0); }
+)";
+
+const char* kBackgroundVertex = R"(#version 330 core
+out vec2 vUv;
+void main() {
+    vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    vUv = pos;
+    gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+
+const char* kBackgroundFragment = R"(#version 330 core
+in vec2 vUv;
+uniform vec3 uClear;
+out vec4 fragColor;
+void main() {
+    vec3 top = uClear + vec3(0.07, 0.08, 0.10);
+    vec3 bottom = uClear * 0.62;
+    fragColor = vec4(mix(bottom, top, smoothstep(0.0, 1.0, vUv.y)), 1.0);
+}
 )";
 
 void toGl(const Mat4& matrix, float out[16]) {
@@ -154,9 +194,11 @@ bool OpenGLRenderer::initialize(std::string& error) {
     glDisable(GL_CULL_FACE);
     glClearColor(0.10f, 0.11f, 0.14f, 1.0f);
     if (!compileProgram(meshProgram_, kMeshVertex, kMeshFragment, error) ||
-        !compileProgram(lineProgram_, kLineVertex, kLineFragment, error)) {
+        !compileProgram(lineProgram_, kLineVertex, kLineFragment, error) ||
+        !compileProgram(backgroundProgram_, kBackgroundVertex, kBackgroundFragment, error)) {
         return false;
     }
+    glGenVertexArrays(1, &backgroundVao_);
     glGenVertexArrays(1, &lineVao_);
     glGenBuffers(1, &lineVbo_);
     glGenBuffers(1, &instanceVbo_);
@@ -189,6 +231,14 @@ void OpenGLRenderer::shutdown() {
     if (lineVao_ != 0) {
         glDeleteVertexArrays(1, &lineVao_);
         lineVao_ = 0;
+    }
+    if (backgroundVao_ != 0) {
+        glDeleteVertexArrays(1, &backgroundVao_);
+        backgroundVao_ = 0;
+    }
+    if (backgroundProgram_ != 0) {
+        glDeleteProgram(backgroundProgram_);
+        backgroundProgram_ = 0;
     }
     if (meshProgram_ != 0) {
         glDeleteProgram(meshProgram_);
@@ -247,6 +297,23 @@ void OpenGLRenderer::beginFrame(const FrameParams& frame) {
     glClearColor(static_cast<float>(frame.clearColor.x), static_cast<float>(frame.clearColor.y),
                  static_cast<float>(frame.clearColor.z), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    drawBackground();
+}
+
+void OpenGLRenderer::drawBackground() {
+    if (backgroundProgram_ == 0 || backgroundVao_ == 0) {
+        return;
+    }
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glUseProgram(backgroundProgram_);
+    glUniform3f(glGetUniformLocation(backgroundProgram_, "uClear"), static_cast<float>(frame_.clearColor.x),
+                static_cast<float>(frame_.clearColor.y), static_cast<float>(frame_.clearColor.z));
+    glBindVertexArray(backgroundVao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
 }
 
 void OpenGLRenderer::drawInstances(const GpuMesh& mesh, const std::vector<float>& instances, bool blend) {
