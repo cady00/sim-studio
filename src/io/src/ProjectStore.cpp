@@ -1,5 +1,6 @@
 #include "sim/io/ProjectStore.hpp"
 
+#include "sim/core/Plc.hpp"
 #include "sim/core/Process.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/ZipArchive.hpp"
@@ -254,6 +255,7 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     json["operations"] = operationsToJson(scene.operations);
     json["sequence"] = sequenceToJson(scene.sequence);
     json["ppr"] = pprToJson(scene.ppr);
+    json["softPlc"] = softPlcToJson(scene.softPlc);
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
         json["signals"].push_back(signalToJson(signal));
@@ -366,6 +368,13 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
         scene.units = json.at("units").get<std::string>();
     }
     scene.activeScript = json.value("activeScript", std::string{});
+    if (json.contains("softPlc")) {
+        std::string plcError;
+        if (!softPlcFromJson(json.at("softPlc"), scene.softPlc, plcError)) {
+            result.message = plcError.empty() ? "could not read the soft plc" : plcError;
+            return result;
+        }
+    }
     if (json.contains("signals") && json.at("signals").is_array()) {
         for (const auto& item : json.at("signals")) {
             Signal signal;

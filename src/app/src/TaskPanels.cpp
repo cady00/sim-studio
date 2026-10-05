@@ -4,12 +4,19 @@
 #include "sim/io/OpcUa.hpp"
 #include "sim/motion/Motion.hpp"
 
+#include "sim/motion/SoftPlc.hpp"
+
 #include <QCheckBox>
+#include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QEnterEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QHeaderView>
 #include <QListWidget>
 #include <QMouseEvent>
+#include <QStringList>
+#include <QTableWidget>
 
 #include <functional>
 #include <QGraphicsItem>
@@ -32,6 +39,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 // Qt defines `signals` as a macro. The scene stores named I/O signals under that member.
@@ -708,7 +716,7 @@ void PathTimeline::paintEvent(QPaintEvent*) {
 
 PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
     auto* layout = new QVBoxLayout(this);
-    auto* note = new QLabel("OPC UA 支持 SecurityPolicy None，以及 Basic256Sha256 的签名和签名加密、自签证书、用户名口令、断线重连。信号表可导入 CSV 或 TIA 变量表。PLCSIM Advanced 运行时未安装，只保留地址。");
+    auto* note = new QLabel("内置软 PLC 按仿真时钟扫描梯形图。映射表、扫描周期和强制写进工程。PLCSIM Advanced 只有适配器，启动会失败，不打开套接字。OPC UA 仍走现有客户端，节点号用十进制，只交换布尔。");
     note->setWordWrap(true);
     layout->addWidget(note);
 
@@ -726,11 +734,15 @@ PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scen
         layout->addWidget(frame);
         return button;
     };
-    QLabel* plcsimState = nullptr;
-    QPushButton* plcsimButton = addCard("PLCSIM Advanced", "127.0.0.1", plcsimState);
-    plcsimState->setText("未连接 · 本机没有安装 PLCSIM Advanced 运行时");
-    connect(plcsimButton, &QPushButton::clicked, this, [plcsimState] {
-        plcsimState->setText("未连接 · 本机没有安装 PLCSIM Advanced 运行时");
+    QPushButton* plcsimButton = addCard("PLCSIM Advanced", "适配器未实现", plcsimState_);
+    plcsimState_->setText("未连接 · 本机没有安装 PLCSIM Advanced 运行时");
+    connect(plcsimButton, &QPushButton::clicked, this, [this] {
+        PlcSimAdvancedBackend backend;
+        std::string error;
+        SoftPlcDocument doc = scene_.softPlc;
+        doc.backend = "plcsim";
+        backend.start(doc, error);
+        plcsimState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
     });
     QPushButton* opcButton = addCard("OPC UA", "opc.tcp://127.0.0.1:4840", opcState_);
     connect(opcButton, &QPushButton::clicked, this, [this] { connectOpcUa(); });
@@ -748,7 +760,314 @@ PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scen
         importText(QString::fromUtf8(file.readAll()));
     });
     layout->addWidget(import);
+
+    auto* scanRow = new QHBoxLayout;
+    enabledBox_ = new QCheckBox("启用软 PLC");
+    scanSpin_ = new QDoubleSpinBox;
+    scanSpin_->setRange(0.0001, 1.0);
+    scanSpin_->setDecimals(4);
+    scanSpin_->setSingleStep(0.01);
+    scanSpin_->setSuffix(" s");
+    backendBox_ = new QComboBox;
+    backendBox_->addItem("内置软 PLC", QStringLiteral("softplc"));
+    backendBox_->addItem("PLCSIM Advanced", QStringLiteral("plcsim"));
+    scanRow->addWidget(enabledBox_);
+    scanRow->addWidget(new QLabel("扫描"));
+    scanRow->addWidget(scanSpin_);
+    scanRow->addWidget(backendBox_);
+    layout->addLayout(scanRow);
+    connect(enabledBox_, &QCheckBox::toggled, this, [this](bool on) {
+        if (!filling_) {
+            scene_.softPlc.enabled = on;
+        }
+    });
+    connect(scanSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double seconds) {
+        if (!filling_) {
+            scene_.softPlc.scanSeconds = seconds;
+        }
+    });
+    connect(backendBox_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (!filling_) {
+            scene_.softPlc.backend = backendBox_->currentData().toString().toStdString();
+        }
+    });
+
+    ladderLabel_ = new QLabel;
+    ladderLabel_->setWordWrap(true);
+    layout->addWidget(ladderLabel_);
+
+    mapTable_ = new QTableWidget(0, 4);
+    mapTable_->setHorizontalHeaderLabels({"设备信号", "地址", "方向", "OPC 节点"});
+    mapTable_->horizontalHeader()->setStretchLastSection(true);
+    mapTable_->setMinimumHeight(120);
+    layout->addWidget(mapTable_);
+    auto* mapButtons = new QHBoxLayout;
+    auto* addMap = new QPushButton("添加映射");
+    auto* removeMap = new QPushButton("删除映射");
+    mapButtons->addWidget(addMap);
+    mapButtons->addWidget(removeMap);
+    layout->addLayout(mapButtons);
+    connect(addMap, &QPushButton::clicked, this, [this] {
+        commitBindings();
+        PlcBinding binding;
+        binding.direction = "in";
+        scene_.softPlc.bindings.push_back(binding);
+        reload();
+    });
+    connect(removeMap, &QPushButton::clicked, this, [this] {
+        commitBindings();
+        const int row = mapTable_->currentRow();
+        if (row >= 0 && row < static_cast<int>(scene_.softPlc.bindings.size())) {
+            scene_.softPlc.bindings.erase(scene_.softPlc.bindings.begin() + row);
+        }
+        reload();
+    });
+    connect(mapTable_, &QTableWidget::itemChanged, this, [this] { commitBindings(); });
+
+    forceTable_ = new QTableWidget(0, 5);
+    forceTable_->setHorizontalHeaderLabels({"地址", "类型", "当前", "强制", "强制值"});
+    forceTable_->horizontalHeader()->setStretchLastSection(true);
+    forceTable_->setMinimumHeight(120);
+    layout->addWidget(forceTable_);
+    connect(forceTable_, &QTableWidget::itemChanged, this, [this] { commitForces(); });
+
+    logView_ = new QPlainTextEdit;
+    logView_->setReadOnly(true);
+    logView_->setPlaceholderText("调试日志");
+    logView_->setMinimumHeight(90);
+    layout->addWidget(logView_);
     layout->addStretch(1);
+    reload();
+}
+
+void PlcCards::commit() {
+    if (filling_) {
+        return;
+    }
+    if (enabledBox_ != nullptr) {
+        scene_.softPlc.enabled = enabledBox_->isChecked();
+    }
+    if (scanSpin_ != nullptr) {
+        scene_.softPlc.scanSeconds = scanSpin_->value();
+    }
+    if (backendBox_ != nullptr) {
+        scene_.softPlc.backend = backendBox_->currentData().toString().toStdString();
+    }
+    commitBindings();
+    commitForces();
+}
+
+void PlcCards::commitBindings() {
+    if (filling_ || mapTable_ == nullptr) {
+        return;
+    }
+    std::vector<PlcBinding> bindings;
+    for (int row = 0; row < mapTable_->rowCount(); ++row) {
+        auto text = [&](int column) {
+            const QTableWidgetItem* item = mapTable_->item(row, column);
+            return item == nullptr ? std::string{} : item->text().trimmed().toStdString();
+        };
+        PlcBinding binding;
+        binding.device = text(0);
+        binding.address = text(1);
+        binding.direction = text(2);
+        binding.opcNode = text(3);
+        if (binding.direction != "in" && binding.direction != "out") {
+            binding.direction = "in";
+        }
+        bindings.push_back(std::move(binding));
+    }
+    scene_.softPlc.bindings = std::move(bindings);
+}
+
+void PlcCards::commitForces() {
+    if (filling_ || forceTable_ == nullptr) {
+        return;
+    }
+    const int rows = std::min(forceTable_->rowCount(), static_cast<int>(scene_.softPlc.tags.size()));
+    for (int row = 0; row < rows; ++row) {
+        PlcTag& tag = scene_.softPlc.tags[static_cast<std::size_t>(row)];
+        const QTableWidgetItem* forced = forceTable_->item(row, 3);
+        tag.forced = forced != nullptr && forced->checkState() == Qt::Checked;
+        const QString text = forceTable_->item(row, 4) == nullptr ? QString() : forceTable_->item(row, 4)->text().trimmed();
+        if (tag.kind == PlcValueKind::Int) {
+            tag.forceInteger = text.toLongLong();
+        } else if (tag.kind == PlcValueKind::Real) {
+            tag.forceReal = text.toDouble();
+        } else {
+            tag.forceFlag = text == QStringLiteral("1") || text.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0 ||
+                            text == QStringLiteral("开");
+        }
+    }
+}
+
+void PlcCards::reload() {
+    if (mapTable_ == nullptr || forceTable_ == nullptr) {
+        return;
+    }
+    filling_ = true;
+    if (enabledBox_ != nullptr) {
+        enabledBox_->setChecked(scene_.softPlc.enabled);
+    }
+    if (scanSpin_ != nullptr) {
+        scanSpin_->setValue(std::max(scene_.softPlc.scanSeconds, 0.0001));
+    }
+    if (backendBox_ != nullptr) {
+        const int index = backendBox_->findData(QString::fromStdString(scene_.softPlc.backend));
+        backendBox_->setCurrentIndex(index < 0 ? 0 : index);
+    }
+    QString ladder;
+    auto contactText = [](const PlcContact& contact) {
+        const QString address = QString::fromStdString(contact.address);
+        if (contact.edge == "rising") {
+            return address + QStringLiteral("↑");
+        }
+        if (contact.edge == "falling") {
+            return address + QStringLiteral("↓");
+        }
+        return contact.normallyOpen ? address : QStringLiteral("/") + address;
+    };
+    auto branchText = [&](const std::vector<PlcContact>& series) {
+        if (series.empty()) {
+            return QStringLiteral("1");
+        }
+        QStringList contacts;
+        for (const PlcContact& contact : series) {
+            contacts << contactText(contact);
+        }
+        return contacts.join(QStringLiteral(" & "));
+    };
+    for (const PlcRung& rung : scene_.softPlc.rungs) {
+        QStringList branches;
+        if (rung.parallel.empty()) {
+            branches << branchText(rung.series);
+        } else {
+            if (!rung.series.empty()) {
+                branches << branchText(rung.series);
+            }
+            for (const std::vector<PlcContact>& branch : rung.parallel) {
+                if (!branch.empty()) {
+                    branches << branchText(branch);
+                }
+            }
+        }
+        QString action = QStringLiteral("输出");
+        if (rung.action == "set") {
+            action = QStringLiteral("置位");
+        } else if (rung.action == "reset") {
+            action = QStringLiteral("复位");
+        } else if (rung.action == "ton") {
+            action = QStringLiteral("定时");
+        } else if (rung.action == "move") {
+            action = QStringLiteral("传送 ") + QString::number(rung.literal);
+        } else if (rung.action == "ctu") {
+            action = QStringLiteral("计数");
+        } else if (rung.action == "ctr") {
+            action = QStringLiteral("计数复位");
+        }
+        ladder += branches.join(QStringLiteral(" | ")) + QStringLiteral(" → ") + action + QStringLiteral(" ") +
+                  QString::fromStdString(rung.coil) + QStringLiteral("\n");
+    }
+    if (ladderLabel_ != nullptr) {
+        ladderLabel_->setText(ladder.isEmpty() ? QStringLiteral("没有梯形图") : ladder);
+    }
+    auto ensure = [](QTableWidget* table, int row, int column, const QString& text) {
+        if (table->item(row, column) == nullptr) {
+            table->setItem(row, column, new QTableWidgetItem);
+        }
+        table->item(row, column)->setText(text);
+    };
+    mapTable_->setRowCount(static_cast<int>(scene_.softPlc.bindings.size()));
+    for (int row = 0; row < mapTable_->rowCount(); ++row) {
+        const PlcBinding& binding = scene_.softPlc.bindings[static_cast<std::size_t>(row)];
+        ensure(mapTable_, row, 0, QString::fromStdString(binding.device));
+        ensure(mapTable_, row, 1, QString::fromStdString(binding.address));
+        ensure(mapTable_, row, 2, QString::fromStdString(binding.direction));
+        ensure(mapTable_, row, 3, QString::fromStdString(binding.opcNode));
+    }
+    forceTable_->setRowCount(static_cast<int>(scene_.softPlc.tags.size()));
+    for (int row = 0; row < forceTable_->rowCount(); ++row) {
+        const PlcTag& tag = scene_.softPlc.tags[static_cast<std::size_t>(row)];
+        ensure(forceTable_, row, 0, QString::fromStdString(tag.address));
+        ensure(forceTable_, row, 1, QString::fromUtf8(plcValueKindName(tag.kind)));
+        QString current = tag.flag ? QStringLiteral("1") : QStringLiteral("0");
+        if (tag.kind == PlcValueKind::Timer) {
+            current = tag.done ? QStringLiteral("1") : QString::number(tag.elapsed, 'f', 3);
+        } else if (tag.kind == PlcValueKind::Int || tag.kind == PlcValueKind::Counter) {
+            current = QString::number(tag.integer);
+        } else if (tag.kind == PlcValueKind::Real) {
+            current = QString::number(tag.real, 'f', 3);
+        }
+        ensure(forceTable_, row, 2, current);
+        forceTable_->item(row, 0)->setFlags(forceTable_->item(row, 0)->flags() & ~Qt::ItemIsEditable);
+        forceTable_->item(row, 1)->setFlags(forceTable_->item(row, 1)->flags() & ~Qt::ItemIsEditable);
+        forceTable_->item(row, 2)->setFlags(forceTable_->item(row, 2)->flags() & ~Qt::ItemIsEditable);
+        if (forceTable_->item(row, 3) == nullptr) {
+            forceTable_->setItem(row, 3, new QTableWidgetItem);
+        }
+        QTableWidgetItem* forced = forceTable_->item(row, 3);
+        forced->setFlags(forced->flags() | Qt::ItemIsUserCheckable);
+        forced->setCheckState(tag.forced ? Qt::Checked : Qt::Unchecked);
+        forced->setText(tag.forced ? QStringLiteral("开") : QStringLiteral("关"));
+        QString forceValue = tag.forceFlag ? QStringLiteral("1") : QStringLiteral("0");
+        if (tag.kind == PlcValueKind::Int) {
+            forceValue = QString::number(tag.forceInteger);
+        } else if (tag.kind == PlcValueKind::Real) {
+            forceValue = QString::number(tag.forceReal, 'f', 3);
+        }
+        ensure(forceTable_, row, 4, forceValue);
+    }
+    filling_ = false;
+}
+
+void PlcCards::showRuntime(const std::vector<std::string>& log) {
+    if (forceTable_ == nullptr) {
+        return;
+    }
+    filling_ = true;
+    const int rows = std::min(forceTable_->rowCount(), static_cast<int>(scene_.softPlc.tags.size()));
+    for (int row = 0; row < rows; ++row) {
+        const PlcTag& tag = scene_.softPlc.tags[static_cast<std::size_t>(row)];
+        QString current = tag.flag ? QStringLiteral("1") : QStringLiteral("0");
+        if (tag.kind == PlcValueKind::Timer) {
+            current = tag.done ? QStringLiteral("1") : QString::number(tag.elapsed, 'f', 3);
+        } else if (tag.kind == PlcValueKind::Int || tag.kind == PlcValueKind::Counter) {
+            current = QString::number(tag.integer);
+        } else if (tag.kind == PlcValueKind::Real) {
+            current = QString::number(tag.real, 'f', 3);
+        }
+        if (forceTable_->item(row, 2) == nullptr) {
+            forceTable_->setItem(row, 2, new QTableWidgetItem);
+        }
+        forceTable_->item(row, 2)->setText(current);
+    }
+    filling_ = false;
+    if (logView_ != nullptr) {
+        QString text;
+        for (const std::string& line : log) {
+            text += QString::fromStdString(line);
+            text += QStringLiteral("\n");
+        }
+        logView_->setPlainText(text);
+    }
+}
+
+bool PlcCards::exchangeOpc(const std::string& nodeId, bool write, bool& value, std::string& error) {
+    if (client_ == nullptr || !opcReady_) {
+        error = "OPC UA node is not connected";
+        return false;
+    }
+    char* end = nullptr;
+    const unsigned long id = std::strtoul(nodeId.c_str(), &end, 10);
+    if (end == nodeId.c_str() || *end != '\0') {
+        error = "OPC UA node id is not numeric";
+        return false;
+    }
+    const auto node = static_cast<std::uint32_t>(id);
+    if (write) {
+        return client_->writeBool(node, value, error);
+    }
+    return client_->readBool(node, value, error);
 }
 
 bool PlcCards::importText(const QString& text) {
@@ -765,6 +1084,7 @@ bool PlcCards::importText(const QString& text) {
 }
 
 bool PlcCards::demonstrateSecure() {
+    opcReady_ = false;
     importText("name,type,value\nextend,bool,true\ncount,int,4\ngap,real,12.5\n");
     OpcUaCertificate serverCert;
     OpcUaCertificate clientCert;
@@ -796,6 +1116,7 @@ bool PlcCards::demonstrateSecure() {
     const bool opened = client_->connect("127.0.0.1", port, error) && client_->hello(endpoint, error) &&
                         client_->openSecureChannel(error) && client_->createSession(error) && client_->activateSession(error);
     if (!opened) {
+        opcReady_ = false;
         opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
         return false;
     }
@@ -810,6 +1131,7 @@ bool PlcCards::demonstrateSecure() {
         return false;
     }
     publishPlcBool(scene_, "part_seen", value);
+    opcReady_ = true;
     const QString name = refs.empty() ? QStringLiteral("i=10001") : QString::fromStdString(refs.front().browseName);
     opcState_->setText(QString("已连接 · Basic256Sha256 SignAndEncrypt · operator · %1 → part_seen · %2")
                            .arg(name)
@@ -1212,6 +1534,7 @@ void SignalScope::exportCsv() {
 PlcCards::~PlcCards() { delete client_; }
 
 bool PlcCards::connectOpcUa() {
+    opcReady_ = false;
     delete client_;
     client_ = new OpcUaClient;
     std::string error;
@@ -1234,6 +1557,7 @@ bool PlcCards::connectOpcUa() {
         return false;
     }
     publishPlcBool(scene_, "part_seen", value);
+    opcReady_ = true;
     const QString name = refs.empty() ? QStringLiteral("i=10001") : QString::fromStdString(refs.front().browseName);
     opcState_->setText(QString("已连接 · %1 → part_seen · %2").arg(name).arg(value ? "true" : "false"));
     return true;

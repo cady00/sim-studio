@@ -108,6 +108,7 @@ void Scene::clear() {
     proximity = {};
     convexCache.clear();
     physicsDoc = {};
+    softPlc = {};
     motors.clear();
     contactNotices.clear();
     layout = {};
@@ -150,6 +151,7 @@ void Scene::steal(Scene& other) {
     proximity = std::move(other.proximity);
     convexCache = std::move(other.convexCache);
     physicsDoc = std::move(other.physicsDoc);
+    softPlc = std::move(other.softPlc);
     motors = std::move(other.motors);
     contactNotices = std::move(other.contactNotices);
     layout = std::move(other.layout);
@@ -173,6 +175,7 @@ void Scene::steal(Scene& other) {
     other.proximity = {};
     other.convexCache.clear();
     other.physicsDoc = {};
+    other.softPlc = {};
     other.motors.clear();
     other.contactNotices.clear();
     other.layout = {};
@@ -538,6 +541,7 @@ void Scene::reset(std::shared_ptr<SceneNode> root,
     proximity = {};
     convexCache.clear();
     physicsDoc = {};
+    softPlc = {};
     motors.clear();
     contactNotices.clear();
     layout = {};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sim/core/Kinematics.hpp"
+#include "sim/core/Plc.hpp"
 #include "sim/core/LineModel.hpp"
 #include "sim/core/Mech.hpp"
 #include "sim/core/PhysicsModel.hpp"
@@ -126,6 +127,7 @@ public:
     ProximitySetup proximity;
     std::vector<ConvexCacheEntry> convexCache;
     PhysicsDocument physicsDoc;
+    SoftPlcDocument softPlc;
     std::vector<MotorAspect> motors;
     std::vector<ContactNotice> contactNotices;
     LineLayout layout;

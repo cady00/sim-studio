@@ -35,7 +35,7 @@ src/app         Qt 主窗口、导入线程、命令行
 
 `ChangeKind` 区分结构、变换、选择和仿真。仿真通知刷新视口和信号表，不把项目标成已修改。
 
-每个节点有一份 `Mech`。关节、传感器、发生器和销毁器都挂在节点上。信号表是 Phase 5 PLC 要接的缝。OPC UA 适配器只读写 `Scene` 上的信号，不进入物理求解器。OPC UA 是计划中的主 PLC 协议；S7、PLCSIM Advanced 如果要做，也是同一张表的别的适配器，不替代 OPC UA 的位置。
+每个节点有一份 `Mech`。关节、传感器、发生器和销毁器都挂在节点上。信号表是软 PLC 和 OPC UA 共用的缝。内置 `SoftPlcRuntime` 实现 `IPlcBackend`，在物理步之前按仿真时钟扫描，把映射写回信号。OPC UA 客户端只在绑定了十进制节点号时交换布尔。`PlcSimAdvancedBackend` 是同一接口上的空适配器，不连接 PLCSIM。
 
 ## 渲染
 
@@ -148,7 +148,7 @@ OpenUSD 现在不导入也不导出。以后如果要接，放在 `src/io` 的�
 | 刚体 | `IPhysicsEngine`。默认 Jolt，可选 builtin | 把 builtin 补到能单独跑产线，再让 Jolt 只作插件 |
 | 近距 | `ICollisionQuery`，CPU BVH + 支撑映射 + 窄带 SDF | GPU LBVH 写同一套 SoA（`IGpuBroadphase` 空接口）；学习距离场是 `ILearnedDistanceField` 空接口 |
 | 机器人运动 | `BuiltinRobotSolver`，RRS/RCS 只有 `IRcsAdapter` 空接口 | 厂商 RCS 适配器接到同一规划结果 |
-| PLC | 信号表 | OPC UA 为主；PLCSIM Advanced API 是另一个适配器 |
+| PLC | 信号表 | 内置软 PLC 为默认 `IPlcBackend`；OPC UA 交换布尔；PLCSIM Advanced API 仍是未实现的适配器 |
 | 计算 | 本机进程 | 非实时逻辑可远程跑信号表；物理、执行器和 PLC 同步留在本机 |
 
 逻辑块和脚本之间仍然只通过信号交换，这样远程逻辑后端不用拆块的内部。

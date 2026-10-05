@@ -15,6 +15,7 @@ add_executable(simstudio_tests
     test_assets.cpp
     test_jt.cpp
     test_cojt.cpp
+    test_plc.cpp
     test_usd.cpp
     test_narrow.cpp
     test_opcua.cpp

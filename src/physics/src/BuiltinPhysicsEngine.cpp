@@ -895,7 +895,14 @@ private:
             direction = normalize(direction);
         }
         const double scale = conveyorScale(scene_->physicsDoc, load.mech.surface, belt.mech.surface, belt.mech.grip);
-        return direction * belt.mech.speed * scale;
+        double speed = belt.mech.speed;
+        if (!belt.mech.signal.empty()) {
+            const Signal* run = scene_->findSignal(belt.mech.signal);
+            if (run == nullptr || !run->flag) {
+                speed = 0;
+            }
+        }
+        return direction * speed * scale;
     }
 
     bool insideHandoff(const SceneNode& load) const {
