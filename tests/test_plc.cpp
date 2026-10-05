@@ -642,27 +642,30 @@ TEST_CASE("commission robot cycle is started by the photoeye latch", "[plc]") {
                         [] {});
     simulation.play();
     double peak = 0;
-    bool gripped = false;
-    bool held = false;
+    bool started = false;
+    bool blocked = false;
     for (int i = 0; i < 80; ++i) {
         simulation.tick(0.02);
         const sim::KinematicResource* robot = sim::findResource(scene.resources, "r1");
         REQUIRE(robot != nullptr);
         peak = std::max(peak, std::abs(robot->joints.front().position));
-        const sim::PlcTag* grip = sim::findPlcTag(scene.softPlc, "R1_Grip");
-        if (grip != nullptr && grip->flag) {
-            gripped = true;
+        const sim::PlcTag* start = sim::findPlcTag(scene.softPlc, "R1_Start");
+        const sim::PlcTag* zone = sim::findPlcTag(scene.softPlc, "Z1_Occupied");
+        REQUIRE(start != nullptr);
+        REQUIRE(zone != nullptr);
+        if (start->flag) {
+            started = true;
         }
-        if (const auto tool = scene.findByName("R1Gripper")) {
-            held = held || !tool->mech.held.empty();
+        if (started && zone->flag && !start->flag) {
+            blocked = true;
         }
     }
     REQUIRE(scene.findSignal("photo")->flag);
     REQUIRE_FALSE(scene.findSignal("belt_run")->flag);
-    REQUIRE(sim::findPlcTag(scene.softPlc, "R1_Start")->flag);
-    REQUIRE(peak > 40);
-    REQUIRE(gripped);
-    REQUIRE(held);
+    REQUIRE(peak > 20);
+    REQUIRE(blocked);
+    REQUIRE(scene.findSignal("Z1_Occupied")->flag);
+    REQUIRE_FALSE(scene.findSignal("r1_start")->flag);
 }
 
 TEST_CASE("forcing R1_Start moves the robot without the photoeye", "[plc]") {
@@ -697,4 +700,101 @@ TEST_CASE("forcing R1_Start moves the robot without the photoeye", "[plc]") {
     REQUIRE_FALSE(scene.findSignal("photo")->flag);
     REQUIRE(scene.findSignal("r1_start")->flag);
     REQUIRE(peak > 30);
+}
+
+TEST_CASE("a watched sphere writes Z1_Occupied and can reset start", "[plc]") {
+    sim::Scene scene;
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    auto node = scene.makeNode(sim::NodeKind::Part, "ArmTip");
+    node->local.translation = {0, 0, 0};
+    scene.addChild(scene.root(), node);
+    sim::PlcZoneWatch zone;
+    zone.name = "Z1";
+    zone.center = {100, 0, 0};
+    zone.radius = 40;
+    zone.watch = {"ArmTip"};
+    doc.zones.push_back(zone);
+    sim::PlcTag start;
+    start.address = "R1_Start";
+    start.flag = true;
+    doc.tags.push_back(start);
+    sim::PlcRung reset;
+    reset.series.push_back(levelContact("Z1_Occupied", true));
+    reset.coil = "R1_Start";
+    reset.action = "reset";
+    doc.rungs.push_back(reset);
+
+    sim::SoftPlcRuntime plc;
+    std::string error;
+    REQUIRE(plc.start(doc, error));
+    plc.scan(scene, 0.01, 0.01);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "Z1_Occupied")->flag);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "R1_Start")->flag);
+
+    node->local.translation = {100, 0, 0};
+    plc.scan(scene, 0.02, 0.01);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "Z1_Occupied")->flag);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "R1_Start")->flag);
+    REQUIRE(scene.findSignal("Z1_Occupied")->flag);
+
+    sim::findPlcTag(scene.softPlc, "Z1_Occupied")->forced = true;
+    sim::findPlcTag(scene.softPlc, "Z1_Occupied")->forceFlag = false;
+    plc.scan(scene, 0.03, 0.01);
+    REQUIRE_FALSE(scene.findSignal("Z1_Occupied")->flag);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "R1_Start")->flag == false);
+
+    const nlohmann::json json = sim::softPlcToJson(scene.softPlc);
+    sim::SoftPlcDocument loaded;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.zones.size() == 1);
+    REQUIRE(loaded.zones[0].name == "Z1");
+    REQUIRE(loaded.zones[0].radius == Approx(40));
+    REQUIRE(loaded.zones[0].watch.size() == 1);
+}
+
+TEST_CASE("mesh collision writes R1_Collision", "[plc]") {
+    sim::Scene scene;
+    auto arm = scene.makeNode(sim::NodeKind::Part, "ArmBox");
+    arm->meshId = scene.addMesh(sim::makeBoxMesh({20, 20, 20}));
+    arm->local.translation = {0, 0, 20};
+    scene.addChild(scene.root(), arm);
+    auto fixture = scene.makeNode(sim::NodeKind::Part, "FixtureBox");
+    fixture->meshId = scene.addMesh(sim::makeBoxMesh({20, 20, 20}));
+    fixture->local.translation = {0, 0, 20};
+    scene.addChild(scene.root(), fixture);
+
+    sim::KinematicResource resource;
+    resource.name = "r1";
+    sim::KinLink link;
+    link.name = "arm";
+    link.nodeId = arm->id;
+    resource.links.push_back(link);
+    scene.resources.push_back(resource);
+
+    sim::SoftPlcDocument& doc = scene.softPlc;
+    doc.enabled = true;
+    doc.scanSeconds = 0.01;
+    sim::PlcCollisionWatch watch;
+    watch.address = "R1_Collision";
+    watch.resource = "r1";
+    doc.collisions.push_back(watch);
+
+    sim::SoftPlcRuntime plc;
+    std::string error;
+    REQUIRE(plc.start(doc, error));
+    plc.scan(scene, 0.01, 0.01);
+    REQUIRE(sim::findPlcTag(scene.softPlc, "R1_Collision")->flag);
+    REQUIRE(scene.findSignal("R1_Collision")->flag);
+
+    fixture->local.translation = {200, 0, 20};
+    plc.scan(scene, 0.02, 0.01);
+    REQUIRE_FALSE(sim::findPlcTag(scene.softPlc, "R1_Collision")->flag);
+
+    const nlohmann::json json = sim::softPlcToJson(scene.softPlc);
+    sim::SoftPlcDocument loaded;
+    REQUIRE(sim::softPlcFromJson(json, loaded, error));
+    REQUIRE(loaded.collisions.size() == 1);
+    REQUIRE(loaded.collisions[0].resource == "r1");
 }

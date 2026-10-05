@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sim/core/Math.hpp"
+
 #include <nlohmann/json_fwd.hpp>
 
 #include <cstdint>
@@ -64,6 +66,25 @@ struct PlcRung {
     double literal = 0;
 };
 
+// Sphere watched by the soft PLC. A listed node origin or robot TCP inside the
+// radius writes a boolean input. An empty address becomes Name_Occupied, or
+// Z1_Occupied when the name is empty too. An empty watch list uses every robot TCP.
+struct PlcZoneWatch {
+    std::string name;
+    std::string address;
+    Vec3 center{0, 0, 0};
+    double radius = 150;
+    std::vector<std::string> watch;
+};
+
+// Mesh collision of one kinematic resource, written as a boolean input.
+// An empty address becomes R1_Collision, R2_Collision, ... in list order.
+// An empty resource name tests every resource.
+struct PlcCollisionWatch {
+    std::string address;
+    std::string resource;
+};
+
 struct SoftPlcDocument {
     bool enabled = false;
     double scanSeconds = 0.01;
@@ -72,6 +93,8 @@ struct SoftPlcDocument {
     std::vector<PlcTag> tags;
     std::vector<PlcBinding> bindings;
     std::vector<PlcRung> rungs;
+    std::vector<PlcZoneWatch> zones;
+    std::vector<PlcCollisionWatch> collisions;
 };
 
 const char* plcValueKindName(PlcValueKind kind);

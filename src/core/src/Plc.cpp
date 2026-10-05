@@ -142,6 +142,25 @@ nlohmann::json softPlcToJson(const SoftPlcDocument& doc) {
     for (const PlcRung& rung : doc.rungs) {
         json["rungs"].push_back(rungToJson(rung));
     }
+    if (!doc.zones.empty()) {
+        json["zones"] = nlohmann::json::array();
+        for (const PlcZoneWatch& zone : doc.zones) {
+            nlohmann::json item{{"name", zone.name},
+                                {"center", {zone.center.x, zone.center.y, zone.center.z}},
+                                {"radius", zone.radius},
+                                {"watch", zone.watch}};
+            if (!zone.address.empty()) {
+                item["address"] = zone.address;
+            }
+            json["zones"].push_back(std::move(item));
+        }
+    }
+    if (!doc.collisions.empty()) {
+        json["collisions"] = nlohmann::json::array();
+        for (const PlcCollisionWatch& watch : doc.collisions) {
+            json["collisions"].push_back(nlohmann::json{{"address", watch.address}, {"resource", watch.resource}});
+        }
+    }
     return json;
 }
 
@@ -293,6 +312,42 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
             if (!rung.coil.empty()) {
                 doc.rungs.push_back(std::move(rung));
             }
+        }
+    }
+    if (json.contains("zones") && json.at("zones").is_array()) {
+        for (const auto& item : json.at("zones")) {
+            if (!item.is_object()) {
+                continue;
+            }
+            PlcZoneWatch zone;
+            zone.name = item.value("name", std::string{});
+            zone.address = item.value("address", std::string{});
+            zone.radius = item.value("radius", 150.0);
+            if (item.contains("center") && item.at("center").is_array() && item.at("center").size() >= 3) {
+                zone.center = {item.at("center").at(0).get<double>(), item.at("center").at(1).get<double>(),
+                               item.at("center").at(2).get<double>()};
+            }
+            if (item.contains("watch") && item.at("watch").is_array()) {
+                for (const auto& name : item.at("watch")) {
+                    if (name.is_string()) {
+                        zone.watch.push_back(name.get<std::string>());
+                    }
+                }
+            }
+            if (!zone.name.empty() || !zone.address.empty()) {
+                doc.zones.push_back(std::move(zone));
+            }
+        }
+    }
+    if (json.contains("collisions") && json.at("collisions").is_array()) {
+        for (const auto& item : json.at("collisions")) {
+            if (!item.is_object()) {
+                continue;
+            }
+            PlcCollisionWatch watch;
+            watch.address = item.value("address", std::string{});
+            watch.resource = item.value("resource", std::string{});
+            doc.collisions.push_back(std::move(watch));
         }
     }
     error.clear();
