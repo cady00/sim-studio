@@ -30,6 +30,7 @@ set(SIM_OCCT_CANDIDATES
     TKGeomAlgo TKTopAlgo TKPrim TKBO TKShHealing TKBool TKMesh
     TKCDF TKLCAF TKCAF TKBinL TKXmlL TKBin TKXml TKStdL TKStd TKVCAF
     TKXSBase TKSTEPBase TKSTEPAttr TKSTEP209 TKSTEP
+    TKIGES TKXDEIGES
     TKXCAF TKXDESTEP TKXmlXCAF TKBinXCAF
     TKDE TKDESTEP
 )
@@ -59,7 +60,7 @@ add_subdirectory(src/motion)
 add_subdirectory(src/ai)
 
 if(SIMSTUDIO_BUILD_APP)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Test)
     qt_standard_project_setup()
     set(CMAKE_AUTORCC ON)
     add_subdirectory(src/render)

@@ -66,6 +66,19 @@ struct PathSweepHit {
 double profileDuration(ProfileKind kind, double q0, double q1, double vmax, double amax);
 double profileSample(ProfileKind kind, double q0, double q1, double vmax, double amax, double time, bool* done);
 
+// Acceleration used by a joint move. `source` is "dynamics", "user", or "velocity".
+// "velocity" means torque or inertia was not provided, so the value is large and the move is speed-limited.
+struct JointAccelLimit {
+    double value = 1.0e9;
+    std::string source = "velocity";
+    bool payloadScaled = false;
+};
+
+JointAccelLimit jointAccelLimit(const KinematicResource& resource, const KinJoint& joint);
+// Lowers a Cartesian acceleration so the implied joint acceleration stays inside jointAccelLimit.
+double cartesianAccelCap(const KinematicResource& resource, const std::vector<double>& start, const std::vector<double>& goal,
+                         double distance, double requested);
+
 double jointCommand(const KinematicResource& resource, const KinJoint& joint);
 CartesianPose forwardModel(const KinematicResource& resource);
 IkResult inverseModel(const KinematicResource& resource, const CartesianPose& target, const std::vector<double>& seed);
@@ -126,6 +139,8 @@ public:
     bool start(Scene& scene, const std::string& blockName, std::string& error);
     void step(Scene& scene, double dt);
     bool finished(const std::string& blockName) const;
+    // Step index while the block is running, or -1 when it is idle.
+    int activeStep(const std::string& blockName) const;
     const std::string& lastError() const { return lastError_; }
 
 private:
@@ -137,6 +152,8 @@ private:
         std::size_t action = 0;
         double waitLeft = 0;
         bool waiting = false;
+        bool waitSignal = false;
+        std::string signal;
         bool jogging = false;
         std::string jogJoint;
         double jogSpeed = 0;
@@ -148,9 +165,90 @@ private:
 };
 
 MotionPlan planRobotPath(Scene& scene, KinematicResource& resource, const RobotPath& path);
+
+struct MeasureResult {
+    int updated = 0;
+    int planned = 0;
+    int logic = 0;
+    int conveyor = 0;
+    int sensor = 0;
+    std::string note;
+};
+
+// Changes when the path, zones, external values, or joint limits change.
+std::string pathFingerprint(const RobotPath& path, const KinematicResource* resource);
+// Robot tasks use planRobotPath. Logic tasks step the event machine. Conveyor tasks
+// step the builtin solver on a small belt. A pinned bar stays until its fingerprint changes.
+MeasureResult measureOperationTimes(Scene& scene, bool force);
+
+struct StationAccount {
+    std::string id;
+    double busySeconds = 0;
+    double starvedSeconds = 0;
+    double blockedSeconds = 0;
+    int completions = 0;
+    double processSeconds = 0;
+};
+
+struct ProductionStats {
+    double time = 0;
+    int output = 0;
+    double jobsPerHour = 0;
+    double sourceBlockedSeconds = 0;
+    std::vector<StationAccount> stations;
+};
+
+// One row of the discrete-event premise. timeSource is empty for the authored table.
+struct ProductionTerm {
+    std::string station;
+    std::string operation;
+    double seconds = 0;
+    double wait = 0;
+    std::string timeSource;
+};
+
+// One-piece flow. The source keeps a single input slot full on its interval.
+// A station is busy while it works, blocked when the next station still holds a part, and starved when it has none.
+class LineProduction {
+public:
+    bool start(const Scene& scene, std::string& error);
+    void step(double dt);
+    ProductionStats stats() const;
+    // Discrete one-piece flow from the operation table. Never a mesh-collision hour.
+    std::string note(bool chinese) const;
+
+private:
+    struct Stage {
+        std::string id;
+        double process = 0;
+        bool occupied = false;
+        bool processing = false;
+        double worked = 0;
+        double busy = 0;
+        double starved = 0;
+        double blocked = 0;
+        int completions = 0;
+    };
+
+    void advance(double dt);
+    void transfer();
+
+    std::vector<Stage> stages_;
+    double interval_ = 1;
+    double sourceClock_ = 0;
+    bool input_ = false;
+    double time_ = 0;
+    int output_ = 0;
+    double sourceBlocked_ = 0;
+    bool running_ = false;
+    std::vector<ProductionTerm> terms_;
+};
 // Cubic Hermite on u in [0, 1]. Slopes are dq/du so a zone can match the joint velocity on both sides.
 double zoneBlend(double u, double q0, double q1, double slope0, double slope1);
-std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource);
+// `maxDistance` keeps pairs at least this deep. 1e-4 treats a touch as a hit. A negative value
+// ignores grazing tessellation and keeps only penetrations past that many millimetres.
+std::vector<std::pair<std::string, std::string>> collidingPairs(const Scene& scene, const KinematicResource& resource,
+                                                                double maxDistance = 1e-4);
 void highlightCollisions(Scene& scene, const KinematicResource& resource,
                          const std::vector<std::pair<std::string, std::string>>& pairs);
 // Continuous check along joint-space samples. The bound is the summed joint travel of every point.
@@ -163,6 +261,8 @@ bool saveLibrary(const Scene& scene, const std::string& resourceName, const std:
 bool loadLibrary(Scene& scene, const std::string& path, std::string& error);
 
 void buildTurntableLiftDemo(Scene& scene);
+// Three mechanisms assembled only with ensureResource, addLink, adoptParts, addJoint, and capturePose.
+void buildEditorDevices(Scene& scene);
 void buildScaraDemo(Scene& scene);
 void buildCollisionDemo(Scene& scene);
 
@@ -196,11 +296,25 @@ struct SuggestResult {
 SuggestResult suggestLinkGroups(const Scene& scene);
 bool axisFromCylindricalFace(const Scene& scene, const std::string& nodeId, Vec3 point, Vec3 normal, Vec3& origin,
                              Vec3& direction, double& radius);
-// `limits` apply in chain order. Acceleration is not taken from a datasheet; it is set to 180 deg/s^2.
+// `limits` apply in chain order. Acceleration is left velocity-limited unless the user or a dynamics estimate sets it.
 bool applyLinkSuggestions(Scene& scene, const std::string& resourceName, const SuggestResult& suggestion,
                           const std::vector<RevoluteLimit>& limits, std::string& error);
 // Public KR 420 R3080 ranges and speeds. See docs/KR420.md. Six entries, A1 through A6.
 std::vector<RevoluteLimit> kr420DatasheetLimits();
+
+struct CatalogRobot {
+    std::string name;
+    std::string source;
+};
+
+// KUKA KR 6 R900 sixx, ABB IRB 120, FANUC LR Mate 200iD, Yaskawa GP8.
+// Limits, speeds, and link origins are copied from the public pages named in `source`.
+// Acceleration is velocity-limited until a torque and an inertia are present, or the user types a value.
+// Geometry is a box on each link.
+const std::vector<CatalogRobot>& robotCatalog();
+bool addCatalogRobot(Scene& scene, const std::string& name, Vec3 station, std::string& error);
+// Layout, welds, a path, a clamp, OPC UA signal names, and a sequence. The robot is IRB120, not a private model.
+void buildPublicCell(Scene& scene);
 // Hides meshed parts whose names are outside the proximity sets. The caller shows them again.
 std::vector<std::shared_ptr<SceneNode>> hidePartsOutsideProximity(Scene& scene);
 // Obstacle, tint is already applied by applyLinkSuggestions. Adds a PTP/LIN path named "cycle".

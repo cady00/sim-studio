@@ -1,16 +1,27 @@
 #include "sim/app/TaskPanels.hpp"
 
 #include "sim/core/Scene.hpp"
+#include "sim/io/OpcUa.hpp"
 #include "sim/motion/Motion.hpp"
 
+#include <QCheckBox>
+#include <QEnterEvent>
+#include <QFile>
+#include <QFileDialog>
+#include <QListWidget>
+#include <QMouseEvent>
+
+#include <functional>
 #include <QGraphicsItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
+#include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
-#include <QLineEdit>
-#include <QHBoxLayout>
 #include <QInputDialog>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPaintEvent>
 #include <QPainter>
@@ -20,6 +31,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <thread>
+
+// Qt defines `signals` as a macro. The scene stores named I/O signals under that member.
+#ifdef signals
+#undef signals
+#endif
 
 namespace sim {
 namespace {
@@ -42,8 +60,37 @@ public:
     }
 
     const std::string& key() const { return key_; }
+    void setHot(bool hot) { setPen(QPen(hot ? QColor(214, 148, 48) : QColor(44, 110, 206), hot ? 3.0 : 1.5)); }
 
 protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton && event->pos().x() > rect().width() - 18) {
+            wiring_ = true;
+            event->accept();
+            return;
+        }
+        QGraphicsRectItem::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override {
+        if (wiring_) {
+            wiring_ = false;
+            if (canvas_ != nullptr) {
+                canvas_->finishWire(key_, event->scenePos());
+            }
+            event->accept();
+            return;
+        }
+        QGraphicsRectItem::mouseReleaseEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event) override {
+        if (canvas_ != nullptr) {
+            canvas_->editKey(key_);
+        }
+        QGraphicsRectItem::mouseDoubleClickEvent(event);
+    }
+
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override {
         const QVariant result = QGraphicsRectItem::itemChange(change, value);
         if (change == ItemPositionHasChanged && canvas_ != nullptr && !canvas_->arranging()) {
@@ -56,6 +103,7 @@ protected:
 private:
     LogicCanvas* canvas_ = nullptr;
     std::string key_;
+    bool wiring_ = false;
 };
 
 QString stepTitle(const LogicStep& step) {
@@ -94,8 +142,13 @@ LogicCanvas::LogicCanvas(Scene& scene, QWidget* parent) : QWidget(parent), scene
     add("添加步骤", [this] { addStep(); });
     add("添加输出", [this] { addOutput(); });
     add("重命名", [this] { renameSelected(); });
+    add("应用文本", [this] { applyText(); });
     tools->addStretch(1);
     layout->addLayout(tools);
+    source_ = new QPlainTextEdit(this);
+    source_->setPlaceholderText("name block\nin go\nout done\npython:\ndef on_step(dt):\n    pass\n---\nwait 0.1\nstep");
+    source_->setMaximumHeight(120);
+    layout->addWidget(source_);
     graph_ = new QGraphicsScene(this);
     view_ = new QGraphicsView(graph_, this);
     view_->setRenderHint(QPainter::Antialiasing);
@@ -112,6 +165,7 @@ LogicCanvas::LogicCanvas(Scene& scene, QWidget* parent) : QWidget(parent), scene
             const auto slash = key.find('/');
             if (slash != std::string::npos) {
                 selected_ = std::atoi(key.substr(0, slash).c_str());
+                showText();
             }
         }
     });
@@ -126,7 +180,26 @@ void LogicCanvas::setDark(bool dark) {
     reload();
 }
 
-void LogicCanvas::remember(const std::string& key, const QPointF& position) { pins_[key] = position; }
+void LogicCanvas::remember(const std::string& key, const QPointF& position) {
+    pins_[key] = position;
+    const auto slash = key.find('/');
+    if (slash == std::string::npos) {
+        return;
+    }
+    const int index = std::atoi(key.substr(0, slash).c_str());
+    if (index < 0 || index >= static_cast<int>(scene_.logicBlocks.size())) {
+        return;
+    }
+    LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+    const std::string suffix = key.substr(slash + 1);
+    for (auto& pin : block.pins) {
+        if (pin.first == suffix) {
+            pin.second = {position.x(), position.y()};
+            return;
+        }
+    }
+    block.pins.emplace_back(suffix, std::make_pair(position.x(), position.y()));
+}
 
 void LogicCanvas::refreshEdges() {
     const auto existing = graph_->items();
@@ -191,6 +264,7 @@ void LogicCanvas::reload() {
         auto* note = graph_->addText("还没有逻辑块。块与块之间只通过信号交换。");
         note->setDefaultTextColor(dark_ ? QColor(166, 172, 203) : QColor(76, 83, 115));
         note->setPos(16, 16);
+        arranging_ = false;
         return;
     }
     for (int index = 0; index < static_cast<int>(scene_.logicBlocks.size()); ++index) {
@@ -203,9 +277,21 @@ void LogicCanvas::reload() {
             const std::string key = std::to_string(index) + "/" + suffix;
             auto* node = new LogicNodeItem(this, key, title, subtitle, fill, dark_);
             const auto found = pins_.find(key);
+            bool placed = false;
             if (found != pins_.end()) {
                 node->setPos(found->second);
+                placed = true;
             } else {
+                for (const auto& pin : block.pins) {
+                    if (pin.first == suffix) {
+                        node->setPos(pin.second.first, pin.second.second);
+                        pins_[key] = node->pos();
+                        placed = true;
+                        break;
+                    }
+                }
+            }
+            if (!placed) {
                 node->setPos(24 + static_cast<int>(row.size()) * 210, 36 + index * 140);
                 pins_[key] = node->pos();
             }
@@ -238,6 +324,8 @@ void LogicCanvas::reload() {
     }
     arranging_ = false;
     refreshEdges();
+    restyle();
+    showText();
 }
 
 void LogicCanvas::addBlock() {
@@ -311,6 +399,160 @@ void LogicCanvas::renameSelected() {
     block.name = name.trimmed().toStdString();
     scene_.notify(ChangeKind::Structure);
     reload();
+}
+
+void LogicCanvas::showText() {
+    if (source_ == nullptr || source_->hasFocus()) {
+        return;
+    }
+    if (scene_.logicBlocks.empty()) {
+        source_->clear();
+        return;
+    }
+    selected_ = std::clamp(selected_, 0, static_cast<int>(scene_.logicBlocks.size()) - 1);
+    source_->setPlainText(QString::fromStdString(logicToText(scene_.logicBlocks[static_cast<std::size_t>(selected_)])));
+}
+
+void LogicCanvas::applyText() {
+    if (source_ == nullptr || scene_.logicBlocks.empty()) {
+        return;
+    }
+    selected_ = std::clamp(selected_, 0, static_cast<int>(scene_.logicBlocks.size()) - 1);
+    LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(selected_)];
+    LogicBlock parsed = block;
+    std::string error;
+    if (!logicFromText(source_->toPlainText().toStdString(), parsed, error)) {
+        source_->setPlaceholderText(QString::fromStdString(error));
+        return;
+    }
+    parsed.pins = block.pins;
+    parsed.resource = block.resource;
+    parsed.repeat = block.repeat;
+    block = std::move(parsed);
+    scene_.notify(ChangeKind::Structure);
+    reload();
+}
+
+void LogicCanvas::finishWire(const std::string& fromKey, const QPointF& scenePos) {
+    if (graph_ == nullptr) {
+        return;
+    }
+    const auto slash = fromKey.find('/');
+    if (slash == std::string::npos || fromKey.substr(slash + 1) != "out") {
+        return;
+    }
+    const int fromIndex = std::atoi(fromKey.substr(0, slash).c_str());
+    for (QGraphicsItem* item : graph_->items(scenePos)) {
+        auto* node = dynamic_cast<LogicNodeItem*>(item);
+        if (node == nullptr) {
+            continue;
+        }
+        const auto toSlash = node->key().find('/');
+        if (toSlash == std::string::npos || node->key().substr(toSlash + 1) != "in") {
+            continue;
+        }
+        const int toIndex = std::atoi(node->key().substr(0, toSlash).c_str());
+        if (toIndex == fromIndex || toIndex < 0 || fromIndex < 0 ||
+            toIndex >= static_cast<int>(scene_.logicBlocks.size()) ||
+            fromIndex >= static_cast<int>(scene_.logicBlocks.size())) {
+            return;
+        }
+        std::string signal;
+        if (!wireLogicBlocks(scene_.logicBlocks[static_cast<std::size_t>(fromIndex)],
+                             scene_.logicBlocks[static_cast<std::size_t>(toIndex)], signal)) {
+            return;
+        }
+        scene_.notify(ChangeKind::Structure);
+        reload();
+        return;
+    }
+}
+
+void LogicCanvas::editKey(const std::string& key) {
+    const auto slash = key.find('/');
+    if (slash == std::string::npos) {
+        return;
+    }
+    const int index = std::atoi(key.substr(0, slash).c_str());
+    const std::string suffix = key.substr(slash + 1);
+    if (index < 0 || index >= static_cast<int>(scene_.logicBlocks.size()) || suffix.size() < 2 || suffix[0] != 's') {
+        return;
+    }
+    const int stepIndex = std::atoi(suffix.substr(1).c_str());
+    LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+    if (stepIndex < 0 || stepIndex >= static_cast<int>(block.steps.size())) {
+        return;
+    }
+    QString current = "wait 0.1";
+    const LogicStep& step = block.steps[static_cast<std::size_t>(stepIndex)];
+    if (!step.actions.empty()) {
+        const LogicAction& action = step.actions.front();
+        if (action.kind == "wait" || action.kind == "jog") {
+            current = QString::fromStdString(action.kind + " " + std::to_string(action.seconds));
+        } else if (action.kind == "move_pose") {
+            current = QString::fromStdString("move_pose " + action.pose);
+        } else if (!action.signal.empty()) {
+            current = QString::fromStdString(action.kind + " " + action.signal);
+        } else {
+            current = QString::fromStdString(action.kind);
+        }
+    }
+    bool ok = false;
+    const QString line = QInputDialog::getText(this, "步骤", "kind signal 或 wait 秒", QLineEdit::Normal, current, &ok);
+    if (!ok || line.trimmed().isEmpty()) {
+        return;
+    }
+    const std::string text = "name holder\npython:\n---\n" + line.trimmed().toStdString() + "\nstep\n";
+    LogicBlock parsed;
+    std::string error;
+    if (!logicFromText(text, parsed, error) || parsed.steps.empty()) {
+        return;
+    }
+    block.steps[static_cast<std::size_t>(stepIndex)] = parsed.steps.front();
+    scene_.notify(ChangeKind::Structure);
+    reload();
+}
+
+void LogicCanvas::setLive(const std::vector<std::string>& stepKeys, const std::vector<std::string>& hotSignals) {
+    liveKeys_ = stepKeys;
+    hotSignals_ = hotSignals;
+    restyle();
+}
+
+void LogicCanvas::restyle() {
+    if (graph_ == nullptr) {
+        return;
+    }
+    for (QGraphicsItem* item : graph_->items()) {
+        auto* node = dynamic_cast<LogicNodeItem*>(item);
+        if (node == nullptr) {
+            continue;
+        }
+        bool hot = std::find(liveKeys_.begin(), liveKeys_.end(), node->key()) != liveKeys_.end();
+        if (!hot) {
+            const auto slash = node->key().find('/');
+            if (slash != std::string::npos) {
+                const int index = std::atoi(node->key().substr(0, slash).c_str());
+                if (index >= 0 && index < static_cast<int>(scene_.logicBlocks.size())) {
+                    const LogicBlock& block = scene_.logicBlocks[static_cast<std::size_t>(index)];
+                    for (const std::string& name : block.inputs) {
+                        if (std::find(hotSignals_.begin(), hotSignals_.end(), name) != hotSignals_.end()) {
+                            hot = node->key().substr(slash + 1) == "in";
+                        }
+                    }
+                    for (const std::string& name : block.outputs) {
+                        const Signal* signal = scene_.findSignal(name);
+                        if (signal != nullptr && signal->flag &&
+                            std::find(hotSignals_.begin(), hotSignals_.end(), name) != hotSignals_.end() &&
+                            node->key().substr(slash + 1) == "out") {
+                            hot = true;
+                        }
+                    }
+                }
+            }
+        }
+        node->setHot(hot);
+    }
 }
 
 PathTimeline::PathTimeline(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
@@ -464,36 +706,537 @@ void PathTimeline::paintEvent(QPaintEvent*) {
     painter.drawText(QRect(12, height() - 22, width() - 24, 18), Qt::AlignLeft | Qt::AlignVCenter, footer);
 }
 
-PlcCards::PlcCards(QWidget* parent) : QWidget(parent) {
+PlcCards::PlcCards(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
     auto* layout = new QVBoxLayout(this);
-    auto* note = new QLabel("虚拟调试连接只是界面。Phase 5 之前不会打开套接字，地址固定在本机回环。");
+    auto* note = new QLabel("OPC UA 支持 SecurityPolicy None，以及 Basic256Sha256 的签名和签名加密、自签证书、用户名口令、断线重连。信号表可导入 CSV 或 TIA 变量表。PLCSIM Advanced 运行时未安装，只保留地址。");
     note->setWordWrap(true);
     layout->addWidget(note);
-    const struct {
-        const char* title;
-        const char* endpoint;
-    } cards[] = {
-        {"PLCSIM Advanced", "127.0.0.1"},
-        {"OPC UA", "opc.tcp://127.0.0.1:4840"},
-    };
-    for (const auto& card : cards) {
+
+    auto addCard = [&](const QString& title, const QString& endpoint, QLabel*& state) {
         auto* frame = new QWidget;
         frame->setObjectName("commandPalette");
         auto* column = new QVBoxLayout(frame);
-        auto* title = new QLabel(QString::fromUtf8(card.title));
-        auto* endpoint = new QLabel(QString::fromUtf8(card.endpoint));
-        auto* state = new QLabel("未连接");
+        column->addWidget(new QLabel(title));
+        column->addWidget(new QLabel(endpoint));
+        state = new QLabel("未连接");
+        state->setWordWrap(true);
         auto* button = new QPushButton("连接");
-        column->addWidget(title);
-        column->addWidget(endpoint);
         column->addWidget(state);
         column->addWidget(button);
         layout->addWidget(frame);
-        connect(button, &QPushButton::clicked, this, [state] {
-            state->setText("未连接 · Phase 5 之前不会打开套接字");
-        });
-    }
+        return button;
+    };
+    QLabel* plcsimState = nullptr;
+    QPushButton* plcsimButton = addCard("PLCSIM Advanced", "127.0.0.1", plcsimState);
+    plcsimState->setText("未连接 · 本机没有安装 PLCSIM Advanced 运行时");
+    connect(plcsimButton, &QPushButton::clicked, this, [plcsimState] {
+        plcsimState->setText("未连接 · 本机没有安装 PLCSIM Advanced 运行时");
+    });
+    QPushButton* opcButton = addCard("OPC UA", "opc.tcp://127.0.0.1:4840", opcState_);
+    connect(opcButton, &QPushButton::clicked, this, [this] { connectOpcUa(); });
+    auto* import = new QPushButton("导入信号表");
+    connect(import, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, "导入信号表", QString(), "信号表 (*.csv *.txt);;所有文件 (*)");
+        if (path.isEmpty()) {
+            return;
+        }
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            opcState_->setText("未导入 · 打不开文件");
+            return;
+        }
+        importText(QString::fromUtf8(file.readAll()));
+    });
+    layout->addWidget(import);
     layout->addStretch(1);
+}
+
+bool PlcCards::importText(const QString& text) {
+    std::vector<ImportedSignal> rows;
+    std::string error;
+    if (!importSignalTable(text.toStdString(), rows, error)) {
+        opcState_->setText(QString::fromUtf8("未导入 · ") + QString::fromStdString(error));
+        return false;
+    }
+    applyImportedSignals(scene_, rows);
+    opcState_->setText(QString("已导入 %1 个信号").arg(static_cast<int>(rows.size())));
+    emit signalsImported();
+    return true;
+}
+
+bool PlcCards::demonstrateSecure() {
+    importText("name,type,value\nextend,bool,true\ncount,int,4\ngap,real,12.5\n");
+    OpcUaCertificate serverCert;
+    OpcUaCertificate clientCert;
+    std::string error;
+    if (!serverCert.createSelfSigned("simstudio-server", error) || !clientCert.createSelfSigned("simstudio-client", error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    delete secureServer_;
+    secureServer_ = new OpcUaServer;
+    secureServer_->useSecurity(OpcUaSecurity::SignAndEncrypt, serverCert);
+    secureServer_->setUser("operator", "secret");
+    if (!secureServer_->listen(0, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    const int port = secureServer_->port();
+    OpcUaServer* server = secureServer_;
+    std::thread([server] {
+        std::string serveError;
+        server->serve(serveError);
+    }).detach();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    delete client_;
+    client_ = new OpcUaClient;
+    client_->useSecurity(OpcUaSecurity::SignAndEncrypt, clientCert, serverCert);
+    client_->setUser("operator", "secret");
+    const std::string endpoint = "opc.tcp://127.0.0.1:" + std::to_string(port);
+    const bool opened = client_->connect("127.0.0.1", port, error) && client_->hello(endpoint, error) &&
+                        client_->openSecureChannel(error) && client_->createSession(error) && client_->activateSession(error);
+    if (!opened) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    std::vector<OpcUaReference> refs;
+    if (!client_->browse(85, refs, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    bool value = false;
+    if (!client_->readBool(10001, value, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    publishPlcBool(scene_, "part_seen", value);
+    const QString name = refs.empty() ? QStringLiteral("i=10001") : QString::fromStdString(refs.front().browseName);
+    opcState_->setText(QString("已连接 · Basic256Sha256 SignAndEncrypt · operator · %1 → part_seen · %2")
+                           .arg(name)
+                           .arg(value ? "true" : "false"));
+    emit signalsImported();
+    return true;
+}
+
+class ScopePlot : public QWidget {
+public:
+    explicit ScopePlot(QWidget* parent = nullptr) : QWidget(parent) {
+        setObjectName("scope.plot");
+        setMouseTracking(true);
+        setMinimumHeight(160);
+    }
+
+    ScopeTrace* trace = nullptr;
+    std::vector<std::string> visible;
+    bool velocity = true;
+    bool acceleration = true;
+    bool dark = true;
+    double cursor = 0;
+    bool holdCursor = false;
+    QString emptyText;
+    std::function<void()> cursorChanged;
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QColor paper = dark ? QColor(18, 24, 42) : QColor(248, 249, 252);
+        const QColor ink = dark ? QColor(230, 232, 242) : QColor(28, 32, 44);
+        const QColor grid = dark ? QColor(42, 51, 80) : QColor(210, 214, 224);
+        painter.fillRect(rect(), paper);
+        if (trace == nullptr || trace->time.size() < 2) {
+            painter.setPen(ink);
+            painter.drawText(rect(), Qt::AlignCenter, emptyText);
+            return;
+        }
+        struct Lane {
+            QString name;
+            QColor color;
+            Qt::PenStyle style;
+            std::vector<double> values;
+        };
+        const QColor palette[] = {QColor(91, 141, 239), QColor(227, 155, 58), QColor(61, 190, 122),
+                                  QColor(212, 106, 106), QColor(176, 123, 224), QColor(78, 196, 212)};
+        std::vector<Lane> lanes;
+        int colorIndex = 0;
+        for (const std::string& id : visible) {
+            const ScopeTrace::Series* series = trace->findSeries(id);
+            if (series == nullptr) {
+                continue;
+            }
+            const QColor color = palette[colorIndex % 6];
+            ++colorIndex;
+            lanes.push_back(Lane{QString::fromStdString(id), color, Qt::SolidLine, series->value});
+            if (id.rfind("jnt:", 0) == 0 && velocity) {
+                lanes.push_back(Lane{QString::fromStdString(id + ".v"), color, Qt::DashLine, trace->velocity(id)});
+            }
+            if (id.rfind("jnt:", 0) == 0 && acceleration) {
+                lanes.push_back(Lane{QString::fromStdString(id + ".a"), color, Qt::DotLine, trace->acceleration(id)});
+            }
+        }
+        if (lanes.empty()) {
+            painter.setPen(ink);
+            painter.drawText(rect(), Qt::AlignCenter, emptyText);
+            return;
+        }
+        const int left = 132;
+        const int right = 12;
+        const int top = 8;
+        const int bottom = 18;
+        const QRect plot(left, top, std::max(1, width() - left - right), std::max(1, height() - top - bottom));
+        const double t0 = trace->time.front();
+        const double t1 = std::max(trace->time.back(), t0 + 1e-6);
+        const int laneHeight = std::max(22, plot.height() / static_cast<int>(lanes.size()));
+        painter.setPen(grid);
+        painter.drawRect(plot);
+        for (std::size_t lane = 0; lane < lanes.size(); ++lane) {
+            const int y0 = plot.top() + static_cast<int>(lane) * laneHeight;
+            painter.drawLine(plot.left(), y0, plot.right(), y0);
+        }
+        auto xOf = [&](double time) {
+            return plot.left() + static_cast<int>((time - t0) / (t1 - t0) * plot.width());
+        };
+        for (std::size_t lane = 0; lane < lanes.size(); ++lane) {
+            const Lane& item = lanes[lane];
+            const int y0 = plot.top() + static_cast<int>(lane) * laneHeight;
+            const int y1 = std::min(plot.bottom(), y0 + laneHeight);
+            double lo = 0;
+            double hi = 0;
+            bool any = false;
+            const std::size_t count = std::min(trace->time.size(), item.values.size());
+            for (std::size_t i = 0; i < count; ++i) {
+                lo = any ? std::min(lo, item.values[i]) : item.values[i];
+                hi = any ? std::max(hi, item.values[i]) : item.values[i];
+                any = true;
+            }
+            if (!any) {
+                continue;
+            }
+            if (std::abs(hi - lo) < 1e-9) {
+                hi = lo + 1;
+            }
+            QPainterPath path;
+            for (std::size_t i = 0; i < count; ++i) {
+                const double fraction = (item.values[i] - lo) / (hi - lo);
+                const QPointF point(xOf(trace->time[i]), y1 - fraction * (y1 - y0 - 4) - 2);
+                if (i == 0) {
+                    path.moveTo(point);
+                } else {
+                    path.lineTo(point);
+                }
+            }
+            QPen pen(item.color, item.style == Qt::SolidLine ? 1.6 : 1.2, item.style);
+            painter.setPen(pen);
+            painter.drawPath(path);
+            painter.setPen(ink);
+            painter.drawText(QRect(4, y0, left - 8, laneHeight), Qt::AlignVCenter | Qt::AlignLeft,
+                             painter.fontMetrics().elidedText(item.name, Qt::ElideMiddle, left - 8));
+        }
+        const int cursorX = std::clamp(xOf(cursor), plot.left(), plot.right());
+        painter.setPen(QPen(QColor(240, 192, 64), 1.2));
+        painter.drawLine(cursorX, plot.top(), cursorX, plot.bottom());
+        painter.setPen(ink);
+        painter.drawText(QRect(plot.left(), height() - bottom, plot.width(), bottom), Qt::AlignLeft | Qt::AlignVCenter,
+                         QString::number(t0, 'f', 2) + QStringLiteral(" s"));
+        painter.drawText(QRect(plot.left(), height() - bottom, plot.width(), bottom), Qt::AlignRight | Qt::AlignVCenter,
+                         QString::number(t1, 'f', 2) + QStringLiteral(" s"));
+    }
+
+    void mousePressEvent(QMouseEvent* event) override { moveCursor(event->position().x()); }
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (event->buttons() & Qt::LeftButton || holdCursor) {
+            moveCursor(event->position().x());
+        }
+    }
+    void enterEvent(QEnterEvent*) override { holdCursor = true; }
+    void leaveEvent(QEvent*) override {
+        holdCursor = false;
+        if (trace != nullptr && !trace->time.empty()) {
+            cursor = trace->time.back();
+            update();
+            if (cursorChanged) {
+                cursorChanged();
+            }
+        }
+    }
+
+private:
+    void moveCursor(int x) {
+        if (trace == nullptr || trace->time.size() < 2) {
+            return;
+        }
+        const int left = 132;
+        const int right = 12;
+        const int plotWidth = std::max(1, width() - left - right);
+        const double t0 = trace->time.front();
+        const double t1 = std::max(trace->time.back(), t0 + 1e-6);
+        const double fraction = std::clamp((x - left) / static_cast<double>(plotWidth), 0.0, 1.0);
+        cursor = t0 + fraction * (t1 - t0);
+        holdCursor = true;
+        update();
+        if (cursorChanged) {
+            cursorChanged();
+        }
+    }
+};
+
+SignalScope::SignalScope(Scene& scene, QWidget* parent) : QWidget(parent), scene_(scene) {
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(6, 6, 6, 6);
+    auto* row = new QHBoxLayout;
+    velocityBox_ = new QCheckBox;
+    velocityBox_->setObjectName("scope.velocity");
+    velocityBox_->setChecked(true);
+    accelerationBox_ = new QCheckBox;
+    accelerationBox_->setObjectName("scope.acceleration");
+    accelerationBox_->setChecked(true);
+    exportButton_ = new QPushButton;
+    exportButton_->setObjectName("scope.export");
+    clearButton_ = new QPushButton;
+    clearButton_->setObjectName("scope.clear");
+    row->addWidget(velocityBox_);
+    row->addWidget(accelerationBox_);
+    row->addStretch(1);
+    row->addWidget(exportButton_);
+    row->addWidget(clearButton_);
+    layout->addLayout(row);
+    auto* body = new QHBoxLayout;
+    list_ = new QListWidget;
+    list_->setObjectName("scope.list");
+    list_->setMaximumWidth(220);
+    plot_ = new ScopePlot;
+    plot_->trace = &trace_;
+    plot_->cursorChanged = [this] { refreshReadout(); };
+    body->addWidget(list_);
+    body->addWidget(plot_, 1);
+    layout->addLayout(body, 1);
+    readout_ = new QLabel;
+    readout_->setObjectName("scope.readout");
+    readout_->setWordWrap(true);
+    layout->addWidget(readout_);
+    connect(list_, &QListWidget::itemChanged, this, [this] {
+        if (filling_) {
+            return;
+        }
+        userPicked_ = true;
+        syncWatch();
+    });
+    connect(velocityBox_, &QCheckBox::toggled, this, [this](bool checked) {
+        if (plot_ != nullptr) {
+            plot_->velocity = checked;
+            plot_->update();
+            refreshReadout();
+        }
+    });
+    connect(accelerationBox_, &QCheckBox::toggled, this, [this](bool checked) {
+        if (plot_ != nullptr) {
+            plot_->acceleration = checked;
+            plot_->update();
+            refreshReadout();
+        }
+    });
+    connect(exportButton_, &QPushButton::clicked, this, [this] { exportCsv(); });
+    connect(clearButton_, &QPushButton::clicked, this, [this] { clearTrace(); });
+    setTexts(QStringLiteral("速度"), QStringLiteral("加速度"), QStringLiteral("导出 CSV"), QStringLiteral("清空"),
+             QStringLiteral("等待仿真"));
+    reload();
+}
+
+void SignalScope::setTexts(const QString& velocity, const QString& acceleration, const QString& exportCsv, const QString& clearText,
+                           const QString& waiting) {
+    waiting_ = waiting;
+    if (velocityBox_ != nullptr) {
+        velocityBox_->setText(velocity);
+    }
+    if (accelerationBox_ != nullptr) {
+        accelerationBox_->setText(acceleration);
+    }
+    if (exportButton_ != nullptr) {
+        exportButton_->setText(exportCsv);
+    }
+    if (clearButton_ != nullptr) {
+        clearButton_->setText(clearText);
+    }
+    if (plot_ != nullptr) {
+        plot_->emptyText = waiting;
+        plot_->update();
+    }
+}
+
+void SignalScope::setDark(bool dark) {
+    if (plot_ != nullptr) {
+        plot_->dark = dark;
+        plot_->update();
+    }
+}
+
+void SignalScope::sample(double timeSeconds) {
+    trace_.sample(scene_, timeSeconds);
+    if (plot_ != nullptr && !plot_->holdCursor && !trace_.time.empty()) {
+        plot_->cursor = trace_.time.back();
+    }
+    refreshReadout();
+    if (plot_ != nullptr) {
+        plot_->update();
+    }
+}
+
+void SignalScope::clearTrace() {
+    trace_.clear();
+    if (plot_ != nullptr) {
+        plot_->cursor = 0;
+        plot_->update();
+    }
+    refreshReadout();
+}
+
+void SignalScope::reload() {
+    if (list_ == nullptr) {
+        return;
+    }
+    std::vector<std::string> previous;
+    for (int i = 0; i < list_->count(); ++i) {
+        if (list_->item(i)->checkState() == Qt::Checked) {
+            previous.push_back(list_->item(i)->data(Qt::UserRole).toString().toStdString());
+        }
+    }
+    const bool first = list_->count() == 0 && !userPicked_;
+    filling_ = true;
+    list_->clear();
+    auto add = [this](const std::string& id) {
+        auto* item = new QListWidgetItem(QString::fromStdString(id));
+        item->setData(Qt::UserRole, QString::fromStdString(id));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+        list_->addItem(item);
+    };
+    for (const Signal& signal : scene_.signals) {
+        add("sig:" + signal.name);
+    }
+    for (const KinematicResource& resource : scene_.resources) {
+        for (const KinJoint& joint : resource.joints) {
+            add("jnt:" + resource.name + "/" + joint.name);
+        }
+    }
+    int checked = 0;
+    for (int i = 0; i < list_->count(); ++i) {
+        const std::string id = list_->item(i)->data(Qt::UserRole).toString().toStdString();
+        const bool was = std::find(previous.begin(), previous.end(), id) != previous.end();
+        const bool pick = first && checked < 6;
+        if (was || pick) {
+            list_->item(i)->setCheckState(Qt::Checked);
+            ++checked;
+        }
+    }
+    filling_ = false;
+    syncWatch();
+}
+
+void SignalScope::syncWatch() {
+    std::vector<std::string> ids;
+    std::vector<std::string> visible;
+    if (list_ != nullptr) {
+        for (int i = 0; i < list_->count(); ++i) {
+            const std::string id = list_->item(i)->data(Qt::UserRole).toString().toStdString();
+            if (list_->item(i)->checkState() == Qt::Checked) {
+                ids.push_back(id);
+                visible.push_back(id);
+            }
+        }
+    }
+    trace_.watch(ids);
+    if (plot_ != nullptr) {
+        plot_->visible = std::move(visible);
+        plot_->velocity = velocityBox_ != nullptr && velocityBox_->isChecked();
+        plot_->acceleration = accelerationBox_ != nullptr && accelerationBox_->isChecked();
+        plot_->update();
+    }
+    refreshReadout();
+}
+
+void SignalScope::refreshReadout() {
+    if (readout_ == nullptr) {
+        return;
+    }
+    const double cursor = plot_ == nullptr ? 0 : plot_->cursor;
+    QString text = QStringLiteral("t=%1 s").arg(cursor, 0, 'f', 3);
+    const bool velocity = velocityBox_ != nullptr && velocityBox_->isChecked();
+    const bool acceleration = accelerationBox_ != nullptr && accelerationBox_->isChecked();
+    if (plot_ != nullptr) {
+        for (const std::string& id : plot_->visible) {
+            text += QStringLiteral("  ") + QString::fromStdString(id) + QStringLiteral("=") +
+                    QString::number(trace_.valueAt(id, cursor), 'f', 2);
+            if (velocity && id.rfind("jnt:", 0) == 0) {
+                const std::vector<double> speed = trace_.velocity(id);
+                double shown = 0;
+                const std::size_t count = std::min(trace_.time.size(), speed.size());
+                for (std::size_t i = 0; i < count; ++i) {
+                    if (trace_.time[i] <= cursor + 1e-12) {
+                        shown = speed[i];
+                    }
+                }
+                text += QStringLiteral(" v=") + QString::number(shown, 'f', 1);
+            }
+            if (acceleration && id.rfind("jnt:", 0) == 0) {
+                const std::vector<double> accel = trace_.acceleration(id);
+                double shown = 0;
+                const std::size_t count = std::min(trace_.time.size(), accel.size());
+                for (std::size_t i = 0; i < count; ++i) {
+                    if (trace_.time[i] <= cursor + 1e-12) {
+                        shown = accel[i];
+                    }
+                }
+                text += QStringLiteral(" a=") + QString::number(shown, 'f', 1);
+            }
+        }
+    }
+    readout_->setText(text);
+}
+
+void SignalScope::exportCsv() {
+    const QString path = QFileDialog::getSaveFileName(this, exportButton_ == nullptr ? QStringLiteral("CSV") : exportButton_->text(),
+                                                      QString(), QStringLiteral("CSV (*.csv)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return;
+    }
+    const bool velocity = velocityBox_ != nullptr && velocityBox_->isChecked();
+    const bool acceleration = accelerationBox_ != nullptr && accelerationBox_->isChecked();
+    const std::string csv = trace_.toCsv(velocity, acceleration);
+    file.write(csv.data(), static_cast<qint64>(csv.size()));
+}
+
+PlcCards::~PlcCards() { delete client_; }
+
+bool PlcCards::connectOpcUa() {
+    delete client_;
+    client_ = new OpcUaClient;
+    std::string error;
+    const bool opened = client_->connect("127.0.0.1", 4840, error) && client_->hello("opc.tcp://127.0.0.1:4840", error) &&
+                        client_->openSecureChannel(error) && client_->createSession(error) && client_->activateSession(error);
+    if (!opened) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        delete client_;
+        client_ = nullptr;
+        return false;
+    }
+    std::vector<OpcUaReference> refs;
+    if (!client_->browse(85, refs, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    bool value = false;
+    if (!client_->readBool(10001, value, error)) {
+        opcState_->setText(QString::fromUtf8("未连接 · ") + QString::fromStdString(error));
+        return false;
+    }
+    publishPlcBool(scene_, "part_seen", value);
+    const QString name = refs.empty() ? QStringLiteral("i=10001") : QString::fromStdString(refs.front().browseName);
+    opcState_->setText(QString("已连接 · %1 → part_seen · %2").arg(name).arg(value ? "true" : "false"));
+    return true;
 }
 
 }  // namespace sim

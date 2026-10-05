@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <sstream>
 
 namespace sim {
 namespace {
@@ -144,7 +146,9 @@ const KinPose* findPose(const KinematicResource& resource, const std::string& na
 nlohmann::json kinematicsToJson(const KinematicResource& resource) {
     nlohmann::json json;
     json["name"] = resource.name;
+    json["source"] = resource.source;
     json["ik"] = resource.ik;
+    json["payload"] = resource.payload;
     json["wrist"] = {{"d1", resource.wrist.d1},
                      {"shoulder", resource.wrist.shoulder},
                      {"a2", resource.wrist.a2},
@@ -155,10 +159,16 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
                      {"tcp", vec3ToJson(resource.scara.tcp)}};
     json["links"] = nlohmann::json::array();
     for (const KinLink& link : resource.links) {
-        json["links"].push_back({{"name", link.name},
-                                 {"node", link.nodeId},
-                                 {"mountedOn", link.mountedOn},
-                                 {"mount", transformToJson(link.mountRest)}});
+        nlohmann::json item = {{"name", link.name},
+                               {"node", link.nodeId},
+                               {"mountedOn", link.mountedOn},
+                               {"mount", transformToJson(link.mountRest)}};
+        if (link.hasInertia) {
+            item["mass"] = link.mass;
+            item["com"] = vec3ToJson(link.com);
+            item["inertia"] = {link.ixx, link.iyy, link.izz, link.ixy, link.ixz, link.iyz};
+        }
+        json["links"].push_back(std::move(item));
     }
     json["joints"] = nlohmann::json::array();
     for (const KinJoint& joint : resource.joints) {
@@ -173,6 +183,8 @@ nlohmann::json kinematicsToJson(const KinematicResource& resource) {
                                   {"upper", joint.upper},
                                   {"maxSpeed", joint.maxSpeed},
                                   {"maxAccel", joint.maxAccel},
+                                  {"effort", joint.effort},
+                                  {"accelSource", joint.accelSource},
                                   {"coupledTo", joint.coupledTo},
                                   {"coupleRatio", joint.coupleRatio},
                                   {"position", joint.position},
@@ -210,7 +222,9 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
     }
     resource = {};
     resource.name = json.at("name").get<std::string>();
+    resource.source = json.value("source", std::string{});
     resource.ik = json.value("ik", std::string("none"));
+    resource.payload = json.value("payload", 0.0);
     if (json.contains("wrist")) {
         const auto& wrist = json.at("wrist");
         resource.wrist.d1 = wrist.value("d1", resource.wrist.d1);
@@ -243,6 +257,21 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
             if (item.contains("mount")) {
                 link.mountRest = transformFromJson(item.at("mount"));
             }
+            if (item.contains("mass")) {
+                link.hasInertia = true;
+                link.mass = item.value("mass", 0.0);
+                if (item.contains("com")) {
+                    link.com = vec3FromJson(item.at("com"));
+                }
+                if (item.contains("inertia") && item.at("inertia").is_array() && item.at("inertia").size() >= 6) {
+                    link.ixx = item.at("inertia")[0].get<double>();
+                    link.iyy = item.at("inertia")[1].get<double>();
+                    link.izz = item.at("inertia")[2].get<double>();
+                    link.ixy = item.at("inertia")[3].get<double>();
+                    link.ixz = item.at("inertia")[4].get<double>();
+                    link.iyz = item.at("inertia")[5].get<double>();
+                }
+            }
             if (!link.name.empty()) {
                 resource.links.push_back(std::move(link));
             }
@@ -271,6 +300,8 @@ bool kinematicsFromJson(const nlohmann::json& json, KinematicResource& resource,
             joint.upper = item.value("upper", 0.0);
             joint.maxSpeed = item.value("maxSpeed", 90.0);
             joint.maxAccel = item.value("maxAccel", 360.0);
+            joint.effort = item.value("effort", 0.0);
+            joint.accelSource = item.value("accelSource", std::string{});
             joint.coupledTo = item.value("coupledTo", std::string{});
             joint.coupleRatio = item.value("coupleRatio", 1.0);
             joint.position = item.value("position", 0.0);
@@ -338,6 +369,11 @@ nlohmann::json logicBlockToJson(const LogicBlock& block) {
     json["inputs"] = block.inputs;
     json["outputs"] = block.outputs;
     json["python"] = block.python;
+    json["repeat"] = block.repeat;
+    json["pins"] = nlohmann::json::array();
+    for (const auto& pin : block.pins) {
+        json["pins"].push_back({{"key", pin.first}, {"x", pin.second.first}, {"y", pin.second.second}});
+    }
     json["parameters"] = nlohmann::json::array();
     for (const LogicParam& param : block.parameters) {
         json["parameters"].push_back({{"name", param.name},
@@ -382,6 +418,15 @@ bool logicBlockFromJson(const nlohmann::json& json, LogicBlock& block, std::stri
     block.resource = json.value("resource", std::string{});
     block.runSignal = json.value("runSignal", std::string{});
     block.python = json.value("python", std::string{});
+    block.repeat = json.value("repeat", false);
+    if (json.contains("pins")) {
+        for (const auto& item : json.at("pins")) {
+            const std::string key = item.value("key", std::string{});
+            if (!key.empty()) {
+                block.pins.emplace_back(key, std::make_pair(item.value("x", 0.0), item.value("y", 0.0)));
+            }
+        }
+    }
     if (json.contains("inputs")) {
         for (const auto& item : json.at("inputs")) {
             block.inputs.push_back(item.get<std::string>());
@@ -440,6 +485,194 @@ bool logicBlockFromJson(const nlohmann::json& json, LogicBlock& block, std::stri
     return true;
 }
 
+namespace {
+
+std::string trimCopy(const std::string& value) {
+    std::size_t begin = 0;
+    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) {
+        ++begin;
+    }
+    std::size_t end = value.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
+std::vector<std::string> splitWords(const std::string& line) {
+    std::vector<std::string> words;
+    std::istringstream in(line);
+    std::string word;
+    while (in >> word) {
+        words.push_back(word);
+    }
+    return words;
+}
+
+}  // namespace
+
+std::string logicToText(const LogicBlock& block) {
+    std::ostringstream out;
+    out << "name " << block.name << "\n";
+    out << "in";
+    for (const std::string& name : block.inputs) {
+        out << " " << name;
+    }
+    out << "\nout";
+    for (const std::string& name : block.outputs) {
+        out << " " << name;
+    }
+    out << "\nrun " << block.runSignal << "\n";
+    for (const LogicParam& param : block.parameters) {
+        out << "param " << param.name << " " << param.type << " " << param.real << "\n";
+    }
+    out << "python:\n" << block.python;
+    if (!block.python.empty() && block.python.back() != '\n') {
+        out << "\n";
+    }
+    out << "---\n";
+    for (const LogicStep& step : block.steps) {
+        for (const LogicCondition& condition : step.when) {
+            out << "when " << condition.signal << " " << condition.op << " " << condition.number << "\n";
+        }
+        for (const LogicAction& action : step.actions) {
+            out << action.kind;
+            if (action.kind == "wait" || action.kind == "jog") {
+                out << " " << action.seconds;
+                if (action.kind == "jog") {
+                    out << " " << action.joint;
+                }
+            } else if (action.kind == "set_value") {
+                out << " " << action.signal << " " << action.speed;
+            } else if (action.kind == "move_pose") {
+                out << " " << action.pose;
+            } else if (!action.signal.empty()) {
+                out << " " << action.signal;
+            }
+            out << "\n";
+        }
+        out << "step\n";
+    }
+    return out.str();
+}
+
+bool logicFromText(const std::string& text, LogicBlock& block, std::string& error) {
+    LogicBlock parsed;
+    parsed.pins = block.pins;
+    parsed.repeat = block.repeat;
+    parsed.resource = block.resource;
+    std::string python;
+    bool inPython = false;
+    LogicStep step;
+    bool wroteStep = false;
+    std::istringstream lines(text);
+    std::string line;
+    try {
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (inPython) {
+            if (trimCopy(line) == "---") {
+                inPython = false;
+                continue;
+            }
+            python += line;
+            python.push_back('\n');
+            continue;
+        }
+        const std::string trimmed = trimCopy(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        if (trimmed == "python:") {
+            inPython = false;
+            inPython = true;
+            continue;
+        }
+        const std::vector<std::string> words = splitWords(trimmed);
+        if (words[0] == "name" && words.size() >= 2) {
+            parsed.name = words[1];
+        } else if (words[0] == "in") {
+            parsed.inputs.assign(words.begin() + 1, words.end());
+        } else if (words[0] == "out") {
+            parsed.outputs.assign(words.begin() + 1, words.end());
+        } else if (words[0] == "run") {
+            parsed.runSignal = words.size() >= 2 ? words[1] : std::string{};
+        } else if (words[0] == "param" && words.size() >= 2) {
+            LogicParam param;
+            param.name = words[1];
+            param.type = words.size() >= 3 ? words[2] : "real";
+            param.real = words.size() >= 4 ? std::stod(words[3]) : 0;
+            parsed.parameters.push_back(std::move(param));
+        } else if (words[0] == "when" && words.size() >= 2) {
+            LogicCondition condition;
+            condition.signal = words[1];
+            condition.op = words.size() >= 3 ? words[2] : "==";
+            condition.asBool = false;
+            condition.number = words.size() >= 4 ? std::stod(words[3]) : 0;
+            step.when.push_back(std::move(condition));
+        } else if (words[0] == "step") {
+            parsed.steps.push_back(std::move(step));
+            step = {};
+            wroteStep = true;
+        } else {
+            LogicAction action;
+            action.kind = words[0];
+            if (action.kind == "wait") {
+                action.seconds = words.size() >= 2 ? std::stod(words[1]) : 0;
+            } else if (action.kind == "jog") {
+                action.seconds = words.size() >= 2 ? std::stod(words[1]) : 0;
+                action.joint = words.size() >= 3 ? words[2] : std::string{};
+            } else if (action.kind == "set_value") {
+                action.signal = words.size() >= 2 ? words[1] : std::string{};
+                action.speed = words.size() >= 3 ? std::stod(words[2]) : 0;
+            } else if (action.kind == "move_pose") {
+                action.pose = words.size() >= 2 ? words[1] : std::string{};
+            } else if (words.size() >= 2) {
+                action.signal = words[1];
+            }
+            step.actions.push_back(std::move(action));
+        }
+    }
+    } catch (const std::exception&) {
+        error = "logic text has a bad number";
+        return false;
+    }
+    if (!step.actions.empty() || !step.when.empty()) {
+        parsed.steps.push_back(std::move(step));
+        wroteStep = true;
+    }
+    if (parsed.name.empty()) {
+        error = "logic text is missing a name";
+        return false;
+    }
+    if (!wroteStep) {
+        error = "logic text has no step";
+        return false;
+    }
+    parsed.python = python;
+    block = std::move(parsed);
+    error.clear();
+    return true;
+}
+
+bool wireLogicBlocks(LogicBlock& from, LogicBlock& to, std::string& signal) {
+    if (&from == &to) {
+        return false;
+    }
+    if (!from.outputs.empty()) {
+        signal = from.outputs.front();
+    } else {
+        signal = from.name + "_out";
+        from.outputs.push_back(signal);
+    }
+    if (std::find(to.inputs.begin(), to.inputs.end(), signal) == to.inputs.end()) {
+        to.inputs.push_back(signal);
+    }
+    return true;
+}
+
 nlohmann::json robotPathToJson(const RobotPath& path) {
     nlohmann::json json;
     json["name"] = path.name;
@@ -458,7 +691,20 @@ nlohmann::json robotPathToJson(const RobotPath& path) {
                                   {"speed", point.speed},
                                   {"zone", point.zone},
                                   {"external", point.external},
-                                  {"externalValues", point.externalValues}});
+                                  {"externalValues", point.externalValues},
+                                  {"shape", point.shape}});
+    }
+    json["frames"] = nlohmann::json::array();
+    for (const OlpFrame& frame : path.frames) {
+        json["frames"].push_back({{"kind", frame.kind},
+                                  {"origin", vec3ToJson(frame.origin)},
+                                  {"a", frame.a},
+                                  {"b", frame.b},
+                                  {"c", frame.c}});
+    }
+    json["directives"] = nlohmann::json::array();
+    for (const OlpDirective& directive : path.directives) {
+        json["directives"].push_back({{"kind", directive.kind}, {"text", directive.text}});
     }
     return json;
 }
@@ -501,12 +747,38 @@ bool robotPathFromJson(const nlohmann::json& json, RobotPath& path, std::string&
             point.speed = item.value("speed", 100.0);
             point.zone = item.value("zone", 0.0);
             point.external = item.value("external", std::string{});
+            point.shape = item.value("shape", std::string{});
             if (item.contains("externalValues")) {
                 for (const auto& value : item.at("externalValues")) {
                     point.externalValues.push_back(value.get<double>());
                 }
             }
             path.points.push_back(std::move(point));
+        }
+    }
+    if (json.contains("frames") && json.at("frames").is_array()) {
+        for (const auto& item : json.at("frames")) {
+            OlpFrame frame;
+            frame.kind = item.value("kind", std::string{});
+            if (item.contains("origin")) {
+                frame.origin = vec3FromJson(item.at("origin"));
+            }
+            frame.a = item.value("a", 0.0);
+            frame.b = item.value("b", 0.0);
+            frame.c = item.value("c", 0.0);
+            if (!frame.kind.empty()) {
+                path.frames.push_back(std::move(frame));
+            }
+        }
+    }
+    if (json.contains("directives") && json.at("directives").is_array()) {
+        for (const auto& item : json.at("directives")) {
+            OlpDirective directive;
+            directive.kind = item.value("kind", std::string{});
+            directive.text = item.value("text", std::string{});
+            if (!directive.text.empty()) {
+                path.directives.push_back(std::move(directive));
+            }
         }
     }
     error.clear();

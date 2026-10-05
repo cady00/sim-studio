@@ -9,6 +9,21 @@ namespace sim {
 namespace {
 
 constexpr int kIkIterations = 40;
+// Millimetres per radian. Position rows are already millimetres; orientation rows are radians.
+// Once the point is inside a millimetre, those rows are scaled so a sub-degree residual is not
+// drowned by the metre-scale position Jacobian and reported as unreachable.
+constexpr double kOrientMmPerRad = 1000.0;
+
+void scaleOrientationRows(double error[6], double columns[6][6], int count) {
+    for (int row = 3; row < 6; ++row) {
+        error[row] *= kOrientMmPerRad;
+        for (int col = 0; col < count; ++col) {
+            columns[row][col] *= kOrientMmPerRad;
+        }
+    }
+}
+
+bool poseWithinGate(double posMm, double angRad) { return posMm < 0.05 && angRad < deg2rad(0.05); }
 
 Vec3 rotationVector(Quat from, Quat to) {
     Quat delta = (to.normalized() * from.normalized().conjugate()).normalized();
@@ -45,6 +60,17 @@ bool withinLimits(const KinematicResource& resource, const std::vector<double>& 
         }
     }
     return true;
+}
+
+void acceptSolved(const KinematicResource& resource, const std::vector<double>& q, bool approximated, IkResult& result) {
+    result.ok = true;
+    result.approximated = approximated;
+    result.joints = q;
+    result.warning.clear();
+    withinLimits(resource, q, result.warning);
+    if (!result.warning.empty()) {
+        result.ok = false;
+    }
 }
 
 CartesianPose poseErrorFrame(const CartesianPose& current, const CartesianPose& target, double error[6]) {
@@ -118,7 +144,10 @@ IkResult numericalSolve(const KinematicResource& resource, const CartesianPose& 
         extra.limited = false;
         trial.joints.push_back(extra);
     }
-    for (int iter = 0; iter < kIkIterations; ++iter) {
+    std::vector<double> bestQ = q;
+    double bestPos = std::numeric_limits<double>::infinity();
+    double bestAng = std::numeric_limits<double>::infinity();
+    for (int iter = 0; iter < kIkIterations * 2; ++iter) {
         for (int i = 0; i < count; ++i) {
             trial.joints[static_cast<std::size_t>(i)].position = q[static_cast<std::size_t>(i)];
             trial.joints[static_cast<std::size_t>(i)].coupledTo.clear();
@@ -128,14 +157,16 @@ IkResult numericalSolve(const KinematicResource& resource, const CartesianPose& 
         poseErrorFrame(now, target, error);
         const double pos = std::sqrt(error[0] * error[0] + error[1] * error[1] + error[2] * error[2]);
         const double ang = std::sqrt(error[3] * error[3] + error[4] * error[4] + error[5] * error[5]);
-        if (pos < 0.05 && ang < deg2rad(0.05)) {
-            result.ok = true;
-            result.approximated = iter > 0;
-            result.joints = q;
-            withinLimits(resource, q, result.warning);
-            if (!result.warning.empty()) {
-                result.ok = false;
-            }
+        if (iter >= kIkIterations && pos >= 1.0) {
+            break;
+        }
+        if (pos + ang * kOrientMmPerRad < bestPos + bestAng * kOrientMmPerRad) {
+            bestQ = q;
+            bestPos = pos;
+            bestAng = ang;
+        }
+        if (poseWithinGate(pos, ang)) {
+            acceptSolved(resource, q, iter > 0, result);
             return result;
         }
         double columns[6][6];
@@ -155,6 +186,10 @@ IkResult numericalSolve(const KinematicResource& resource, const CartesianPose& 
                 columns[row][i] = 0;
             }
         }
+        const bool refineOrientation = pos < 1.0;
+        if (refineOrientation) {
+            scaleOrientationRows(error, columns, count);
+        }
         constexpr double lambda = 1e-2;
         double normal[6][7] = {};
         for (int r = 0; r < 6; ++r) {
@@ -171,20 +206,25 @@ IkResult numericalSolve(const KinematicResource& resource, const CartesianPose& 
         if (!solve6(normal, task)) {
             break;
         }
+        const double stepLimit = refineOrientation && ang < deg2rad(2.0) ? 1.0 : 8.0;
         for (int i = 0; i < count; ++i) {
             double step = 0;
             for (int row = 0; row < 6; ++row) {
                 step += columns[row][i] * task[row];
             }
-            step = std::clamp(step, -8.0, 8.0);
+            step = std::clamp(step, -stepLimit, stepLimit);
             q[static_cast<std::size_t>(i)] += step;
             if (i < static_cast<int>(resource.joints.size())) {
                 q[static_cast<std::size_t>(i)] = clampJoint(resource.joints[static_cast<std::size_t>(i)], q[static_cast<std::size_t>(i)]);
             }
         }
     }
+    if (poseWithinGate(bestPos, bestAng)) {
+        acceptSolved(resource, bestQ, true, result);
+        return result;
+    }
     result.warning = "unreachable";
-    result.joints = q;
+    result.joints = bestQ;
     result.approximated = true;
     return result;
 }
@@ -649,7 +689,10 @@ IkResult numericalSolveIndices(const KinematicResource& resource, const Cartesia
     }
     std::vector<double> q = seed;
     KinematicResource trial = resource;
-    for (int iter = 0; iter < kIkIterations; ++iter) {
+    std::vector<double> bestQ = q;
+    double bestPos = std::numeric_limits<double>::infinity();
+    double bestAng = std::numeric_limits<double>::infinity();
+    for (int iter = 0; iter < kIkIterations * 2; ++iter) {
         for (std::size_t i = 0; i < trial.joints.size() && i < q.size(); ++i) {
             trial.joints[i].position = q[i];
         }
@@ -661,14 +704,16 @@ IkResult numericalSolveIndices(const KinematicResource& resource, const Cartesia
         poseErrorFrame(now, target, error);
         const double pos = std::sqrt(error[0] * error[0] + error[1] * error[1] + error[2] * error[2]);
         const double ang = std::sqrt(error[3] * error[3] + error[4] * error[4] + error[5] * error[5]);
-        if (pos < 0.05 && ang < deg2rad(0.05)) {
-            result.ok = true;
-            result.approximated = iter > 0;
-            result.joints = q;
-            withinLimits(resource, q, result.warning);
-            if (!result.warning.empty()) {
-                result.ok = false;
-            }
+        if (iter >= kIkIterations && pos >= 1.0) {
+            break;
+        }
+        if (pos + ang * kOrientMmPerRad < bestPos + bestAng * kOrientMmPerRad) {
+            bestQ = q;
+            bestPos = pos;
+            bestAng = ang;
+        }
+        if (poseWithinGate(pos, ang)) {
+            acceptSolved(resource, q, iter > 0, result);
             return result;
         }
         double columns[6][6] = {};
@@ -683,6 +728,10 @@ IkResult numericalSolveIndices(const KinematicResource& resource, const Cartesia
             for (int row = 0; row < 6; ++row) {
                 columns[row][i] = nudgedError[row] / eps;
             }
+        }
+        const bool refineOrientation = pos < 1.0;
+        if (refineOrientation) {
+            scaleOrientationRows(error, columns, count);
         }
         constexpr double lambda = 1e-2;
         double normal[6][7] = {};
@@ -700,19 +749,24 @@ IkResult numericalSolveIndices(const KinematicResource& resource, const Cartesia
         if (!solve6(normal, task)) {
             break;
         }
+        const double stepLimit = refineOrientation && ang < deg2rad(2.0) ? 1.0 : 8.0;
         for (int i = 0; i < count; ++i) {
             double step = 0;
             for (int row = 0; row < 6; ++row) {
                 step += columns[row][i] * task[row];
             }
-            step = std::clamp(step, -8.0, 8.0);
+            step = std::clamp(step, -stepLimit, stepLimit);
             const int index = free[static_cast<std::size_t>(i)];
             q[static_cast<std::size_t>(index)] += step;
             q[static_cast<std::size_t>(index)] = clampJoint(resource.joints[static_cast<std::size_t>(index)], q[static_cast<std::size_t>(index)]);
         }
     }
+    if (poseWithinGate(bestPos, bestAng)) {
+        acceptSolved(resource, bestQ, true, result);
+        return result;
+    }
     result.warning = "unreachable";
-    result.joints = q;
+    result.joints = bestQ;
     result.approximated = true;
     return result;
 }

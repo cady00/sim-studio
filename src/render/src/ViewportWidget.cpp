@@ -3,6 +3,7 @@
 #include "sim/render/Renderer.hpp"
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -116,13 +117,26 @@ void ViewportWidget::syncMeshes() {
         return;
     }
     renderer_->clearMeshes();
-    for (const auto& [id, mesh] : scene_->meshes()) {
-        if (mesh) {
-            renderer_->uploadMesh(id, *mesh);
-        }
-    }
+    resident_.clear();
+    lodCache_.clear();
     syncedRevision_ = scene_->structureRevision();
 }
+
+int ViewportWidget::gpuFrustumCull(const std::vector<Aabb>& bounds) {
+    if (renderer_ == nullptr || !isValid()) {
+        return -1;
+    }
+    makeCurrent();
+    const double aspect = height() > 0 ? static_cast<double>(width()) / static_cast<double>(height()) : 1.0;
+    const Mat4 viewProjection = mul(camera_.projectionMatrix(aspect), camera_.viewMatrix());
+    const int kept = renderer_->gpuFrustumCull(viewProjection, bounds);
+    doneCurrent();
+    return kept;
+}
+
+int ViewportWidget::lastSubmitted() const { return renderer_ ? renderer_->lastSubmitted() : 0; }
+
+int ViewportWidget::lastDraws() const { return renderer_ ? renderer_->lastDraws() : 0; }
 
 void ViewportWidget::drawGrid() {
     Aabb bounds;
@@ -250,11 +264,29 @@ void ViewportWidget::paintGL() {
     frame.height = std::max(height(), 1);
     frame.frustumCull = true;
     frame.clearColor = darkChrome_ ? Vec3{0.07, 0.09, 0.14} : Vec3{0.94, 0.94, 0.97};
+    QElapsedTimer drawTimer;
+    drawTimer.start();
+    culledFrame_ = 0;
+    occludedFrame_ = 0;
+    drawnTriangles_ = 0;
     renderer_->beginFrame(frame);
     drawGrid();
 
     if (scene_ != nullptr && scene_->root()) {
         std::vector<RenderInstance> instances;
+        int uploads = 0;
+        auto ensureMesh = [&](const std::string& key, const std::shared_ptr<MeshData>& mesh) {
+            if (!mesh || mesh->empty() || resident_.count(key) != 0) {
+                return resident_.count(key) != 0;
+            }
+            if (!resident_.empty() && uploads >= 32) {
+                return false;
+            }
+            renderer_->uploadMesh(key, *mesh);
+            resident_.insert(key);
+            ++uploads;
+            return true;
+        };
         std::vector<std::shared_ptr<SceneNode>> stack{scene_->root()};
         while (!stack.empty()) {
             auto node = stack.back();
@@ -269,16 +301,49 @@ void ViewportWidget::paintGL() {
                 continue;
             }
             const auto mesh = scene_->mesh(node->meshId);
-            RenderInstance instance;
-            instance.meshKey = node->meshId;
-            instance.world = node->worldMatrix();
-            instance.material.color = node->color;
-            instance.material.highlight = selectedBranch(*node, *scene_) ? 1.0f : 0.0f;
-            instance.worldBounds = mesh ? transformedBounds(mesh->bounds, instance.world) : Aabb{};
-            instance.distanceMm = static_cast<float>(length(instance.worldBounds.center() - frame.eye));
-            instance.lodLevels = 1;
+            const Mat4 world = node->worldMatrix();
+            const Aabb bounds = mesh ? transformedBounds(mesh->bounds, world) : Aabb{};
+            if (frame.frustumCull && !intersectsClipFrustum(frame.viewProjection, bounds)) {
+                ++culledFrame_;
+                continue;
+            }
             if (mesh) {
                 triangles_ += static_cast<int>(mesh->triangleCount());
+            }
+            std::string key = node->meshId;
+            const int levels = mesh && mesh->triangleCount() > 8 ? 3 : 1;
+            const float distance = static_cast<float>(length(bounds.center() - frame.eye));
+            const int lod = forceDetail_ ? 0 : selectLodLevel(distance, levels);
+            const MeshData* drawn = mesh.get();
+            if (lod > 0 && mesh) {
+                const std::string lodKey = node->meshId + "#lod" + std::to_string(lod);
+                if (lodCache_.count(lodKey) == 0) {
+                    const double cell = std::max(mesh->bounds.diagonal() * (lod == 1 ? 0.2 : 0.55), 1.0);
+                    lodCache_[lodKey] = simplifyMesh(*mesh, cell);
+                }
+                if (ensureMesh(lodKey, lodCache_[lodKey])) {
+                    key = lodKey;
+                    drawn = lodCache_[lodKey].get();
+                }
+            }
+            if (key == node->meshId) {
+                ensureMesh(node->meshId, mesh);
+            }
+            if (resident_.count(key) == 0) {
+                continue;
+            }
+            RenderInstance instance;
+            instance.meshKey = key;
+            instance.world = world;
+            instance.material.color = node->color;
+            instance.material.highlight = selectedBranch(*node, *scene_) ? 1.0f : 0.0f;
+            instance.material.metallic = node->metallic;
+            instance.material.roughness = node->roughness;
+            instance.worldBounds = bounds;
+            instance.distanceMm = distance;
+            instance.lodLevels = 1;
+            if (drawn != nullptr) {
+                instance.triangles = static_cast<int>(drawn->triangleCount());
             }
             instances.push_back(std::move(instance));
         }
@@ -355,6 +420,37 @@ void ViewportWidget::paintGL() {
         } else {
             ghostCaption_.clear();
         }
+        if (!instances.empty()) {
+            OcclusionBuffer occlusion;
+            occlusion.reset(160, 90);
+            std::vector<int> order(instances.size());
+            for (int i = 0; i < static_cast<int>(instances.size()); ++i) {
+                order[static_cast<std::size_t>(i)] = i;
+            }
+            std::sort(order.begin(), order.end(), [&](int left, int right) {
+                return instances[static_cast<std::size_t>(left)].distanceMm < instances[static_cast<std::size_t>(right)].distanceMm;
+            });
+            std::vector<RenderInstance> visible;
+            visible.reserve(instances.size());
+            for (int index : order) {
+                RenderInstance& instance = instances[static_cast<std::size_t>(index)];
+                ScreenRect rect;
+                if (projectBounds(frame.viewProjection, instance.worldBounds, occlusion.width, occlusion.height, rect) &&
+                    hiddenByOcclusion(occlusion, rect)) {
+                    ++occludedFrame_;
+                    continue;
+                }
+                if (rect.valid) {
+                    rasterizeOccluder(occlusion, rect);
+                }
+                visible.push_back(std::move(instance));
+            }
+            instances.swap(visible);
+            drawnTriangles_ = 0;
+            for (const RenderInstance& instance : instances) {
+                drawnTriangles_ += instance.triangles;
+            }
+        }
         renderer_->submitInstances(instances);
     }
 
@@ -388,7 +484,47 @@ void ViewportWidget::paintGL() {
         }
         renderer_->submitLines(gizmo);
     }
+    if (scene_ != nullptr && !scene_->welds.empty()) {
+        LineBatch welds;
+        welds.width = 2.2f;
+        welds.depthTest = false;
+        for (const WeldSpot& spot : scene_->welds) {
+            const Vec3 color = !spot.checked ? Vec3{0.35, 0.55, 0.95}
+                                             : (spot.reachable ? Vec3{0.22, 0.78, 0.38} : Vec3{0.86, 0.28, 0.22});
+            const Vec3 normal = length(spot.normal) > 0.5 ? normalize(spot.normal) : Vec3{0, 0, 1};
+            Vec3 tangent = std::abs(normal.z) < 0.9 ? cross(normal, Vec3{0, 0, 1}) : cross(normal, Vec3{1, 0, 0});
+            tangent = normalize(tangent);
+            const Vec3 bitangent = normalize(cross(normal, tangent));
+            const double mark = 28;
+            pushLine(welds, spot.position - tangent * mark, color);
+            pushLine(welds, spot.position + tangent * mark, color);
+            pushLine(welds, spot.position - bitangent * mark, color);
+            pushLine(welds, spot.position + bitangent * mark, color);
+            pushLine(welds, spot.position, color);
+            pushLine(welds, spot.position + normal * 70.0, {0.95, 0.78, 0.25});
+        }
+        renderer_->submitLines(welds);
+    }
+    if (scene_ != nullptr) {
+        LineBatch tour;
+        tour.width = 2.4f;
+        tour.depthTest = false;
+        const Vec3 ink{0.24, 0.62, 0.95};
+        for (const RobotPath& path : scene_->robotPaths) {
+            if (path.name != "weld_tour" || path.points.size() < 2) {
+                continue;
+            }
+            for (std::size_t i = 1; i < path.points.size(); ++i) {
+                pushLine(tour, path.points[i - 1].position, ink);
+                pushLine(tour, path.points[i].position, ink);
+            }
+        }
+        if (!tour.vertices.empty()) {
+            renderer_->submitLines(tour);
+        }
+    }
     renderer_->endFrame();
+    drawMs_ = static_cast<double>(drawTimer.nsecsElapsed()) / 1.0e6;
     paintOverlay();
 }
 

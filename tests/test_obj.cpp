@@ -1,3 +1,4 @@
+#include "sim/io/AssetImport.hpp"
 #include "sim/io/GeometryKernel.hpp"
 #include "sim/io/ObjImporter.hpp"
 
@@ -5,6 +6,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 
 TEST_CASE("obj importer triangulates a quad") {
     const auto path = std::filesystem::temp_directory_path() / "simstudio_quad.obj";
@@ -24,12 +26,24 @@ TEST_CASE("obj importer triangulates a quad") {
     std::filesystem::remove(path);
 }
 
-TEST_CASE("gltf importer reports that it is not in phase 1") {
+TEST_CASE("gltf importer reads a triangle instead of refusing the format") {
+    sim::Scene source;
+    auto node = source.makeNode(sim::NodeKind::Part, "tri");
+    node->meshId = source.addMesh(sim::makeBoxMesh({10, 20, 5}));
+    source.addChild(source.root(), node);
+    const auto path = std::filesystem::temp_directory_path() / "simstudio_box.glb";
+    std::string error;
+    REQUIRE(sim::exportSceneGltf(source, path.string(), error));
+    std::ifstream in(path, std::ios::binary);
+    char magic[4] = {};
+    in.read(magic, 4);
+    REQUIRE(std::string(magic, 4) == "glTF");
     sim::Scene scene;
     sim::GltfImporter importer;
-    const sim::ImportResult result = importer.importFile("robot.gltf", scene);
-    REQUIRE_FALSE(result.ok);
-    REQUIRE(result.message.find("Phase 1") != std::string::npos);
+    const sim::ImportResult result = importer.importFile(path.string(), scene);
+    REQUIRE(result.ok);
+    REQUIRE(result.triangleCount == 12);
+    std::filesystem::remove(path);
 }
 
 TEST_CASE("geometry kernel names occt and keeps obj on the in-house parser") {
@@ -42,5 +56,18 @@ TEST_CASE("geometry kernel names occt and keeps obj on the in-house parser") {
     const auto obj = kernel->createImporter("obj");
     REQUIRE(obj);
     REQUIRE(std::string(obj->backendName()) == "builtin");
-    REQUIRE(kernel->createImporter("iges") == nullptr);
+    const auto iges = kernel->createImporter("iges");
+    REQUIRE(iges);
+    REQUIRE(std::string(iges->format()) == "iges");
+    REQUIRE(std::string(iges->backendName()) == "occt");
+    REQUIRE(kernel->createImporter("igs"));
+    const auto sample = std::filesystem::temp_directory_path() / "simstudio_kernel_box.iges";
+    std::string error;
+    REQUIRE(sim::writeSampleShape("iges", sample.string(), error));
+    sim::Scene imported;
+    const sim::ImportResult read = iges->importFile(sample.string(), imported);
+    REQUIRE(read.ok);
+    REQUIRE(read.triangleCount == 12);
+    REQUIRE(imported.root()->children.size() == 1);
+    std::filesystem::remove(sample);
 }

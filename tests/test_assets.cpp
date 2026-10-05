@@ -1,0 +1,532 @@
+#include "sim/core/Mesh.hpp"
+#include "sim/io/AssetImport.hpp"
+#include "sim/io/ProjectStore.hpp"
+#include "sim/motion/Motion.hpp"
+#include "sim/render/Renderer.hpp"
+
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <vector>
+
+using Catch::Approx;
+
+TEST_CASE("asset registry reads stl ply obj urdf image and leaves a jt slot", "[assets]") {
+    const auto registry = sim::createBuiltinRegistry();
+    const std::vector<std::string> formats = registry->formats();
+    REQUIRE(std::find(formats.begin(), formats.end(), "jt") != formats.end());
+    REQUIRE(std::find(formats.begin(), formats.end(), "step") != formats.end());
+    REQUIRE(std::find(formats.begin(), formats.end(), "iges") != formats.end());
+
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto stlPath = dir / "simstudio_tri.stl";
+    {
+        std::ofstream out(stlPath);
+        out << "solid tri\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 5 0\nendloop\nendfacet\nendsolid tri\n";
+    }
+    sim::Scene stl;
+    const sim::AssetImportResult stlResult = registry->importPath(stlPath.string(), stl);
+    REQUIRE(stlResult.ok);
+    REQUIRE(stlResult.format == "stl");
+    REQUIRE(stlResult.triangleCount == 1);
+
+    const auto plyPath = dir / "simstudio_tri.ply";
+    {
+        std::ofstream out(plyPath);
+        out << "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+               "element face 1\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n8 0 0\n0 4 0\n3 0 1 2\n";
+    }
+    sim::Scene ply;
+    const sim::AssetImportResult plyResult = registry->importPath(plyPath.string(), ply);
+    REQUIRE(plyResult.ok);
+    REQUIRE(plyResult.triangleCount == 1);
+
+    const auto objPath = dir / "simstudio_asset.obj";
+    {
+        std::ofstream out(objPath);
+        out << "o Panel\nv 0 0 0\nv 4 0 0\nv 4 2 0\nf 1 2 3\n";
+    }
+    sim::Scene obj;
+    REQUIRE(registry->importPath(objPath.string(), obj).triangleCount == 1);
+
+    const auto urdfPath = dir / "simstudio_arm.urdf";
+    {
+        std::ofstream out(urdfPath);
+        out << R"(<robot name="arm">
+<link name="base"><visual><geometry><box size="0.1 0.2 0.3"/></geometry></visual></link>
+<link name="tool"><visual><geometry><box size="0.05 0.05 0.05"/></geometry></visual></link>
+<joint name="j1" type="revolute">
+<parent link="base"/><child link="tool"/>
+<origin xyz="0 0 0.15" rpy="0 0 0"/>
+<axis xyz="0 0 1"/>
+<limit lower="-1" upper="1" velocity="1"/>
+</joint>
+</robot>)";
+    }
+    sim::Scene urdf;
+    const sim::AssetImportResult urdfResult = registry->importPath(urdfPath.string(), urdf);
+    REQUIRE(urdfResult.ok);
+    REQUIRE(urdf.resources.size() == 1);
+    REQUIRE(urdf.resources.front().links.size() == 2);
+    REQUIRE(urdf.resources.front().joints.size() == 1);
+    REQUIRE(urdf.resources.front().joints.front().motion == sim::JointMotion::Revolute);
+    REQUIRE(urdfResult.triangleCount == 24);
+
+    const auto pngPath = dir / "simstudio_plan.png";
+    {
+        std::ofstream out(pngPath, std::ios::binary);
+        const unsigned char magic[] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4};
+        out.write(reinterpret_cast<const char*>(magic), sizeof(magic));
+    }
+    sim::Scene image;
+    REQUIRE(registry->importPath(pngPath.string(), image).ok);
+    REQUIRE(image.layout.underlay.kind == "image");
+    REQUIRE(image.layout.underlay.bytes.size() == 12);
+    const auto project = dir / "simstudio_image.simproj";
+    REQUIRE(sim::ProjectStore::save(image, project.string()).ok);
+    sim::Scene loaded;
+    REQUIRE(sim::ProjectStore::load(project.string(), loaded).ok);
+    REQUIRE(loaded.layout.underlay.bytes == image.layout.underlay.bytes);
+
+    const auto jtPath = dir / "simstudio_empty.jt";
+    {
+        std::ofstream out(jtPath, std::ios::binary);
+        out << "JT placeholder";
+    }
+    sim::Scene jt;
+    const sim::AssetImportResult jtResult = registry->importPath(jtPath.string(), jt);
+    REQUIRE_FALSE(jtResult.ok);
+    REQUIRE(jtResult.message.find("JT Open Toolkit") != std::string::npos);
+    REQUIRE(jt.root()->children.empty());
+}
+
+TEST_CASE("urdf package URIs and gltf morph targets", "[assets]") {
+    const auto root = std::filesystem::temp_directory_path() / "simstudio_ros_root";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "demo_pkg" / "meshes");
+    {
+        std::ofstream out(root / "demo_pkg" / "meshes" / "link.obj");
+        out << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    }
+    const auto urdf = std::filesystem::temp_directory_path() / "simstudio_pkg.urdf";
+    {
+        std::ofstream out(urdf);
+        out << "<robot name=\"arm\"><link name=\"base\"><visual><geometry><mesh filename=\"package://demo_pkg/meshes/link.obj\"/></geometry></visual></link></robot>\n";
+    }
+    const char* saved = std::getenv("ROS_PACKAGE_PATH");
+    const std::string previous = saved == nullptr ? std::string() : saved;
+    setenv("ROS_PACKAGE_PATH", root.string().c_str(), 1);
+    const auto registry = sim::createBuiltinRegistry();
+    sim::Scene scene;
+    const sim::AssetImportResult urdfResult = registry->importPath(urdf.string(), scene);
+    if (saved == nullptr) {
+        unsetenv("ROS_PACKAGE_PATH");
+    } else {
+        setenv("ROS_PACKAGE_PATH", previous.c_str(), 1);
+    }
+    REQUIRE(urdfResult.ok);
+    REQUIRE(urdfResult.triangleCount == 1);
+
+    const auto bin = std::filesystem::temp_directory_path() / "simstudio_morph.bin";
+    {
+        std::ofstream out(bin, std::ios::binary);
+        const float positions[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+        const float delta[] = {2, 0, 0, 0, 0, 0, 0, 0, 0};
+        const std::uint16_t indices[] = {0, 1, 2, 0};
+        out.write(reinterpret_cast<const char*>(positions), sizeof(positions));
+        out.write(reinterpret_cast<const char*>(delta), sizeof(delta));
+        out.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+    }
+    const auto gltf = std::filesystem::temp_directory_path() / "simstudio_morph.gltf";
+    {
+        std::ofstream out(gltf);
+        out << R"({"asset":{"version":"2.0"},"buffers":[{"uri":"simstudio_morph.bin","byteLength":80}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":6}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5123,"count":3,"type":"SCALAR"}],
+"meshes":[{"weights":[1],"primitives":[{"attributes":{"POSITION":0},"indices":2,"mode":4,"targets":[{"POSITION":1}]}]}],
+"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    }
+    sim::Scene morphed;
+    const sim::AssetImportResult morph = registry->importPath(gltf.string(), morphed);
+    REQUIRE(morph.ok);
+    REQUIRE(morph.triangleCount == 1);
+    bool shifted = false;
+    for (const auto& entry : morphed.meshes()) {
+        if (entry.second && entry.second->bounds.valid && entry.second->bounds.max.x > 1500.0) {
+            shifted = true;
+        }
+    }
+    REQUIRE(shifted);
+}
+
+TEST_CASE("stl export counts triangles and occt samples round trip", "[assets]") {
+    sim::Scene scene;
+    auto node = scene.makeNode(sim::NodeKind::Part, "box");
+    node->meshId = scene.addMesh(sim::makeBoxMesh({5, 5, 5}));
+    scene.addChild(scene.root(), node);
+    const auto stlPath = std::filesystem::temp_directory_path() / "simstudio_box.stl";
+    std::string error;
+    REQUIRE(sim::exportSceneStl(scene, stlPath.string(), error));
+    std::ifstream in(stlPath, std::ios::binary);
+    in.seekg(80);
+    std::uint32_t triangles = 0;
+    in.read(reinterpret_cast<char*>(&triangles), 4);
+    REQUIRE(triangles == 12);
+
+    const auto registry = sim::createBuiltinRegistry();
+    for (const char* format : {"step", "iges", "brep"}) {
+        const auto path = std::filesystem::temp_directory_path() / (std::string("simstudio_sample.") + format);
+        REQUIRE(sim::writeSampleShape(format, path.string(), error));
+        sim::Scene imported;
+        const sim::AssetImportResult result = registry->importPath(path.string(), imported);
+        REQUIRE(result.ok);
+        REQUIRE(result.triangleCount == 12);
+    }
+}
+
+TEST_CASE("measured times follow the planner logic and a conveyor", "[assets]") {
+    sim::Scene scene;
+    sim::KinematicResource resource;
+    resource.name = "axis";
+    resource.ik = "none";
+    sim::KinJoint joint;
+    joint.name = "J1";
+    joint.lower = -40;
+    joint.upper = 40;
+    joint.maxSpeed = 120;
+    joint.maxAccel = 400;
+    joint.externalName = "E1";
+    resource.joints.push_back(joint);
+    scene.resources.push_back(resource);
+
+    sim::RobotPath path;
+    path.name = "turn";
+    path.resource = "axis";
+    sim::PathPoint out;
+    out.move = sim::PathMove::Ptp;
+    out.joints = {40};
+    out.externalValues = {40};
+    out.speed = 80;
+    out.zone = 0;
+    sim::PathPoint back;
+    back.move = sim::PathMove::Ptp;
+    back.joints = {-20};
+    back.externalValues = {-20};
+    back.speed = 80;
+    path.points = {out, back};
+    scene.robotPaths.push_back(path);
+
+    sim::LogicBlock block;
+    block.name = "hold";
+    sim::LogicAction action;
+    action.kind = "wait";
+    action.seconds = 2;
+    sim::LogicStep step;
+    step.actions.push_back(action);
+    block.steps.push_back(step);
+    scene.logicBlocks.push_back(block);
+
+    sim::Station belt;
+    belt.id = "belt";
+    belt.nodeName = "belt";
+    scene.layout.stations.push_back(belt);
+    auto beltNode = scene.makeNode(sim::NodeKind::Part, "belt");
+    beltNode->mech.kind = sim::MechKind::Conveyor;
+    beltNode->mech.speed = 200;
+    beltNode->mech.direction = {1, 0, 0};
+    scene.addChild(scene.root(), beltNode);
+
+    sim::Operation planned;
+    planned.id = "move";
+    planned.kind = sim::OpKind::Task;
+    planned.path = "turn";
+    planned.seconds = 1;
+    sim::Operation waited;
+    waited.id = "wait";
+    waited.kind = sim::OpKind::Task;
+    waited.logic = "hold";
+    waited.seconds = 9;
+    sim::Operation carried;
+    carried.id = "carry";
+    carried.kind = sim::OpKind::Task;
+    carried.station = "belt";
+    carried.seconds = 9;
+    scene.operations = {planned, waited, carried};
+
+    const sim::MeasureResult measured = sim::measureOperationTimes(scene, true);
+    REQUIRE(measured.planned == 1);
+    REQUIRE(measured.logic == 1);
+    REQUIRE(measured.conveyor == 1);
+    REQUIRE(scene.operations[0].timeSource == "plan");
+    REQUIRE(scene.operations[1].seconds == Approx(2.0).margin(0.05));
+    REQUIRE(scene.operations[1].timeSource == "logic");
+    REQUIRE(scene.operations[2].timeSource == "conveyor");
+    REQUIRE(scene.operations[2].seconds == Approx(2.5).margin(0.08));
+
+    const double first = scene.operations[0].seconds;
+    scene.operations[0].timeSource = "pinned";
+    scene.operations[0].timeKey = "pinned";
+    scene.operations[0].seconds = 12;
+    sim::measureOperationTimes(scene, false);
+    REQUIRE(scene.operations[0].seconds == Approx(12));
+    scene.resources.front().joints.front().maxSpeed = 30;
+    sim::measureOperationTimes(scene, false);
+    REQUIRE(scene.operations[0].timeSource == "plan");
+    REQUIRE(scene.operations[0].seconds > first);
+
+    scene.robotPaths.front().points.front().zone = 25;
+    const std::string zoned = sim::pathFingerprint(scene.robotPaths.front(), &scene.resources.front());
+    scene.robotPaths.front().points.front().zone = 0;
+    REQUIRE(zoned != sim::pathFingerprint(scene.robotPaths.front(), &scene.resources.front()));
+}
+
+TEST_CASE("frustum culling and mesh lod drop work at field scale", "[assets]") {
+    const sim::Mat4 viewProjection = sim::Mat4::identity();
+    int outside = 0;
+    for (int i = 0; i < 100000; ++i) {
+        sim::Aabb box;
+        const double x = static_cast<double>(i) * 10.0;
+        box.expand({x, 0, 0});
+        box.expand({x + 1, 1, 1});
+        if (!sim::intersectsClipFrustum(viewProjection, box)) {
+            ++outside;
+        }
+    }
+    REQUIRE(outside > 90000);
+
+    const auto fine = sim::makeTriangleGrid(256, 40);
+    const auto coarse = sim::simplifyMesh(*fine, 20);
+    REQUIRE(fine->triangleCount() >= 256);
+    REQUIRE(coarse->triangleCount() < fine->triangleCount());
+    REQUIRE(sim::selectLodLevel(1000, 3) == 0);
+    REQUIRE(sim::selectLodLevel(5000, 3) == 1);
+    REQUIRE(sim::selectLodLevel(9000, 3) == 2);
+}
+
+TEST_CASE("urdf reads cylinder sphere mesh and inertia", "[assets]") {
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto stlPath = dir / "simstudio_link.stl";
+    {
+        std::ofstream out(stlPath);
+        out << "solid tip\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 0.1 0 0\nvertex 0 0.1 0\nendloop\nendfacet\nendsolid tip\n";
+    }
+    const auto urdfPath = dir / "simstudio_shapes.urdf";
+    {
+        std::ofstream out(urdfPath);
+        out << R"(<robot name="shapes">
+<link name="base">
+  <inertial>
+    <origin xyz="0 0 0.02"/>
+    <mass value="3.5"/>
+    <inertia ixx="0.1" ixy="0.01" ixz="0" iyy="0.2" iyz="0" izz="0.3"/>
+  </inertial>
+  <visual><geometry><cylinder radius="0.05" length="0.2"/></geometry></visual>
+</link>
+<link name="head">
+  <visual><geometry><sphere radius="0.04"/></geometry></visual>
+</link>
+<link name="tip">
+  <visual><geometry><mesh filename="simstudio_link.stl" scale="1 1 1"/></geometry></visual>
+</link>
+<joint name="neck" type="fixed"><parent link="base"/><child link="head"/></joint>
+<joint name="nose" type="fixed"><parent link="head"/><child link="tip"/></joint>
+</robot>)";
+    }
+    sim::Scene scene;
+    const sim::AssetImportResult imported = sim::createBuiltinRegistry()->importPath(urdfPath.string(), scene);
+    REQUIRE(imported.ok);
+    REQUIRE(imported.triangleCount > 24);
+    REQUIRE(scene.resources.size() == 1);
+    const sim::KinLink& base = scene.resources.front().links.front();
+    REQUIRE(base.hasInertia);
+    REQUIRE(base.mass == Approx(3.5));
+    REQUIRE(base.com.z == Approx(0.02));
+    REQUIRE(base.ixx == Approx(0.1));
+    REQUIRE(base.izz == Approx(0.3));
+    bool sawWide = false;
+    for (const auto& [id, mesh] : scene.meshes()) {
+        (void)id;
+        if (mesh && mesh->bounds.max.x > 50) {
+            sawWide = true;
+        }
+    }
+    REQUIRE(sawWide);
+}
+
+TEST_CASE("gltf reads pbr factors and a skinned vertex", "[assets]") {
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto binPath = dir / "simstudio_skin.bin";
+    std::string bin(256, '\0');
+    auto writeFloats = [&](std::size_t offset, const std::vector<float>& values) {
+        std::memcpy(bin.data() + offset, values.data(), values.size() * sizeof(float));
+    };
+    std::vector<float> identity(16, 0);
+    identity[0] = identity[5] = identity[10] = identity[15] = 1;
+    writeFloats(0, identity);
+    writeFloats(64, identity);
+    writeFloats(128, {0.f, 0.f, 0.f, 0.1f, 0.f, 0.f, 0.f, 0.1f, 0.f});
+    const std::uint16_t joints[] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::memcpy(bin.data() + 164, joints, sizeof(joints));
+    writeFloats(188, {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f});
+    const std::uint16_t indices[] = {0, 1, 2};
+    std::memcpy(bin.data() + 236, indices, sizeof(indices));
+    {
+        std::ofstream out(binPath, std::ios::binary);
+        out.write(bin.data(), static_cast<std::streamsize>(bin.size()));
+    }
+    const auto gltfPath = dir / "simstudio_skin.gltf";
+    {
+        std::ofstream out(gltfPath);
+        out << R"({
+  "asset": {"version": "2.0"},
+  "scene": 0,
+  "scenes": [{"nodes": [0, 2]}],
+  "nodes": [
+    {"name": "root", "children": [1]},
+    {"name": "bone", "translation": [1, 0, 0]},
+    {"name": "skin", "mesh": 0, "skin": 0}
+  ],
+  "skins": [{"joints": [0, 1], "inverseBindMatrices": 0}],
+  "materials": [{"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.8, 1], "metallicFactor": 0.3, "roughnessFactor": 0.6}}],
+  "meshes": [{"primitives": [{"attributes": {"POSITION": 1, "JOINTS_0": 2, "WEIGHTS_0": 3}, "indices": 4, "material": 0, "mode": 4}]}],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 2, "type": "MAT4"},
+    {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5123, "count": 3, "type": "VEC4"},
+    {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4"},
+    {"bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR"}
+  ],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 128},
+    {"buffer": 0, "byteOffset": 128, "byteLength": 36},
+    {"buffer": 0, "byteOffset": 164, "byteLength": 24},
+    {"buffer": 0, "byteOffset": 188, "byteLength": 48},
+    {"buffer": 0, "byteOffset": 236, "byteLength": 6}
+  ],
+  "buffers": [{"uri": "simstudio_skin.bin", "byteLength": 256}]
+})";
+    }
+    sim::Scene scene;
+    const sim::AssetImportResult imported = sim::createBuiltinRegistry()->importPath(gltfPath.string(), scene);
+    REQUIRE(imported.ok);
+    REQUIRE(imported.triangleCount == 1);
+    auto node = scene.findByName("gltf");
+    REQUIRE(node);
+    REQUIRE(node->color.x == Approx(0.2));
+    REQUIRE(node->color.y == Approx(0.4));
+    REQUIRE(node->metallic == Approx(0.3f));
+    REQUIRE(node->roughness == Approx(0.6f));
+    const auto mesh = scene.mesh(node->meshId);
+    REQUIRE(mesh);
+    REQUIRE(mesh->bounds.max.x == Approx(1000).margin(1));
+}
+
+TEST_CASE("a collision sensor measures an inspect operation", "[assets]") {
+    sim::Scene scene;
+    auto eye = scene.makeNode(sim::NodeKind::Part, "InspectEye");
+    eye->mech.kind = sim::MechKind::CollisionSensor;
+    eye->mech.halfExtents = {40, 40, 40};
+    eye->mech.signal = "part_seen";
+    scene.addChild(scene.root(), eye);
+    sim::LogicBlock block;
+    block.name = "inspect_seq";
+    sim::LogicAction action;
+    action.kind = "wait_signal";
+    action.signal = "part_seen";
+    sim::LogicStep step;
+    step.actions.push_back(action);
+    block.steps.push_back(step);
+    scene.logicBlocks.push_back(block);
+    sim::Operation operation;
+    operation.id = "inspect";
+    operation.kind = sim::OpKind::Task;
+    operation.logic = "inspect_seq";
+    operation.seconds = 6;
+    scene.operations.push_back(operation);
+    const sim::MeasureResult measured = sim::measureOperationTimes(scene, true);
+    REQUIRE(measured.sensor == 1);
+    REQUIRE(scene.operations.front().timeSource == "sensor");
+    REQUIRE(scene.operations.front().seconds == Approx(0.43).margin(1e-9));
+    REQUIRE(scene.operations.front().seconds != Approx(6));
+}
+
+TEST_CASE("xacro import builds a robot resource and a mesh", "[assets]") {
+    const auto dir = std::filesystem::temp_directory_path() / "simstudio_xacro_robot";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream stl(dir / "link.stl");
+        stl << "solid link\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 0.02 0 0\nvertex 0 0.01 0\nendloop\nendfacet\nendsolid link\n";
+    }
+    {
+        std::ofstream macro(dir / "arm_macro.xacro");
+        macro << R"(<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="arm_macro">
+  <xacro:macro name="arm" params="prefix">
+    <link name="${prefix}base">
+      <visual><geometry><box size="0.1 0.1 0.1"/></geometry></visual>
+    </link>
+    <link name="${prefix}tool">
+      <inertial>
+        <origin xyz="0.2 0 0"/>
+        <mass value="2"/>
+        <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <visual><geometry><mesh filename="link.stl"/></geometry></visual>
+    </link>
+    <joint name="${prefix}j1" type="revolute">
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <parent link="${prefix}base"/>
+      <child link="${prefix}tool"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="${radians(-90)}" upper="${radians(90)}" velocity="1.0" effort="10"/>
+    </joint>
+  </xacro:macro>
+</robot>
+)";
+    }
+    const auto top = dir / "cell.xacro";
+    {
+        std::ofstream out(top);
+        out << R"(<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="cell">
+  <xacro:include filename="arm_macro.xacro"/>
+  <xacro:arm prefix="r_"/>
+</robot>
+)";
+    }
+    sim::Scene scene;
+    const sim::AssetImportResult imported = sim::createBuiltinRegistry()->importPath(top.string(), scene);
+    REQUIRE(imported.ok);
+    REQUIRE(imported.format == "xacro");
+    REQUIRE(imported.meshCount >= 1);
+    REQUIRE(scene.resources.size() == 1);
+    const sim::KinematicResource& resource = scene.resources.front();
+    REQUIRE(resource.name == "cell");
+    REQUIRE(resource.joints.size() == 1);
+    const sim::KinJoint& joint = resource.joints.front();
+    REQUIRE(joint.name == "r_j1");
+    REQUIRE(joint.childLink == "r_tool");
+    REQUIRE(joint.effort == Approx(10));
+    REQUIRE(joint.lower == Approx(-90));
+    REQUIRE(joint.upper == Approx(90));
+    REQUIRE(joint.accelSource == "dynamics");
+    const sim::JointAccelLimit limit = sim::jointAccelLimit(resource, joint);
+    REQUIRE(limit.source == "dynamics");
+    // τ / (Izz + m r²) = 10 / (0.01 + 2 * 0.2²) rad/s², reported in degrees.
+    REQUIRE(limit.value == Approx(10.0 / 0.09 * 180.0 / sim::kPi).margin(1e-4));
+    bool sawMesh = false;
+    for (const auto& [id, mesh] : scene.meshes()) {
+        (void)id;
+        if (mesh && mesh->triangleCount() > 0) {
+            sawMesh = true;
+        }
+    }
+    REQUIRE(sawMesh);
+}

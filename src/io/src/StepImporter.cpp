@@ -15,6 +15,7 @@
 #include <Interface_Static.hxx>
 #include <Quantity_Color.hxx>
 #include <STEPCAFControl_Reader.hxx>
+#include <Standard_Failure.hxx>
 #include <TCollection_AsciiString.hxx>
 #include <TCollection_ExtendedString.hxx>
 #include <TDF_Label.hxx>
@@ -453,6 +454,34 @@ void prepareOcct() {
     });
 }
 
+// XCAFApp_Application keeps every NewDocument alive until Close. The local
+// Handle going out of scope is not enough, so the document would stay for the
+// whole process and show up as an OCCT leak.
+class XcafDocumentGuard {
+public:
+    XcafDocumentGuard(const Handle(XCAFApp_Application)& application, Handle(TDocStd_Document)& document)
+        : application_(application), document_(document) {}
+
+    ~XcafDocumentGuard() {
+        if (application_.IsNull() || document_.IsNull()) {
+            return;
+        }
+        Handle(TDocStd_Document) held = document_;
+        document_.Nullify();
+        try {
+            application_->Close(held);
+        } catch (const Standard_Failure&) {
+        }
+    }
+
+    XcafDocumentGuard(const XcafDocumentGuard&) = delete;
+    XcafDocumentGuard& operator=(const XcafDocumentGuard&) = delete;
+
+private:
+    Handle(XCAFApp_Application) application_;
+    Handle(TDocStd_Document)& document_;
+};
+
 }  // namespace
 
 ImportResult StepImporter::importFile(const std::string& path, Scene& scene) {
@@ -505,6 +534,7 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     if (document.IsNull()) {
         return finish(false, "OCCT could not create an XCAF document. Check that OCCT resource files are installed.");
     }
+    XcafDocumentGuard closeDocument(application, document);
     if (!reader.Transfer(document)) {
         return finish(false, "STEP transfer into the XCAF document failed");
     }

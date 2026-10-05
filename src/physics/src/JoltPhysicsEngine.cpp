@@ -36,6 +36,7 @@
 #include <cstdarg>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -122,6 +123,14 @@ void ensureJolt() {
     JPH::Trace = joltTrace;
     JPH::Factory::sInstance = new JPH::Factory();
     JPH::RegisterTypes();
+    std::atexit([] {
+        if (JPH::Factory::sInstance == nullptr) {
+            return;
+        }
+        JPH::UnregisterTypes();
+        delete JPH::Factory::sInstance;
+        JPH::Factory::sInstance = nullptr;
+    });
     ready = true;
 }
 

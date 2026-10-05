@@ -192,9 +192,10 @@ bool beginJointMove(const KinematicResource& resource, const std::vector<double>
         move.index.push_back(static_cast<int>(i));
         move.q0.push_back(joint.position);
         move.q1.push_back(goal);
+        const JointAccelLimit limit = jointAccelLimit(resource, joint);
         move.vmax.push_back(std::max(joint.maxSpeed, 1e-6));
-        move.amax.push_back(std::max(joint.maxAccel, 1e-6));
-        move.jointDuration.push_back(profileDuration(profile, joint.position, goal, joint.maxSpeed, joint.maxAccel));
+        move.amax.push_back(std::max(limit.value, 1e-6));
+        move.jointDuration.push_back(profileDuration(profile, joint.position, goal, joint.maxSpeed, limit.value));
         move.duration = std::max(move.duration, move.jointDuration.back());
     }
     move.active = true;

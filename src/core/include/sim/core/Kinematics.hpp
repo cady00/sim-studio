@@ -22,6 +22,16 @@ struct KinLink {
     // sits on a carriage this way: world = parent * mountRest.
     std::string mountedOn;
     Transform mountRest{};
+    // URDF inertial, kilograms and kilograms times square meters. Geometry stays millimeters.
+    bool hasInertia = false;
+    double mass = 0;
+    Vec3 com{0, 0, 0};
+    double ixx = 0;
+    double iyy = 0;
+    double izz = 0;
+    double ixy = 0;
+    double ixz = 0;
+    double iyz = 0;
 };
 
 struct KinJoint {
@@ -36,6 +46,11 @@ struct KinJoint {
     double upper = 180;
     double maxSpeed = 90;
     double maxAccel = 360;
+    // Motor torque in N·m (revolute) or force in N (prismatic). Zero means the URDF or the user did not give one.
+    double effort = 0;
+    // "" keeps an older file that stored maxAccel. "user" is a typed limit. "dynamics" is torque over inertia.
+    // "velocity" means planning is limited by maxSpeed because torque or inertia is missing.
+    std::string accelSource;
     // Follower position is master * coupleRatio. Empty means independent.
     std::string coupledTo;
     double coupleRatio = 1;
@@ -96,8 +111,13 @@ struct ScaraArm {
 
 struct KinematicResource {
     std::string name;
+    // Public page the limits and link origins were copied from. Empty for a mechanism the user built.
+    // The text is a reminder to check the numbers, not a certificate.
+    std::string source;
     // none | scara | spherical_wrist | numerical
     std::string ik = "none";
+    // Kilograms carried at the flange. Zero is an empty tool. Planning reduces acceleration when link inertia is known.
+    double payload = 0;
     SphericalWrist wrist;
     ScaraArm scara;
     std::vector<KinLink> links;
@@ -119,10 +139,27 @@ struct PathPoint {
     Vec3 via{0, 0, 0};
     double speed = 100;
     double zone = 0;
+    // Empty, "spl", or "slin". A spline block is written when any point sets this.
+    std::string shape;
     // Empty inherits the path. Otherwise "locked", "sync", or "positioner".
     std::string external;
     // Parallel to the resource's external joints, in joint-list order.
     std::vector<double> externalValues;
+};
+
+// $TOOL or $BASE. Angles are KUKA A, B, C in degrees (Z, Y, X).
+struct OlpFrame {
+    std::string kind;
+    Vec3 origin{0, 0, 0};
+    double a = 0;
+    double b = 0;
+    double c = 0;
+};
+
+// An INTERRUPT or an $OUT/$IN assignment, kept as the controller text.
+struct OlpDirective {
+    std::string kind;
+    std::string text;
 };
 
 struct RobotPath {
@@ -133,6 +170,8 @@ struct RobotPath {
     // "positioner" interprets the point in the workpiece frame.
     std::string external = "locked";
     std::string workpiece;
+    std::vector<OlpFrame> frames;
+    std::vector<OlpDirective> directives;
 };
 
 struct LogicCondition {
@@ -145,7 +184,7 @@ struct LogicCondition {
 };
 
 struct LogicAction {
-    // move_pose | jog | set_output | reset_output | wait
+    // move_pose | jog | set_output | reset_output | wait | wait_signal
     std::string kind = "wait";
     std::string resource;
     std::string pose;
@@ -179,10 +218,20 @@ struct LogicBlock {
     std::vector<std::string> outputs;
     std::vector<LogicParam> parameters;
     std::vector<LogicStep> steps;
+    // When set, finishing the last step starts the block again on the next tick.
+    bool repeat = false;
     // Stored with the block. The runner does not execute it; the script dock does,
     // and that script still only sees the signal table.
     std::string python;
+    // Canvas positions, keyed "in", "out", or "s0". Optional in older projects.
+    std::vector<std::pair<std::string, std::pair<double, double>>> pins;
 };
+
+// Text form shared by the canvas and the logic page. Python follows a `python:` line until `---`.
+std::string logicToText(const LogicBlock& block);
+bool logicFromText(const std::string& text, LogicBlock& block, std::string& error);
+// One shared signal name on the source outputs and the destination inputs.
+bool wireLogicBlocks(LogicBlock& from, LogicBlock& to, std::string& signal);
 
 const char* jointMotionName(JointMotion motion);
 bool jointMotionFromName(const std::string& name, JointMotion& out);

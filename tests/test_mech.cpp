@@ -213,7 +213,7 @@ TEST_CASE("simulation speed and pause do not advance time while paused") {
     REQUIRE(simulation.lastError().empty());
     simulation.tick(0.05);
     const double played = simulation.time();
-    REQUIRE(played > 0);
+    REQUIRE(played == Approx(0.1).margin(1e-12));
     simulation.pause();
     simulation.tick(0.2);
     REQUIRE(simulation.time() == Approx(played));

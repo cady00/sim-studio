@@ -5,8 +5,16 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <cerrno>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <unordered_map>
+
+#include <signal.h>
+#include <unistd.h>
 
 namespace sim {
 namespace {
@@ -102,6 +110,8 @@ nlohmann::json writeNode(const SceneNode& node) {
     json["kind"] = nodeKindName(node.kind);
     json["visible"] = node.visible;
     json["color"] = {node.color.x, node.color.y, node.color.z};
+    json["metallic"] = node.metallic;
+    json["roughness"] = node.roughness;
     json["transform"] = {
         {"translation", {node.local.translation.x, node.local.translation.y, node.local.translation.z}},
         {"rotation", {node.local.rotation.w, node.local.rotation.x, node.local.rotation.y, node.local.rotation.z}},
@@ -150,6 +160,8 @@ std::shared_ptr<SceneNode> readNode(const nlohmann::json& json, std::string& err
         node->color = {json.at("color")[0].get<double>(), json.at("color")[1].get<double>(),
                        json.at("color")[2].get<double>()};
     }
+    node->metallic = static_cast<float>(json.value("metallic", 0.0));
+    node->roughness = static_cast<float>(json.value("roughness", 1.0));
     if (json.contains("transform")) {
         const auto& transform = json.at("transform");
         const auto& translation = transform.at("translation");
@@ -226,6 +238,9 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     for (const LogicBlock& block : scene.logicBlocks) {
         json["logic"].push_back(logicBlockToJson(block));
     }
+    json["welds"] = weldsToJson(scene.welds);
+    json["envelopes"] = envelopesToJson(scene.envelopes);
+    json["interlocks"] = interlocksToJson(scene.interlocks);
     json["paths"] = nlohmann::json::array();
     for (const RobotPath& path : scene.robotPaths) {
         json["paths"].push_back(robotPathToJson(path));
@@ -237,6 +252,10 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
     for (const MotorAspect& motor : scene.motors) {
         json["motors"].push_back(motorToJson(motor));
     }
+    json["layout"] = layoutToJson(scene.layout);
+    json["operations"] = operationsToJson(scene.operations);
+    json["sequence"] = sequenceToJson(scene.sequence);
+    json["ppr"] = pprToJson(scene.ppr);
     json["signals"] = nlohmann::json::array();
     for (const Signal& signal : scene.signals) {
         json["signals"].push_back(signalToJson(signal));
@@ -256,6 +275,9 @@ ProjectResult ProjectStore::save(const Scene& scene, const std::string& path) {
             continue;
         }
         entries.push_back(ZipEntry{"meshes/" + id + ".bin", writeMesh(*mesh)});
+    }
+    if (!scene.layout.underlay.embedded.empty() && !scene.layout.underlay.bytes.empty()) {
+        entries.push_back(ZipEntry{scene.layout.underlay.embedded, scene.layout.underlay.bytes});
     }
     if (!ZipArchive::write(path, entries, result.message)) {
         return result;
@@ -398,6 +420,15 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
             scene.robotPaths.push_back(std::move(path));
         }
     }
+    if (json.contains("welds")) {
+        weldsFromJson(json.at("welds"), scene.welds);
+    }
+    if (json.contains("envelopes")) {
+        envelopesFromJson(json.at("envelopes"), scene.envelopes);
+    }
+    if (json.contains("interlocks")) {
+        interlocksFromJson(json.at("interlocks"), scene.interlocks);
+    }
     if (json.contains("proximity")) {
         proximityFromJson(json.at("proximity"), scene.proximity);
     }
@@ -414,9 +445,152 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
             scene.motors.push_back(std::move(motor));
         }
     }
+    if (json.contains("layout")) {
+        layoutFromJson(json.at("layout"), scene.layout);
+        if (!scene.layout.underlay.embedded.empty()) {
+            for (const ZipEntry& entry : entries) {
+                if (entry.name == scene.layout.underlay.embedded) {
+                    scene.layout.underlay.bytes = entry.data;
+                    break;
+                }
+            }
+        }
+    }
+    if (json.contains("operations")) {
+        operationsFromJson(json.at("operations"), scene.operations);
+    }
+    if (json.contains("sequence")) {
+        sequenceFromJson(json.at("sequence"), scene.sequence);
+    }
+    if (json.contains("ppr")) {
+        pprFromJson(json.at("ppr"), scene.ppr);
+    }
+    // reset() notifies before kinematics, welds, and operations are copied in.
+    scene.notify(ChangeKind::Structure);
     result.ok = true;
     result.message.clear();
     return result;
+}
+
+namespace {
+
+std::filesystem::path historyTempPath() {
+    static std::atomic<unsigned> sequence{0};
+    const unsigned id = sequence.fetch_add(1);
+    return std::filesystem::temp_directory_path() /
+           ("simstudio-hist-" + std::to_string(static_cast<long>(::getpid())) + "-" + std::to_string(id) + ".simproj");
+}
+
+struct TempProject {
+    std::filesystem::path path;
+    ~TempProject() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+};
+
+}  // namespace
+
+ProjectResult ProjectStore::saveBytes(const Scene& scene, std::vector<std::uint8_t>& out) {
+    TempProject temp{historyTempPath()};
+    ProjectResult result = save(scene, temp.path.string());
+    if (!result.ok) {
+        return result;
+    }
+    std::ifstream in(temp.path, std::ios::binary);
+    if (!in) {
+        result.ok = false;
+        result.message = "could not read the history snapshot";
+        return result;
+    }
+    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    if (out.empty()) {
+        result.ok = false;
+        result.message = "history snapshot is empty";
+    }
+    return result;
+}
+
+ProjectResult ProjectStore::loadBytes(const std::vector<std::uint8_t>& bytes, Scene& scene) {
+    ProjectResult result;
+    if (bytes.empty()) {
+        result.message = "history snapshot is empty";
+        return result;
+    }
+    TempProject temp{historyTempPath()};
+    {
+        std::ofstream file(temp.path, std::ios::binary);
+        if (!file) {
+            result.message = "could not write the history snapshot";
+            return result;
+        }
+        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!file) {
+            result.message = "could not write the history snapshot";
+            return result;
+        }
+    }
+    return load(temp.path.string(), scene);
+}
+
+namespace {
+
+std::filesystem::path recoveryFile(const std::string& directory, const char* name) {
+    return std::filesystem::path(directory) / name;
+}
+
+}  // namespace
+
+ProjectResult ProjectStore::autosave(const Scene& scene, const std::string& directory) {
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        ProjectResult result;
+        result.message = error.message();
+        return result;
+    }
+    return save(scene, recoveryFile(directory, "autosave.simproj").string());
+}
+
+void ProjectStore::markSession(const std::string& directory) {
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    std::ofstream out(recoveryFile(directory, "session.pid"));
+    if (out) {
+        out << static_cast<long>(getpid());
+    }
+}
+
+void ProjectStore::clearSession(const std::string& directory) {
+    std::error_code error;
+    std::filesystem::remove(recoveryFile(directory, "session.pid"), error);
+    std::filesystem::remove(recoveryFile(directory, "autosave.simproj"), error);
+}
+
+bool ProjectStore::sessionInterrupted(const std::string& directory) {
+    std::ifstream in(recoveryFile(directory, "session.pid"));
+    if (!in) {
+        return false;
+    }
+    long pid = 0;
+    in >> pid;
+    if (pid <= 0 || pid == static_cast<long>(getpid())) {
+        return false;
+    }
+    if (kill(static_cast<pid_t>(pid), 0) == 0) {
+        return false;
+    }
+    return errno == ESRCH;
+}
+
+ProjectResult ProjectStore::restoreAutosave(const std::string& directory, Scene& scene) {
+    const std::filesystem::path path = recoveryFile(directory, "autosave.simproj");
+    if (!std::filesystem::exists(path)) {
+        ProjectResult result;
+        result.message = "no autosave";
+        return result;
+    }
+    return load(path.string(), scene);
 }
 
 }  // namespace sim

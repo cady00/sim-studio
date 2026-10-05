@@ -3,12 +3,25 @@
 #include <QPointF>
 #include <QWidget>
 
+#include "sim/motion/Scope.hpp"
+
 #include <map>
 #include <string>
 #include <vector>
 
+class QCheckBox;
 class QGraphicsScene;
 class QGraphicsView;
+class QLabel;
+class QListWidget;
+class QPlainTextEdit;
+class QPushButton;
+
+namespace sim {
+class Scene;
+class OpcUaClient;
+class OpcUaServer;
+}
 
 namespace sim {
 
@@ -26,6 +39,10 @@ public:
     void setDark(bool dark);
     void remember(const std::string& key, const QPointF& position);
     void refreshEdges();
+    void finishWire(const std::string& fromKey, const QPointF& scenePos);
+    void editKey(const std::string& key);
+    // keys look like "0/s1". hotSignals are bool signals that are currently true.
+    void setLive(const std::vector<std::string>& stepKeys, const std::vector<std::string>& hotSignals);
     bool arranging() const { return arranging_; }
 
 private:
@@ -34,14 +51,20 @@ private:
     void addStep();
     void addOutput();
     void renameSelected();
+    void applyText();
+    void showText();
+    void restyle();
 
     Scene& scene_;
     QGraphicsView* view_ = nullptr;
     QGraphicsScene* graph_ = nullptr;
+    QPlainTextEdit* source_ = nullptr;
     int selected_ = 0;
     bool arranging_ = false;
     bool dark_ = true;
     std::map<std::string, QPointF> pins_;
+    std::vector<std::string> liveKeys_;
+    std::vector<std::string> hotSignals_;
 };
 
 // Planner cycle time and joint samples for the first robot path.
@@ -69,12 +92,62 @@ private:
     bool dark_ = true;
 };
 
-// Connection cards only. No socket is opened. Phase 5 owns the protocol.
+class ScopePlot;
+
+// Plots watched signals and joint commands against simulation time.
+// Joint rows can also draw backward-difference velocity and acceleration.
+class SignalScope : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit SignalScope(Scene& scene, QWidget* parent = nullptr);
+    void sample(double timeSeconds);
+    void clearTrace();
+    void reload();
+    void setDark(bool dark);
+    void setTexts(const QString& velocity, const QString& acceleration, const QString& exportCsv, const QString& clearText,
+                  const QString& waiting);
+
+private:
+    void syncWatch();
+    void exportCsv();
+    void refreshReadout();
+
+    Scene& scene_;
+    ScopeTrace trace_;
+    QListWidget* list_ = nullptr;
+    QCheckBox* velocityBox_ = nullptr;
+    QCheckBox* accelerationBox_ = nullptr;
+    QPushButton* exportButton_ = nullptr;
+    QPushButton* clearButton_ = nullptr;
+    QLabel* readout_ = nullptr;
+    ScopePlot* plot_ = nullptr;
+    bool userPicked_ = false;
+    bool filling_ = false;
+    QString waiting_;
+};
+
+// OPC UA opens SecurityPolicy None or Basic256Sha256 on the loopback address.
+// PLCSIM Advanced stays an address card until that runtime is installed.
 class PlcCards : public QWidget {
     Q_OBJECT
 
 public:
-    explicit PlcCards(QWidget* parent = nullptr);
+    explicit PlcCards(Scene& scene, QWidget* parent = nullptr);
+    ~PlcCards() override;
+    bool connectOpcUa();
+    // Loopback Basic256Sha256 session with a username, plus a sample signal table.
+    bool demonstrateSecure();
+
+signals:
+    void signalsImported();
+
+private:
+    bool importText(const QString& text);
+    Scene& scene_;
+    QLabel* opcState_ = nullptr;
+    OpcUaClient* client_ = nullptr;
+    OpcUaServer* secureServer_ = nullptr;
 };
 
 }  // namespace sim

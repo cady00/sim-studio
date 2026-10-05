@@ -2,6 +2,9 @@
 
 #include "sim/core/Mesh.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace sim {
 namespace {
 
@@ -326,6 +329,439 @@ void buildSlipDemo(Scene& scene) {
     slick.surface = "slick";
     slick.mass = 2;
     addBox(scene, "SlipBox", slick.halfExtents, {-180, 36, 63}, {0.85, 0.82, 0.45}, slick);
+    scene.markClean();
+}
+
+void buildExampleLine(Scene& scene) {
+    scene.clear();
+    scene.name = "example_weld_line";
+    scene.layout.example = true;
+    scene.layout.title = "示例焊装线";
+    scene.layout.gridMm = 500;
+    scene.ppr.example = true;
+    scene.ppr.title = "示例焊装线";
+
+    const char* outline = R"(0
+SECTION
+2
+ENTITIES
+0
+LWPOLYLINE
+70
+1
+10
+-800
+20
+-1600
+10
+9800
+20
+-1600
+10
+9800
+20
+1600
+10
+-800
+20
+1600
+0
+LINE
+10
+-800
+20
+0
+11
+9800
+21
+0
+0
+ENDSEC
+0
+EOF
+)";
+    const DxfResult parsed = parseDxf(outline, 1);
+    scene.layout.underlay.kind = "dxf";
+    scene.layout.underlay.mmPerUnit = 1;
+    scene.layout.underlay.opacity = 0.45;
+    scene.layout.underlay.lines = parsed.lines;
+
+    auto addStation = [&](const std::string& id, const std::string& name, double x, StationKind kind, const std::string& resource,
+                          const std::string& node, Vec3 color) {
+        Station station;
+        station.id = id;
+        station.name = name;
+        station.x = x;
+        station.y = 0;
+        station.width = 2000;
+        station.depth = 1800;
+        station.kind = kind;
+        station.resource = resource;
+        station.nodeName = node;
+        scene.layout.stations.push_back(station);
+        Mech pad;
+        pad.kind = MechKind::Collision;
+        pad.motion = BodyMotion::Anchored;
+        pad.halfExtents = {1000, 900, 20};
+        addBox(scene, node, pad.halfExtents, {x, 0, 20}, color, pad);
+    };
+    addStation("st_load", "上料", 0, StationKind::Manual, "", "LoadPad", {0.35, 0.55, 0.78});
+    addStation("st_weld", "焊接", 2500, StationKind::Robot, "kr420", "KR420", {0.17, 0.43, 0.81});
+    addStation("st_inspect", "检查", 5000, StationKind::Fixture, "", "InspectPad", {0.45, 0.62, 0.55});
+    addStation("st_unload", "下料", 7500, StationKind::Conveyor, "", "UnloadPad", {0.55, 0.48, 0.32});
+
+    Mech column;
+    column.kind = MechKind::Collision;
+    column.motion = BodyMotion::Anchored;
+    column.halfExtents = {280, 280, 420};
+    addBox(scene, "KR420Column", column.halfExtents, {2500, 0, 460}, {0.24, 0.53, 0.91}, column);
+
+    auto addOp = [&](const std::string& id, const std::string& name, const std::string& parent, OpKind kind, int index,
+                     const std::string& station, double seconds, const std::string& path, const std::string& logic) {
+        Operation operation;
+        operation.id = id;
+        operation.name = name;
+        operation.parent = parent;
+        operation.kind = kind;
+        operation.index = index;
+        operation.station = station;
+        operation.seconds = seconds;
+        operation.path = path;
+        operation.logic = logic;
+        scene.operations.push_back(std::move(operation));
+    };
+    addOp("line", "节拍", "", OpKind::Sequence, 0, "", 0, "", "");
+    addOp("load", "上料", "line", OpKind::Task, 0, "st_load", 8, "", "load_seq");
+    addOp("weld", "焊接", "line", OpKind::Task, 1, "st_weld", 12, "cycle", "weld_seq");
+    addOp("branch", "检查并行", "line", OpKind::Parallel, 2, "", 0, "", "");
+    addOp("inspect", "检查", "branch", OpKind::Task, 0, "st_inspect", 6, "", "inspect_seq");
+    addOp("prep", "夹具准备", "branch", OpKind::Task, 1, "st_inspect", 4, "", "");
+    addOp("unload", "下料", "line", OpKind::Task, 3, "st_unload", 5, "", "");
+    for (Operation& operation : scene.operations) {
+        if (operation.id == "unload") {
+            operation.wait = 1;
+        }
+    }
+    if (auto pad = scene.findByName("UnloadPad")) {
+        pad->mech.kind = MechKind::Conveyor;
+        pad->mech.motion = BodyMotion::Anchored;
+        pad->mech.speed = 250;
+        pad->mech.direction = {1, 0, 0};
+    }
+    Mech eye;
+    eye.kind = MechKind::CollisionSensor;
+    eye.motion = BodyMotion::Anchored;
+    eye.halfExtents = {40, 80, 40};
+    eye.signal = "part_seen";
+    addBox(scene, "InspectEye", eye.halfExtents, {5000, 0, 140}, {0.95, 0.72, 0.28}, eye);
+
+    ProductNode product;
+    product.id = "prod_bracket";
+    product.name = "示例支架";
+    product.partName = "Bracket";
+    scene.ppr.products.push_back(product);
+    ProcessNode process;
+    process.id = "proc_weld";
+    process.name = "焊接工艺";
+    process.operation = "weld";
+    process.product = "prod_bracket";
+    scene.ppr.processes.push_back(process);
+    PlantNode plant;
+    plant.id = "plant_weld";
+    plant.name = "焊接工位";
+    plant.station = "st_weld";
+    plant.resource = "kr420";
+    scene.ppr.plants.push_back(plant);
+
+    RobotPath path;
+    path.name = "cycle";
+    path.resource = "kr420";
+    PathPoint home;
+    home.name = "home";
+    home.move = PathMove::Ptp;
+    home.speed = 50;
+    home.zone = 20;
+    PathPoint away;
+    away.name = "away";
+    away.move = PathMove::Lin;
+    away.cartesian = true;
+    away.position = {2500, 0, 800};
+    away.speed = 40;
+    away.zone = 30;
+    path.points.push_back(home);
+    path.points.push_back(away);
+    scene.robotPaths.push_back(std::move(path));
+
+    LogicBlock block;
+    block.name = "weld_seq";
+    block.resource = "kr420";
+    LogicAction action;
+    action.kind = "set_output";
+    action.signal = "weld_done";
+    LogicStep step;
+    step.actions.push_back(action);
+    block.steps.push_back(std::move(step));
+    scene.logicBlocks.push_back(std::move(block));
+    LogicBlock load;
+    load.name = "load_seq";
+    LogicAction wait;
+    wait.kind = "wait";
+    wait.seconds = 2;
+    LogicStep loadStep;
+    loadStep.actions.push_back(wait);
+    load.steps.push_back(std::move(loadStep));
+    scene.logicBlocks.push_back(std::move(load));
+    LogicBlock inspect;
+    inspect.name = "inspect_seq";
+    LogicAction seen;
+    seen.kind = "wait_signal";
+    seen.signal = "part_seen";
+    LogicStep inspectStep;
+    inspectStep.actions.push_back(seen);
+    inspect.steps.push_back(std::move(inspectStep));
+    scene.logicBlocks.push_back(std::move(inspect));
+    for (LogicBlock& block : scene.logicBlocks) {
+        block.repeat = true;
+    }
+    scene.layout.cyclic = true;
+
+    Mech blank;
+    blank.kind = MechKind::Collision;
+    blank.motion = BodyMotion::Anchored;
+    blank.halfExtents = {40, 40, 40};
+    addBox(scene, "Blank", blank.halfExtents, {0, 400, 80}, {0.72, 0.55, 0.28}, blank, false);
+    Mech feeder;
+    feeder.kind = MechKind::Source;
+    feeder.motion = BodyMotion::Anchored;
+    feeder.interval = 8;
+    feeder.prototype = "Blank";
+    feeder.halfExtents = {30, 30, 30};
+    addBox(scene, "Feeder", feeder.halfExtents, {0, 0, 200}, {0.20, 0.45, 0.75}, feeder);
+    Mech sink;
+    sink.kind = MechKind::Sink;
+    sink.motion = BodyMotion::Anchored;
+    sink.valueSignal = "shipped";
+    sink.halfExtents = {80, 80, 40};
+    addBox(scene, "Ship", sink.halfExtents, {7500, 0, 40}, {0.35, 0.35, 0.38}, sink);
+    scene.markClean();
+}
+
+void buildDeviceDemo(Scene& scene) {
+    scene.clear();
+    scene.name = "device_cell";
+    scene.physicsDoc.engine = "builtin";
+    scene.physicsDoc.defaultRestitution = 0.02;
+
+    Mech floor;
+    floor.kind = MechKind::Collision;
+    floor.motion = BodyMotion::Anchored;
+    floor.kinematic = true;
+    floor.halfExtents = {520, 280, 8};
+    addBox(scene, "Floor", floor.halfExtents, {40, -80, -8}, {0.12, 0.14, 0.20}, floor);
+
+    Mech master;
+    master.kind = MechKind::Hinge;
+    master.motion = BodyMotion::Driven;
+    master.kinematic = true;
+    master.axis = {0, 0, 1};
+    master.limited = true;
+    master.lower = 0;
+    master.upper = 120;
+    master.control = "position";
+    master.setpoint = "gear_cmd";
+    master.maxSpeed = 360;
+    master.maxAccel = 4000;
+    master.halfExtents = {70, 14, 14};
+    addBox(scene, "GearIn", master.halfExtents, {-280, 40, 70}, {0.18, 0.42, 0.78}, master);
+
+    Mech gear;
+    gear.kind = MechKind::Hinge;
+    gear.motion = BodyMotion::Driven;
+    gear.kinematic = true;
+    gear.axis = {0, 0, 1};
+    gear.limited = false;
+    gear.couple = "gear";
+    gear.master = "GearIn";
+    gear.ratio = 2;
+    gear.halfExtents = {70, 14, 14};
+    addBox(scene, "GearOut", gear.halfExtents, {-80, 40, 70}, {0.22, 0.62, 0.38}, gear);
+
+    Mech cam;
+    cam.kind = MechKind::Hinge;
+    cam.motion = BodyMotion::Driven;
+    cam.kinematic = true;
+    cam.axis = {0, 0, 1};
+    cam.limited = false;
+    cam.couple = "cam";
+    cam.master = "GearIn";
+    cam.camIn = {0, 90};
+    cam.camOut = {0, 36};
+    cam.halfExtents = {64, 12, 12};
+    addBox(scene, "CamOut", cam.halfExtents, {120, 40, 70}, {0.90, 0.62, 0.18}, cam);
+
+    Mech ecam;
+    ecam.kind = MechKind::Slider;
+    ecam.motion = BodyMotion::Driven;
+    ecam.kinematic = true;
+    ecam.axis = {1, 0, 0};
+    ecam.limited = false;
+    ecam.couple = "ecam";
+    ecam.master = "cam_master";
+    ecam.camIn = {0, 90};
+    ecam.camOut = {0, 80};
+    ecam.halfExtents = {28, 16, 16};
+    addBox(scene, "Ecam", ecam.halfExtents, {300, 40, 48}, {0.55, 0.38, 0.78}, ecam);
+
+    Mech positioned;
+    positioned.kind = MechKind::Slider;
+    positioned.motion = BodyMotion::Driven;
+    positioned.kinematic = true;
+    positioned.axis = {1, 0, 0};
+    positioned.limited = true;
+    positioned.lower = 0;
+    positioned.upper = 160;
+    positioned.control = "position";
+    positioned.setpoint = "pos_cmd";
+    positioned.maxSpeed = 400;
+    positioned.maxAccel = 4000;
+    positioned.halfExtents = {22, 16, 16};
+    addBox(scene, "PosAxis", positioned.halfExtents, {-280, -80, 36}, {0.25, 0.70, 0.78}, positioned);
+
+    Mech velocity;
+    velocity.kind = MechKind::Slider;
+    velocity.motion = BodyMotion::Driven;
+    velocity.kinematic = true;
+    velocity.axis = {1, 0, 0};
+    velocity.limited = true;
+    velocity.lower = 0;
+    velocity.upper = 200;
+    velocity.control = "velocity";
+    velocity.setpoint = "vel_cmd";
+    velocity.gain = 1;
+    velocity.maxSpeed = 200;
+    velocity.maxAccel = 2000;
+    velocity.halfExtents = {22, 16, 16};
+    addBox(scene, "VelAxis", velocity.halfExtents, {-40, -80, 36}, {0.35, 0.55, 0.85}, velocity);
+
+    Mech post;
+    post.kind = MechKind::Collision;
+    post.motion = BodyMotion::Anchored;
+    post.kinematic = true;
+    post.halfExtents = {24, 24, 40};
+    addBox(scene, "Post", post.halfExtents, {360, -40, 50}, {0.55, 0.58, 0.62}, post);
+
+    Mech range;
+    range.kind = MechKind::DistanceSensor;
+    range.axis = {0, 1, 0};
+    range.range = 400;
+    range.signal = "gap_hit";
+    range.valueSignal = "gap";
+    range.halfExtents = {8, 8, 8};
+    addBox(scene, "Range", range.halfExtents, {360, -180, 50}, {0.95, 0.82, 0.25}, range);
+
+    Mech limit;
+    limit.kind = MechKind::Limit;
+    limit.other = "GearIn";
+    limit.trip = 30;
+    limit.signal = "at_limit";
+    limit.halfExtents = {12, 12, 18};
+    addBox(scene, "Limit", limit.halfExtents, {-280, 110, 40}, {0.75, 0.22, 0.22}, limit);
+
+    Mech cylinder;
+    cylinder.kind = MechKind::Cylinder;
+    cylinder.axis = {1, 0, 0};
+    cylinder.lower = 0;
+    cylinder.upper = 160;
+    cylinder.maxSpeed = 280;
+    cylinder.throttle = 0.75;
+    cylinder.cushion = 0.12;
+    cylinder.signal = "extend";
+    cylinder.halfExtents = {36, 18, 18};
+    addBox(scene, "Cylinder", cylinder.halfExtents, {-220, -190, 36}, {0.86, 0.45, 0.18}, cylinder);
+
+    Mech gripper;
+    gripper.kind = MechKind::Gripper;
+    gripper.graspSignal = "grip";
+    gripper.graspRadius = 90;
+    gripper.halfExtents = {16, 28, 10};
+    addBox(scene, "Gripper", gripper.halfExtents, {40, -190, 110}, {0.72, 0.74, 0.78}, gripper);
+
+    Mech part;
+    part.kind = MechKind::Rigid;
+    part.motion = BodyMotion::Free;
+    part.autoMass = false;
+    part.mass = 0.4;
+    part.allowSleep = false;
+    part.halfExtents = {18, 18, 18};
+    addBox(scene, "Part", part.halfExtents, {40, -190, 62}, {0.92, 0.78, 0.22}, part);
+
+    Mech blank = part;
+    blank.halfExtents = {14, 14, 14};
+    addBox(scene, "Blank", blank.halfExtents, {240, -190, 220}, {0.45, 0.72, 0.42}, blank, false);
+
+    Mech source;
+    source.kind = MechKind::Source;
+    source.prototype = "Blank";
+    source.interval = 0.45;
+    source.signal = "feed";
+    source.halfExtents = {16, 16, 16};
+    addBox(scene, "Source", source.halfExtents, {240, -190, 90}, {0.28, 0.62, 0.36}, source);
+
+    Mech scrap = part;
+    scrap.halfExtents = {16, 16, 16};
+    addBox(scene, "Scrap", scrap.halfExtents, {420, -190, 28}, {0.62, 0.30, 0.28}, scrap);
+
+    Mech sink;
+    sink.kind = MechKind::Sink;
+    sink.signal = "collected";
+    sink.valueSignal = "collected_n";
+    sink.halfExtents = {36, 36, 28};
+    addBox(scene, "Sink", sink.halfExtents, {420, -190, 28}, {0.45, 0.18, 0.24}, sink);
+
+    LogicBlock cell;
+    cell.name = "cell";
+    LogicStep step;
+    auto flag = [&](const char* name) {
+        LogicAction action;
+        action.kind = "set_output";
+        action.signal = name;
+        step.actions.push_back(action);
+    };
+    auto number = [&](const char* name, double value) {
+        LogicAction action;
+        action.kind = "set_value";
+        action.signal = name;
+        action.speed = value;
+        step.actions.push_back(action);
+    };
+    flag("extend");
+    flag("grip");
+    flag("feed");
+    number("gear_cmd", 70);
+    number("pos_cmd", 100);
+    number("vel_cmd", 80);
+    number("cam_master", 45);
+    cell.steps.push_back(std::move(step));
+    scene.logicBlocks.push_back(std::move(cell));
+    scene.markClean();
+}
+
+void buildLargeField(Scene& scene, int parts, int triangles) {
+    scene.clear();
+    scene.name = "large_field";
+    const int count = std::max(1, parts);
+    const std::string meshId = scene.addMesh(makeTriangleGrid(std::max(2, triangles), 40));
+    const int side = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count)))));
+    scene.beginEdit();
+    for (int i = 0; i < count; ++i) {
+        auto node = scene.makeNode(NodeKind::Part, "p" + std::to_string(i));
+        node->meshId = meshId;
+        node->local.translation = {static_cast<double>(i % side) * 80.0, static_cast<double>(i / side) * 80.0, 0};
+        const double tint = 0.15 + static_cast<double>(i % 7) * 0.08;
+        node->color = {tint, 0.42, 0.78};
+        scene.addChild(scene.root(), node);
+    }
+    scene.endEdit();
     scene.markClean();
 }
 

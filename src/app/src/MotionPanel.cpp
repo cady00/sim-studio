@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -99,6 +100,13 @@ void MotionPanel::retranslate() {
             button->setText(trk(key.toLatin1().constData()));
         }
     }
+    const auto labels = findChildren<QLabel*>();
+    for (QLabel* label : labels) {
+        const QString key = label->property("i18n").toString();
+        if (!key.isEmpty()) {
+            label->setText(trk(key.toLatin1().constData()));
+        }
+    }
 }
 
 KinematicResource* MotionPanel::resource() {
@@ -143,6 +151,7 @@ void MotionPanel::buildUi() {
     auto* kinForm = new QFormLayout;
     resourceCombo_ = new QComboBox;
     resourceName_ = new QLineEdit;
+    resourceName_->setObjectName("motion.resourceName");
     linkName_ = new QLineEdit;
     parentCombo_ = new QComboBox;
     childCombo_ = new QComboBox;
@@ -163,6 +172,14 @@ void MotionPanel::buildUi() {
     speedSpin_->setValue(90);
     accelSpin_ = spinBox(0, 1e7);
     accelSpin_->setValue(360);
+    accelSpin_->setObjectName("motion.accel");
+    effortSpin_ = spinBox(0, 1e9);
+    effortSpin_->setObjectName("motion.effort");
+    payloadSpin_ = spinBox(0, 1e6);
+    payloadSpin_->setObjectName("motion.payload");
+    accelSourceLabel_ = new QLabel;
+    accelSourceLabel_->setObjectName("motion.accelSource");
+    accelSourceLabel_->setWordWrap(true);
     coupleCombo_ = new QComboBox;
     ratioSpin_ = spinBox(-100, 100);
     ratioSpin_->setValue(1);
@@ -171,7 +188,13 @@ void MotionPanel::buildUi() {
     profileCombo_ = new QComboBox;
     profileCombo_->addItems({"trapezoid", "scurve"});
     pickLabel_ = new QLabel("-");
+    catalogCombo_ = new QComboBox;
+    catalogCombo_->setObjectName("motion.catalog");
+    for (const CatalogRobot& robot : robotCatalog()) {
+        catalogCombo_->addItem(QString::fromStdString(robot.name));
+    }
     kinForm->addRow(trk("motion.resource"), resourceCombo_);
+    kinForm->addRow(trk("motion.catalog"), catalogCombo_);
     kinForm->addRow(resourceName_);
     kinForm->addRow(trk("motion.link"), linkName_);
     kinForm->addRow(trk("motion.parent"), parentCombo_);
@@ -187,7 +210,10 @@ void MotionPanel::buildUi() {
     kinForm->addRow(lowerSpin_);
     kinForm->addRow(upperSpin_);
     kinForm->addRow(speedSpin_);
-    kinForm->addRow(accelSpin_);
+    kinForm->addRow(trk("motion.accel"), accelSpin_);
+    kinForm->addRow(trk("motion.effort"), effortSpin_);
+    kinForm->addRow(trk("motion.payload"), payloadSpin_);
+    kinForm->addRow(trk("motion.accelSource"), accelSourceLabel_);
     kinForm->addRow(trk("motion.couple"), coupleCombo_);
     kinForm->addRow(trk("motion.ratio"), ratioSpin_);
     carrierName_ = new QLineEdit("kl");
@@ -215,6 +241,21 @@ void MotionPanel::buildUi() {
     kinForm->addRow(trk("motion.weightManip"), weightManip_);
     kinForm->addRow(poseName_);
     kinForm->addRow(poseCombo_);
+    poseList_ = new QListWidget;
+    poseList_->setObjectName("motion.poseList");
+    poseList_->setMaximumHeight(88);
+    auto* poseLabel = new QLabel(trk("motion.poses"));
+    tag(poseLabel, "motion.poses");
+    kinForm->addRow(poseLabel, poseList_);
+    connect(poseList_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current, QListWidgetItem*) {
+        if (refreshing_ || current == nullptr || poseCombo_ == nullptr) {
+            return;
+        }
+        const int index = poseCombo_->findText(current->data(Qt::UserRole).toString());
+        if (index >= 0) {
+            poseCombo_->setCurrentIndex(index);
+        }
+    });
     kinForm->addRow(profileCombo_);
     kinForm->addRow(pickLabel_);
     kinLayout->addLayout(kinForm);
@@ -222,11 +263,43 @@ void MotionPanel::buildUi() {
     auto addButton = [this, kinButtons](const char* key, auto slot) {
         auto* button = new QPushButton;
         tag(button, key);
+        button->setObjectName(QString::fromLatin1(key));
         button->setText(trk(key));
         connect(button, &QPushButton::clicked, this, slot);
         kinButtons->addWidget(button);
         return button;
     };
+    addButton("motion.estimateAccel", [this] {
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        if (KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString())) {
+            joint->accelSource = "dynamics";
+            syncJointSlider();
+            refreshLive();
+        }
+    });
+    addButton("motion.addCatalog", [this] {
+        if (catalogCombo_ == nullptr) {
+            return;
+        }
+        const std::string name = catalogCombo_->currentText().toStdString();
+        const Vec3 station{static_cast<double>(scene_.resources.size()) * 1400.0, 0, 0};
+        std::string error;
+        if (!addCatalogRobot(scene_, name, station, error)) {
+            liveLabel_->setText(QString::fromStdString(error));
+            return;
+        }
+        refresh();
+        const int index = resourceCombo_->findText(QString::fromStdString(name));
+        if (index >= 0) {
+            resourceCombo_->setCurrentIndex(index);
+        }
+        if (viewport_ != nullptr) {
+            viewport_->update();
+        }
+    });
     addButton("motion.newResource", [this] {
         const QString name = resourceName_->text().trimmed().isEmpty() ? QStringLiteral("resource") : resourceName_->text().trimmed();
         ensureResource(scene_, name.toStdString());
@@ -237,7 +310,16 @@ void MotionPanel::buildUi() {
         suggestNote_ = suggestion.note;
         const QString name = resourceName_->text().trimmed().isEmpty() ? QStringLiteral("robot") : resourceName_->text().trimmed();
         std::string error;
-        const std::vector<RevoluteLimit> limits(std::max<std::size_t>(suggestion.links.size(), 1), RevoluteLimit{});
+        std::size_t jointCount = 0;
+        for (std::size_t i = 1; i < suggestion.links.size(); ++i) {
+            if (suggestion.links[i].hasJoint) {
+                ++jointCount;
+            }
+        }
+        const QString lowered = name.toLower();
+        const bool kr420 = jointCount == 6 && lowered.contains(QStringLiteral("kr420"));
+        const std::vector<RevoluteLimit> limits =
+            kr420 ? kr420DatasheetLimits() : std::vector<RevoluteLimit>(std::max<std::size_t>(jointCount, 1), RevoluteLimit{});
         if (!applyLinkSuggestions(scene_, name.toStdString(), suggestion, limits, error)) {
             liveLabel_->setText(QString::fromStdString(error.empty() ? suggestion.note : error));
             return;
@@ -284,6 +366,8 @@ void MotionPanel::buildUi() {
         joint.upper = upperSpin_->value();
         joint.maxSpeed = speedSpin_->value();
         joint.maxAccel = accelSpin_->value();
+        joint.accelSource = "user";
+        joint.effort = effortSpin_->value();
         applyResource(scene_, *current);
         refresh();
     });
@@ -344,7 +428,75 @@ void MotionPanel::buildUi() {
     plus->setText(trk("motion.jogPlus"));
     connect(minus, &QPushButton::clicked, this, [this] { jog(-5); });
     connect(plus, &QPushButton::clicked, this, [this] { jog(5); });
+    auto* sliderLabel = new QLabel(trk("motion.jointSlider"));
+    tag(sliderLabel, "motion.jointSlider");
+    jointSlider_ = new QSlider(Qt::Horizontal);
+    jointSlider_->setObjectName("motion.jointSlider");
+    jointSlider_->setRange(0, 1000);
+    jointSlider_->setEnabled(false);
+    connect(accelSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+        if (refreshing_) {
+            return;
+        }
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString());
+        if (joint == nullptr) {
+            return;
+        }
+        joint->accelSource = "user";
+        joint->maxAccel = value;
+        refreshLive();
+    });
+    connect(effortSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+        if (refreshing_) {
+            return;
+        }
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        if (KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString())) {
+            joint->effort = value;
+            refreshLive();
+        }
+    });
+    connect(payloadSpin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+        if (refreshing_) {
+            return;
+        }
+        if (KinematicResource* current = resource()) {
+            current->payload = value;
+            syncJointSlider();
+            refreshLive();
+        }
+    });
+    connect(jointSlider_, &QSlider::valueChanged, this, [this](int value) {
+        if (refreshing_) {
+            return;
+        }
+        KinematicResource* current = resource();
+        if (current == nullptr || jointCombo_ == nullptr) {
+            return;
+        }
+        KinJoint* joint = findJoint(*current, jointCombo_->currentText().toStdString());
+        if (joint == nullptr || !joint->coupledTo.empty()) {
+            return;
+        }
+        const double span = joint->upper - joint->lower;
+        joint->position = joint->lower + (static_cast<double>(value) / 1000.0) * span;
+        applyResource(scene_, *current);
+        refreshLive();
+        if (viewport_ != nullptr) {
+            viewport_->update();
+        }
+    });
+    connect(jointCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { syncJointSlider(); });
     jogRow->addWidget(minus);
+    jogRow->addWidget(sliderLabel);
+    jogRow->addWidget(jointSlider_, 1);
     jogRow->addWidget(plus);
     auto* couple = new QPushButton;
     tag(couple, "motion.applyCouple");
@@ -409,7 +561,7 @@ void MotionPanel::buildUi() {
     inputs_ = new QLineEdit;
     outputs_ = new QLineEdit;
     actionKind_ = new QComboBox;
-    actionKind_->addItems({"move_pose", "jog", "set_output", "reset_output", "wait"});
+    actionKind_->addItems({"move_pose", "jog", "set_output", "reset_output", "set_value", "wait", "wait_signal"});
     actionText_ = new QLineEdit;
     actionSeconds_ = spinBox(0, 3600);
     actionList_ = new QListWidget;
@@ -476,6 +628,7 @@ void MotionPanel::buildUi() {
         action.profile = profileCombo_->currentText().toStdString();
         block->steps.back().actions.push_back(action);
         actionList_->addItem(QString::fromStdString(action.kind + " " + action.pose));
+        scene_.notify(ChangeKind::Structure);
         refresh();
     });
     connect(runLogic, &QPushButton::clicked, this, [this] {
@@ -791,12 +944,129 @@ void MotionPanel::jog(double delta) {
     }
     applyResource(scene_, *current);
     refreshLive();
+    syncJointSlider();
     if (viewport_ != nullptr) {
         viewport_->update();
     }
 }
 
+void MotionPanel::syncJointSlider() {
+    if (jointSlider_ == nullptr) {
+        return;
+    }
+    KinematicResource* current = resource();
+    KinJoint* joint = current == nullptr || jointCombo_ == nullptr ? nullptr : findJoint(*current, jointCombo_->currentText().toStdString());
+    if (accelSourceLabel_ != nullptr) {
+        QString note = trk("motion.accel.velocity");
+        if (current != nullptr && joint != nullptr) {
+            const JointAccelLimit limit = jointAccelLimit(*current, *joint);
+            if (limit.source == "dynamics") {
+                note = trk("motion.accel.dynamics");
+            } else if (limit.source == "user" && limit.payloadScaled) {
+                note = trk("motion.accel.userPayload");
+            } else if (limit.source == "user") {
+                note = trk("motion.accel.user");
+            }
+            if (limit.source != "velocity") {
+                note += QStringLiteral(" ") + QString::number(limit.value, 'f', 1) +
+                        (joint->motion == JointMotion::Prismatic ? QStringLiteral(" mm/s²") : QStringLiteral(" °/s²"));
+            }
+            if (accelSpin_ != nullptr && limit.source != "velocity") {
+                const QSignalBlocker block(*accelSpin_);
+                accelSpin_->setValue(limit.source == "user" ? joint->maxAccel : limit.value);
+            }
+            if (effortSpin_ != nullptr) {
+                const QSignalBlocker block(*effortSpin_);
+                effortSpin_->setValue(joint->effort);
+            }
+        }
+        accelSourceLabel_->setText(note);
+    }
+    if (payloadSpin_ != nullptr && current != nullptr) {
+        const QSignalBlocker block(*payloadSpin_);
+        payloadSpin_->setValue(current->payload);
+    }
+    const QSignalBlocker blocker(jointSlider_);
+    if (joint == nullptr || !joint->coupledTo.empty()) {
+        jointSlider_->setEnabled(false);
+        jointSlider_->setValue(0);
+        return;
+    }
+    jointSlider_->setEnabled(true);
+    const double span = joint->upper - joint->lower;
+    int value = 0;
+    if (std::abs(span) > 1e-9) {
+        const double fraction = (joint->position - joint->lower) / span;
+        const double clamped = std::max(0.0, std::min(1.0, fraction));
+        value = static_cast<int>(std::lround(clamped * 1000.0));
+    }
+    jointSlider_->setValue(value);
+}
+
+std::string MotionPanel::selectPickedLink(const std::string& nodeId) {
+    if (nodeId.empty() || resourceCombo_ == nullptr) {
+        return {};
+    }
+    int bestDepth = -1;
+    std::string bestResource;
+    std::string bestLink;
+    std::string bestJoint;
+    for (const KinematicResource& item : scene_.resources) {
+        for (const KinLink& link : item.links) {
+            if (link.nodeId.empty()) {
+                continue;
+            }
+            auto node = scene_.find(nodeId);
+            int depth = 0;
+            bool hit = false;
+            while (node) {
+                if (node->id == link.nodeId) {
+                    hit = true;
+                    break;
+                }
+                node = node->parent.lock();
+                ++depth;
+            }
+            if (!hit || (bestDepth >= 0 && depth >= bestDepth)) {
+                continue;
+            }
+            bestDepth = depth;
+            bestResource = item.name;
+            bestLink = link.name;
+            bestJoint.clear();
+            for (const KinJoint& joint : item.joints) {
+                if (joint.childLink == link.name) {
+                    bestJoint = joint.name;
+                    break;
+                }
+            }
+        }
+    }
+    if (bestResource.empty()) {
+        return {};
+    }
+    const int resourceIndex = resourceCombo_->findText(QString::fromStdString(bestResource));
+    if (resourceIndex >= 0 && resourceCombo_->currentIndex() != resourceIndex) {
+        resourceCombo_->setCurrentIndex(resourceIndex);
+    }
+    if (childCombo_ != nullptr) {
+        const int childIndex = childCombo_->findText(QString::fromStdString(bestLink));
+        if (childIndex >= 0) {
+            childCombo_->setCurrentIndex(childIndex);
+        }
+    }
+    if (jointCombo_ != nullptr && !bestJoint.empty()) {
+        const int jointIndex = jointCombo_->findText(QString::fromStdString(bestJoint));
+        if (jointIndex >= 0) {
+            jointCombo_->setCurrentIndex(jointIndex);
+        }
+    }
+    syncJointSlider();
+    return bestResource + " / " + bestLink;
+}
+
 void MotionPanel::notePick(Vec3 point, Vec3 normal, const std::string& nodeId) {
+    const std::string picked = selectPickedLink(nodeId);
     if (faceAxisButton_ != nullptr && faceAxisButton_->isChecked() && !nodeId.empty()) {
         Vec3 origin;
         Vec3 direction;
@@ -833,13 +1103,17 @@ void MotionPanel::notePick(Vec3 point, Vec3 normal, const std::string& nodeId) {
         picks_[0] = picks_[1];
         picks_[1] = point;
     }
-    pickLabel_->setText(QStringLiteral("A %1 %2 %3   B %4 %5 %6")
-                            .arg(picks_[0].x, 0, 'f', 1)
-                            .arg(picks_[0].y, 0, 'f', 1)
-                            .arg(picks_[0].z, 0, 'f', 1)
-                            .arg(pickCount_ > 1 ? picks_[1].x : 0, 0, 'f', 1)
-                            .arg(pickCount_ > 1 ? picks_[1].y : 0, 0, 'f', 1)
-                            .arg(pickCount_ > 1 ? picks_[1].z : 0, 0, 'f', 1));
+    QString text = QStringLiteral("A %1 %2 %3   B %4 %5 %6")
+                       .arg(picks_[0].x, 0, 'f', 1)
+                       .arg(picks_[0].y, 0, 'f', 1)
+                       .arg(picks_[0].z, 0, 'f', 1)
+                       .arg(pickCount_ > 1 ? picks_[1].x : 0, 0, 'f', 1)
+                       .arg(pickCount_ > 1 ? picks_[1].y : 0, 0, 'f', 1)
+                       .arg(pickCount_ > 1 ? picks_[1].z : 0, 0, 'f', 1);
+    if (!picked.empty()) {
+        text += QStringLiteral("   ") + QString::fromStdString(picked);
+    }
+    pickLabel_->setText(text);
 }
 
 void MotionPanel::fillSolids() {
@@ -908,8 +1182,25 @@ void MotionPanel::fillCombos() {
         jointCombo_->addItem(QString::fromStdString(joint.name));
         coupleCombo_->addItem(QString::fromStdString(joint.name));
     }
+    if (poseList_ != nullptr) {
+        poseList_->blockSignals(true);
+        poseList_->clear();
+    }
     for (const KinPose& pose : current->poses) {
         poseCombo_->addItem(QString::fromStdString(pose.name));
+        if (poseList_ == nullptr) {
+            continue;
+        }
+        QString detail = QString::fromStdString(pose.name);
+        for (const auto& [name, value] : pose.joints) {
+            detail += QStringLiteral("  ") + QString::fromStdString(name) + QStringLiteral("=") + QString::number(value, 'f', 1);
+        }
+        auto* item = new QListWidgetItem(detail);
+        item->setData(Qt::UserRole, QString::fromStdString(pose.name));
+        poseList_->addItem(item);
+    }
+    if (poseList_ != nullptr) {
+        poseList_->blockSignals(false);
     }
     const QString ik = QString::fromStdString(current->ik);
     const int ikIndex = ikCombo_->findText(ik);
@@ -941,12 +1232,54 @@ void MotionPanel::refresh() {
     if (index >= 0) {
         resourceCombo_->setCurrentIndex(index);
     }
+    const QString previousBlock = blockCombo_->currentText();
     blockCombo_->clear();
     for (const LogicBlock& block : scene_.logicBlocks) {
         blockCombo_->addItem(QString::fromStdString(block.name));
     }
-    if (blockCombo_->count() > 0 && python_->toPlainText().isEmpty()) {
-        python_->setPlainText(QString::fromStdString(scene_.logicBlocks.front().python));
+    const int blockIndex = blockCombo_->findText(previousBlock);
+    if (blockIndex >= 0) {
+        blockCombo_->setCurrentIndex(blockIndex);
+    }
+    const LogicBlock* shown = nullptr;
+    const std::string selectedName = blockCombo_->currentText().toStdString();
+    for (const LogicBlock& block : scene_.logicBlocks) {
+        if (shown == nullptr || block.name == selectedName) {
+            shown = &block;
+            if (block.name == selectedName) {
+                break;
+            }
+        }
+    }
+    if (shown != nullptr) {
+        blockName_->setText(QString::fromStdString(shown->name));
+        runSignal_->setText(QString::fromStdString(shown->runSignal));
+        QString inputs;
+        for (const std::string& name : shown->inputs) {
+            if (!inputs.isEmpty()) {
+                inputs += ", ";
+            }
+            inputs += QString::fromStdString(name);
+        }
+        QString outputs;
+        for (const std::string& name : shown->outputs) {
+            if (!outputs.isEmpty()) {
+                outputs += ", ";
+            }
+            outputs += QString::fromStdString(name);
+        }
+        inputs_->setText(inputs);
+        outputs_->setText(outputs);
+        if (!python_->hasFocus()) {
+            python_->setPlainText(QString::fromStdString(shown->python));
+        }
+        actionList_->clear();
+        for (const LogicStep& step : shown->steps) {
+            for (const LogicAction& action : step.actions) {
+                const std::string extra = !action.signal.empty() ? action.signal : (!action.pose.empty() ? action.pose : action.joint);
+                actionList_->addItem(QString::fromStdString(action.kind + " " + extra));
+            }
+        }
     }
     fillCombos();
     fillSolids();
@@ -959,6 +1292,7 @@ void MotionPanel::refreshLive() {
         liveLabel_->setText(QString());
         return;
     }
+    syncJointSlider();
     QString text;
     for (const KinJoint& joint : current->joints) {
         if (!text.isEmpty()) {
@@ -971,6 +1305,15 @@ void MotionPanel::refreshLive() {
             text += QStringLiteral("\n");
         }
         text += QString::fromStdString(suggestNote_);
+    }
+    if (!current->source.empty()) {
+        if (!text.isEmpty()) {
+            text += QStringLiteral("\n");
+        }
+        text += QString::fromStdString(current->source);
+    }
+    if (accelSourceLabel_ != nullptr && !accelSourceLabel_->text().isEmpty()) {
+        text += QStringLiteral("\n") + accelSourceLabel_->text();
     }
     liveLabel_->setText(text);
 }

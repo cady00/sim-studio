@@ -42,6 +42,9 @@ const char* mechKindName(MechKind kind) {
         case MechKind::LightBarrier: return "lightBarrier";
         case MechKind::Source: return "source";
         case MechKind::Sink: return "sink";
+        case MechKind::Limit: return "limit";
+        case MechKind::Cylinder: return "cylinder";
+        case MechKind::Gripper: return "gripper";
     }
     return "none";
 }
@@ -51,7 +54,8 @@ bool mechKindFromName(const std::string& name, MechKind& out) {
                               MechKind::FixedJoint,  MechKind::Hinge,           MechKind::Slider,
                               MechKind::Ball,        MechKind::Conveyor,        MechKind::CollisionSensor,
                               MechKind::DistanceSensor,
-                              MechKind::LightBarrier, MechKind::Source,         MechKind::Sink};
+                              MechKind::LightBarrier, MechKind::Source,         MechKind::Sink,
+                              MechKind::Limit,       MechKind::Cylinder,        MechKind::Gripper};
     for (MechKind kind : kinds) {
         if (name == mechKindName(kind)) {
             out = kind;
@@ -179,6 +183,21 @@ nlohmann::json mechToJson(const Mech& mech) {
         {"valueSignal", mech.valueSignal},
         {"interval", mech.interval},
         {"prototype", mech.prototype},
+        {"couple", mech.couple},
+        {"master", mech.master},
+        {"ratio", mech.ratio},
+        {"camIn", mech.camIn},
+        {"camOut", mech.camOut},
+        {"control", mech.control},
+        {"setpoint", mech.setpoint},
+        {"gain", mech.gain},
+        {"throttle", mech.throttle},
+        {"cushion", mech.cushion},
+        {"command", mech.command},
+        {"trip", mech.trip},
+        {"graspSignal", mech.graspSignal},
+        {"graspRadius", mech.graspRadius},
+        {"held", mech.held},
     };
 }
 
@@ -236,6 +255,31 @@ void mechFromJson(const nlohmann::json& json, Mech& mech) {
     mech.valueSignal = json.value("valueSignal", mech.valueSignal);
     mech.interval = json.value("interval", mech.interval);
     mech.prototype = json.value("prototype", mech.prototype);
+    mech.couple = json.value("couple", mech.couple);
+    mech.master = json.value("master", mech.master);
+    mech.ratio = json.value("ratio", mech.ratio);
+    mech.control = json.value("control", mech.control);
+    mech.setpoint = json.value("setpoint", mech.setpoint);
+    mech.gain = json.value("gain", mech.gain);
+    mech.throttle = json.value("throttle", mech.throttle);
+    mech.cushion = json.value("cushion", mech.cushion);
+    mech.command = json.value("command", mech.command);
+    mech.trip = json.value("trip", mech.trip);
+    mech.graspSignal = json.value("graspSignal", mech.graspSignal);
+    mech.graspRadius = json.value("graspRadius", mech.graspRadius);
+    mech.held = json.value("held", mech.held);
+    if (json.contains("camIn") && json.at("camIn").is_array()) {
+        mech.camIn.clear();
+        for (const auto& value : json.at("camIn")) {
+            mech.camIn.push_back(value.get<double>());
+        }
+    }
+    if (json.contains("camOut") && json.at("camOut").is_array()) {
+        mech.camOut.clear();
+        for (const auto& value : json.at("camOut")) {
+            mech.camOut.push_back(value.get<double>());
+        }
+    }
 }
 
 nlohmann::json signalToJson(const Signal& signal) {

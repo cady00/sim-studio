@@ -274,16 +274,24 @@ SuggestResult suggestLinkGroups(const Scene& scene) {
         if (!part.large) {
             continue;
         }
-        int best = 0;
+        int best = -1;
         double bestDistance = 1e300;
         for (int i = 0; i < static_cast<int>(chain.size()); ++i) {
             const Cluster& cluster = chain[static_cast<std::size_t>(i)];
             const Vec3 onLine = closestOnLine(part.center, cluster.anchor, cluster.direction);
-            const double distance = lineDistance(part.center, cluster.anchor, cluster.direction) + 0.35 * length(onLine - cluster.anchor);
+            const double radial = lineDistance(part.center, cluster.anchor, cluster.direction);
+            // A second machine in the same file sits metres off the chosen axes. Leave it put.
+            if (radial > std::max(600.0, cluster.radius * 5.0)) {
+                continue;
+            }
+            const double distance = radial + 0.35 * length(onLine - cluster.anchor);
             if (distance < bestDistance) {
                 bestDistance = distance;
                 best = i;
             }
+        }
+        if (best < 0) {
+            continue;
         }
         int linkIndex = best + 1;
         if (best == 0 && part.center.z < chain[0].anchor.z) {
@@ -296,7 +304,7 @@ SuggestResult suggestLinkGroups(const Scene& scene) {
         if (part.large) {
             continue;
         }
-        int linkIndex = 0;
+        int linkIndex = -1;
         double best = 1e300;
         for (const PartInfo& other : parts) {
             if (!other.large || !owner.count(other.id)) {
@@ -307,6 +315,9 @@ SuggestResult suggestLinkGroups(const Scene& scene) {
                 best = distance;
                 linkIndex = owner[other.id];
             }
+        }
+        if (linkIndex < 0 || best > 800.0) {
+            continue;
         }
         result.links[static_cast<std::size_t>(linkIndex)].partIds.push_back(part.id);
     }
@@ -409,7 +420,8 @@ bool applyLinkSuggestions(Scene& scene, const std::string& resourceName, const S
                 joint.upper = limit.upper;
                 joint.maxSpeed = limit.speed;
             }
-            joint.maxAccel = 180;
+            joint.maxAccel = 0;
+            joint.accelSource = "velocity";
             joint.position = 0;
             ++jointIndex;
         }

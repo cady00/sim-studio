@@ -68,12 +68,15 @@ int main(int argc, char** argv) {
     writer.SetColorMode(true);
     if (!writer.Transfer(document)) {
         std::cerr << "STEP transfer failed\n";
+        application->Close(document);
         return 1;
     }
     if (writer.Write(path.c_str()) != IFSelect_RetDone) {
         std::cerr << "STEP write failed: " << path << "\n";
+        application->Close(document);
         return 1;
     }
+    application->Close(document);
     std::cout << "wrote " << path << "\n";
     return 0;
 }

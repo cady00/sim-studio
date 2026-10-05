@@ -4,6 +4,8 @@
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/StepImporter.hpp"
 #include "sim/motion/Motion.hpp"
+#include "sim/motion/Scope.hpp"
+#include "sim/motion/WeldPlan.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -67,7 +69,8 @@ double poseGap(const sim::CartesianPose& a, const sim::CartesianPose& b) {
 
 TEST_CASE("trapezoid and s-curve profiles finish at the target") {
     const double trap = sim::profileDuration(sim::ProfileKind::Trapezoid, 0, 90, 120, 480);
-    REQUIRE(trap > 0.2);
+    // 120°/s and 480°/s²: 0.25 s accel, 0.5 s cruise, 0.25 s decel.
+    REQUIRE(trap == Catch::Approx(1.0).margin(1e-12));
     bool done = false;
     REQUIRE(sim::profileSample(sim::ProfileKind::Trapezoid, 0, 90, 120, 480, 0, &done) == 0);
     REQUIRE_FALSE(done);
@@ -75,8 +78,7 @@ TEST_CASE("trapezoid and s-curve profiles finish at the target") {
     REQUIRE(done);
     REQUIRE(std::abs(end - 90) < 1e-6);
     const double mid = sim::profileSample(sim::ProfileKind::Trapezoid, 0, 90, 120, 480, trap * 0.5, &done);
-    REQUIRE(mid > 10);
-    REQUIRE(mid < 90);
+    REQUIRE(mid == Catch::Approx(45.0).margin(1e-9));
 
     const double curve = sim::profileDuration(sim::ProfileKind::SCurve, 10, -40, 80, 200);
     const double start = sim::profileSample(sim::ProfileKind::SCurve, 10, -40, 80, 200, 0, &done);
@@ -193,7 +195,7 @@ TEST_CASE("logic block, save, and repeat are deterministic") {
     sim::Scene empty;
     REQUIRE(sim::loadLibrary(empty, library.string(), error));
     REQUIRE(empty.resources.size() == 1);
-    REQUIRE_FALSE(empty.logicBlocks.empty());
+    REQUIRE(empty.logicBlocks.size() == 1);
 }
 
 TEST_CASE("robot path reports cycle time and a collision pair") {
@@ -203,7 +205,13 @@ TEST_CASE("robot path reports cycle time and a collision pair") {
     REQUIRE(resource != nullptr);
     const sim::RobotPath& path = scene.robotPaths.at(0);
     const sim::MotionPlan fine = sim::planRobotPath(scene, *resource, path);
-    REQUIRE(fine.seconds > 0.5);
+    REQUIRE(fine.samples.size() == 319);
+    REQUIRE(fine.segmentSeconds.size() == 4);
+    REQUIRE(fine.segmentSeconds[0] == Catch::Approx(58.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.segmentSeconds[1] == Catch::Approx(63.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.segmentSeconds[2] == Catch::Approx(51.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.segmentSeconds[3] == Catch::Approx(154.0 / 60.0).margin(1e-9));
+    REQUIRE(fine.seconds == Catch::Approx(318.0 / 60.0).margin(1e-9));
     sim::RobotPath zoned = path;
     zoned.points[0].zone = 40;
     const sim::MotionPlan blended = sim::planRobotPath(scene, *resource, zoned);
@@ -223,10 +231,9 @@ TEST_CASE("robot path reports cycle time and a collision pair") {
     UNSCOPED_INFO("forearm " << forearm->worldMatrix()(3, 0) << " " << forearm->worldMatrix()(3, 1) << " " << forearm->worldMatrix()(3, 2));
     UNSCOPED_INFO("obstacle " << obstacle->worldMatrix()(3, 0) << " " << obstacle->worldMatrix()(3, 1) << " " << obstacle->worldMatrix()(3, 2));
     const auto hits = sim::collidingPairs(blocked, *arm);
-    for (const auto& hit : hits) {
-        UNSCOPED_INFO(hit.first << " vs " << hit.second);
-    }
-    REQUIRE_FALSE(hits.empty());
+    REQUIRE(hits.size() == 1);
+    REQUIRE(hits.front().first == "Forearm");
+    REQUIRE(hits.front().second == "Obstacle");
 }
 
 TEST_CASE("command layer covers kinematics logic and planning") {
@@ -242,7 +249,7 @@ TEST_CASE("command layer covers kinematics logic and planning") {
     REQUIRE(commands.execute({{"op", "kin_fk"}, {"resource", "scara"}}).ok);
     const auto plan = commands.execute({{"op", "robot_plan"}, {"path", "pick_place"}});
     REQUIRE(plan.ok);
-    REQUIRE(plan.value.at("seconds").get<double>() > 0);
+    REQUIRE(plan.value.at("seconds").get<double>() == Catch::Approx(318.0 / 60.0).margin(1e-9));
     auto tool = scene.makeNode(sim::NodeKind::Part, "Gun");
     scene.addChild(scene.root(), tool);
     REQUIRE(commands.execute({{"op", "attach_tool"}, {"resource", "scara"}, {"name", "Gun"}}).ok);
@@ -308,7 +315,8 @@ TEST_CASE("flat solids can be grouped and a cylinder face supplies an axis") {
     REQUIRE(resource->joints[0].lower == -185);
     REQUIRE(resource->joints[1].upper == 20);
     REQUIRE(resource->joints[5].maxSpeed == 130);
-    REQUIRE(std::abs(resource->joints[0].maxAccel - 180) < 1e-6);
+    REQUIRE(resource->joints[0].accelSource == "velocity");
+    REQUIRE(sim::jointAccelLimit(*resource, resource->joints[0]).source == "velocity");
     const bool footInBase = std::find(suggestion.links[0].partIds.begin(), suggestion.links[0].partIds.end(), foot->id) !=
                             suggestion.links[0].partIds.end();
     const bool screwFollows = std::find(suggestion.links[0].partIds.begin(), suggestion.links[0].partIds.end(), fastener->id) !=
@@ -405,15 +413,27 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
     const sim::MotionPlan plan = sim::planRobotPath(scene, *resource, *path);
     std::cerr << "cycle seconds " << plan.seconds << " samples " << plan.samples.size() << " collisions "
               << plan.collisions.size() << " sweep " << plan.sweepHit << "\n";
+    REQUIRE(plan.segmentSeconds.size() == 3);
+    REQUIRE(plan.segmentSeconds[0] == Catch::Approx(1.0 / 60.0).margin(1e-9));
+    REQUIRE(plan.segmentSeconds[1] == Catch::Approx(17.0 / 60.0).margin(1e-9));
+    REQUIRE(plan.segmentSeconds[2] == Catch::Approx(178.0 / 60.0).margin(1e-9));
+    const double raw = plan.segmentSeconds[0] + plan.segmentSeconds[1] + plan.segmentSeconds[2];
+    // Unblended chunks are 196 frames. Zone blend drops 4 frames, leaving the
+    // 193 samples whose span is the 3.200 s cycle.
+    REQUIRE(raw == Catch::Approx(196.0 / 60.0).margin(1e-9));
+    REQUIRE(raw - plan.seconds == Catch::Approx(4.0 / 60.0).margin(1e-9));
     for (const std::string& warning : plan.warnings) {
         std::cerr << "plan warning " << warning << "\n";
+        REQUIRE(warning.find("unreachable") == std::string::npos);
     }
-    REQUIRE(plan.seconds > 0);
-    double raw = 0;
-    for (double span : plan.segmentSeconds) {
-        raw += span;
-    }
-    REQUIRE(plan.seconds + 1e-3 < raw);
+    REQUIRE(plan.ok);
+    REQUIRE(plan.warnings.empty());
+    REQUIRE(plan.collisions.size() == 1);
+    REQUIRE(plan.sweepHit);
+    REQUIRE(plan.samples.size() == 193);
+    REQUIRE(plan.dt == Catch::Approx(1.0 / 60.0).margin(1e-15));
+    REQUIRE(plan.seconds == Catch::Approx((static_cast<double>(plan.samples.size()) - 1.0) * plan.dt).margin(1e-12));
+    REQUIRE(plan.seconds == Catch::Approx(192.0 / 60.0).margin(1e-12));
     auto query = sim::createCollisionQuery();
     query->rebuild(scene);
     bool near = false;
@@ -432,6 +452,46 @@ TEST_CASE("kr420 flat step becomes a six axis chain") {
             node->visible = true;
         }
     }
+
+    const std::vector<double> nudgeAgain{18, -12, 15, 25, -10, 20};
+    sim::setJointVector(*resource, std::vector<double>(6, 0));
+    const sim::CartesianPose homePose = sim::forwardModel(*resource);
+    sim::setJointVector(*resource, nudgeAgain);
+    const sim::CartesianPose farPose = sim::forwardModel(*resource);
+    auto spotFrom = [](const char* id, const sim::CartesianPose& pose) {
+        sim::WeldSpot spot;
+        spot.id = id;
+        spot.position = pose.position;
+        const sim::Vec3 toolZ = pose.rotation.rotate({0, 0, 1});
+        spot.normal = sim::length(toolZ) > 0.5 ? sim::Vec3{-toolZ.x, -toolZ.y, -toolZ.z} : sim::Vec3{0, 0, 1};
+        return spot;
+    };
+    scene.welds = {spotFrom("near", homePose), spotFrom("far", farPose)};
+    sim::setJointVector(*resource, std::vector<double>(6, 0));
+    const int tourPoints = sim::planExampleWeldTour(scene);
+    std::cerr << "weld tour points " << tourPoints << "\n";
+    REQUIRE(tourPoints == 4);
+    const sim::RobotPath* tour = nullptr;
+    for (const sim::RobotPath& candidate : scene.robotPaths) {
+        if (candidate.name == "weld_tour") {
+            tour = &candidate;
+        }
+    }
+    REQUIRE(tour != nullptr);
+    const sim::MotionPlan tourPlan = sim::planRobotPath(scene, *resource, *tour);
+    REQUIRE(tourPlan.warnings.empty());
+    REQUIRE(tourPlan.ok);
+    REQUIRE(tourPlan.segmentSeconds.size() == 4);
+    REQUIRE(tourPlan.segmentSeconds[0] == Catch::Approx(1.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.segmentSeconds[1] == Catch::Approx(1.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.segmentSeconds[2] == Catch::Approx(178.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.segmentSeconds[3] == Catch::Approx(178.0 / 60.0).margin(1e-9));
+    const double tourRaw = tourPlan.segmentSeconds[0] + tourPlan.segmentSeconds[1] + tourPlan.segmentSeconds[2] +
+                           tourPlan.segmentSeconds[3];
+    REQUIRE(tourPlan.samples.size() == 359);
+    REQUIRE(tourPlan.seconds == Catch::Approx(358.0 / 60.0).margin(1e-9));
+    REQUIRE(tourPlan.seconds == Catch::Approx(tourRaw).margin(1e-9));
+    std::cerr << "weld tour seconds " << tourPlan.seconds << "\n";
 }
 
 sim::KinematicResource redundantArm() {
@@ -639,9 +699,8 @@ TEST_CASE("synchronised linear motion keeps the tcp on the segment and waits for
         std::cerr << "sync warning " << warning << "\n";
     }
     REQUIRE(plan.ok);
-    REQUIRE(plan.seconds > 6.2);
-    REQUIRE(plan.seconds < 6.6);
-    REQUIRE(plan.samples.size() > 2);
+    REQUIRE(plan.seconds == Catch::Approx(380.0 / 60.0).margin(1e-9));
+    REQUIRE(plan.samples.size() == 381);
     const double moved = plan.samples.back()[6] - plan.samples.front()[6];
     REQUIRE(moved > 2000);
     for (const std::vector<double>& sample : plan.samples) {
@@ -735,8 +794,7 @@ TEST_CASE("positioner sync keeps the tcp on the workpiece and a track reports pa
     const sim::CartesianPose far{{1500, 0, 300}, sim::Quat::identity()};
     const sim::ReachReport report = sim::analyzeReach(reach, far, 9);
     REQUIRE(report.samples == 9);
-    REQUIRE(report.reachable > 0);
-    REQUIRE(report.reachable < report.samples);
+    REQUIRE(report.reachable == 4);
 
     const std::vector<sim::OlpAxisName> names = sim::externalExportMap(reach);
     REQUIRE(names.size() == 1);
@@ -916,10 +974,331 @@ TEST_CASE("zone blend keeps joint velocity continuous and inside the limits") {
     for (double span : blended.segmentSeconds) {
         raw += span;
     }
-    REQUIRE(blended.seconds + 1e-4 < raw);
-    REQUIRE_FALSE(blended.samples.empty());
+    REQUIRE(fine.seconds == Catch::Approx(86.0 / 60.0).margin(1e-9));
+    REQUIRE(raw == Catch::Approx(86.0 / 60.0).margin(1e-9));
+    REQUIRE(blended.seconds == Catch::Approx(75.0 / 60.0).margin(1e-9));
+    REQUIRE(blended.samples.size() == 76);
     for (const std::vector<double>& sample : blended.samples) {
         REQUIRE(sample[0] <= 40.0 + 1e-3);
         REQUIRE(sample[0] >= -40.0 - 1e-3);
     }
+}
+
+TEST_CASE("logic text, wires, and the running step stay in sync") {
+    const char* text = R"(name load
+in go
+out done
+param dwell real 0.2
+python:
+def on_step(dt):
+    sim.set_bool("go", True)
+---
+wait 0.2
+set_output done
+step
+)";
+    sim::LogicBlock block;
+    std::string error;
+    REQUIRE(sim::logicFromText(text, block, error));
+    REQUIRE(block.name == "load");
+    REQUIRE(block.inputs.size() == 1);
+    REQUIRE(block.outputs.size() == 1);
+    REQUIRE(block.parameters.size() == 1);
+    REQUIRE(block.parameters[0].real == Catch::Approx(0.2));
+    REQUIRE(block.python.find("set_bool") != std::string::npos);
+    REQUIRE(block.steps.size() == 1);
+    REQUIRE(block.steps[0].actions.size() == 2);
+    REQUIRE(block.steps[0].actions[1].signal == "done");
+    const std::string written = sim::logicToText(block);
+    sim::LogicBlock again;
+    REQUIRE(sim::logicFromText(written, again, error));
+    REQUIRE(again.python == block.python);
+    REQUIRE(again.steps[0].actions[0].seconds == Catch::Approx(0.2));
+
+    sim::LogicBlock next;
+    next.name = "weld";
+    std::string signal;
+    REQUIRE(sim::wireLogicBlocks(block, next, signal));
+    REQUIRE(signal == "done");
+    REQUIRE(std::find(next.inputs.begin(), next.inputs.end(), "done") != next.inputs.end());
+
+    sim::Scene scene;
+    scene.logicBlocks = {block, next};
+    sim::LogicMachine machine;
+    REQUIRE(machine.start(scene, "load", error));
+    REQUIRE(machine.activeStep("load") == 0);
+    machine.step(scene, 0.05);
+    REQUIRE(machine.activeStep("load") == 0);
+    machine.step(scene, 0.2);
+    REQUIRE(scene.findSignal("done") != nullptr);
+    REQUIRE(scene.findSignal("done")->flag);
+}
+
+TEST_CASE("editor devices are built from links joints and poses") {
+    sim::Scene scene;
+    sim::buildEditorDevices(scene);
+    REQUIRE(scene.resources.size() == 3);
+
+    auto* turntable = sim::findResource(scene.resources, "turntable");
+    auto* bed = sim::findResource(scene.resources, "rollerbed");
+    auto* hoist = sim::findResource(scene.resources, "hoist");
+    REQUIRE(turntable != nullptr);
+    REQUIRE(bed != nullptr);
+    REQUIRE(hoist != nullptr);
+
+    const sim::KinJoint* spin = sim::findJoint(*turntable, "spin");
+    REQUIRE(spin != nullptr);
+    REQUIRE(spin->motion == sim::JointMotion::Revolute);
+    REQUIRE(sim::findPose(*turntable, "home") != nullptr);
+    REQUIRE(sim::findPose(*turntable, "quarter") != nullptr);
+    REQUIRE(sim::findPose(*turntable, "quarter")->joints.at(0).second == Catch::Approx(90));
+
+    const sim::KinJoint* travel = sim::findJoint(*bed, "travel");
+    const sim::KinJoint* roll = sim::findJoint(*bed, "roll");
+    REQUIRE(travel != nullptr);
+    REQUIRE(roll != nullptr);
+    REQUIRE(travel->motion == sim::JointMotion::Prismatic);
+    REQUIRE(travel->upper == Catch::Approx(800));
+    REQUIRE(roll->motion == sim::JointMotion::Revolute);
+    REQUIRE(roll->coupledTo == "travel");
+    REQUIRE(roll->coupleRatio == Catch::Approx(0.02));
+    REQUIRE(sim::findPose(*bed, "mid") != nullptr);
+    REQUIRE(sim::findPose(*bed, "mid")->joints.at(0).second == Catch::Approx(400));
+
+    sim::KinJoint* rise = sim::findJoint(*hoist, "rise");
+    REQUIRE(rise != nullptr);
+    REQUIRE(rise->motion == sim::JointMotion::Prismatic);
+    REQUIRE(rise->upper == Catch::Approx(400));
+    REQUIRE(sim::findPose(*hoist, "down") != nullptr);
+    REQUIRE(sim::findPose(*hoist, "up") != nullptr);
+    REQUIRE(sim::findPose(*hoist, "up")->joints.at(0).second == Catch::Approx(300));
+
+    auto carriage = scene.findByName("HoistCarriage");
+    REQUIRE(carriage);
+    REQUIRE(carriage->parent.lock());
+    REQUIRE(carriage->parent.lock()->name == "carriage");
+    const double z0 = carriage->worldMatrix()(3, 2);
+    rise->position = 300;
+    sim::applyResource(scene, *hoist);
+    REQUIRE(carriage->worldMatrix()(3, 2) == Catch::Approx(z0 + 300));
+
+    auto belt = scene.findByName("BedBelt");
+    REQUIRE(belt);
+    const double x0 = belt->worldMatrix()(3, 0);
+    sim::findJoint(*bed, "travel")->position = 400;
+    sim::applyResource(scene, *bed);
+    REQUIRE(belt->worldMatrix()(3, 0) == Catch::Approx(x0 + 400));
+    REQUIRE(sim::jointCommand(*bed, *roll) == Catch::Approx(8));
+
+    auto platen = scene.find(sim::findLink(*turntable, "platen")->nodeId);
+    REQUIRE(platen);
+    sim::findJoint(*turntable, "spin")->position = 90;
+    sim::applyResource(scene, *turntable);
+    const sim::Quat turned = platen->local.rotation.normalized();
+    REQUIRE(std::abs(turned.z) > 0.6);
+    REQUIRE(std::abs(turned.w) > 0.6);
+
+    std::string error;
+    REQUIRE(sim::jogJoint(*hoist, "rise", 50, error));
+    REQUIRE(sim::findJoint(*hoist, "rise")->position == Catch::Approx(350));
+}
+
+TEST_CASE("scope records signals, joint velocity, and csv") {
+    sim::Scene scene;
+    sim::buildEditorDevices(scene);
+    sim::Signal go;
+    go.name = "go";
+    go.type = sim::SignalType::Bool;
+    scene.signals.push_back(go);
+    sim::ScopeTrace trace;
+    trace.watch({"sig:go", "jnt:hoist/rise"});
+    sim::KinJoint* rise = sim::findJoint(*sim::findResource(scene.resources, "hoist"), "rise");
+    REQUIRE(rise != nullptr);
+    const double positions[] = {0, 10, 30};
+    for (int i = 0; i < 3; ++i) {
+        rise->position = positions[i];
+        scene.findSignal("go")->flag = i >= 2;
+        trace.sample(scene, i * 0.1);
+    }
+    REQUIRE(trace.time.size() == 3);
+    REQUIRE(trace.valueAt("sig:go", 0.05) == Catch::Approx(0));
+    REQUIRE(trace.valueAt("sig:go", 0.2) == Catch::Approx(1));
+    REQUIRE(trace.valueAt("sig:go", 0.25) == Catch::Approx(1));
+    const std::vector<double> speed = trace.velocity("jnt:hoist/rise");
+    const std::vector<double> accel = trace.acceleration("jnt:hoist/rise");
+    REQUIRE(speed.size() == 3);
+    REQUIRE(speed[0] == Catch::Approx(0));
+    REQUIRE(speed[1] == Catch::Approx(100));
+    REQUIRE(speed[2] == Catch::Approx(200));
+    REQUIRE(accel[1] == Catch::Approx(1000));
+    REQUIRE(accel[2] == Catch::Approx(1000));
+    const std::string csv = trace.toCsv(true, true);
+    REQUIRE(csv.find("time,sig:go,jnt:hoist/rise,jnt:hoist/rise.v,jnt:hoist/rise.a") == 0);
+    REQUIRE(csv.find("0.200000,1.000000,30.000000,200.000000,1000.000000") != std::string::npos);
+
+    trace.watch({"sig:missing"});
+    trace.sample(scene, 0.3);
+    REQUIRE(trace.valueAt("sig:missing", 0.3) == Catch::Approx(0));
+    for (int i = 0; i < 240000; ++i) {
+        trace.sample(scene, 1.0 + i * 0.01);
+    }
+    REQUIRE(trace.time.size() == sim::ScopeTrace::kMaxSamples);
+}
+
+TEST_CASE("robot catalog copies published limits and link origins") {
+    const std::vector<sim::CatalogRobot>& catalog = sim::robotCatalog();
+    REQUIRE(catalog.size() == 4);
+    sim::Scene scene;
+    const char* names[] = {"KR6_R900", "IRB120", "LRMate200iD", "GP8"};
+    for (int i = 0; i < 4; ++i) {
+        std::string error;
+        REQUIRE(sim::addCatalogRobot(scene, names[i], {i * 1400.0, 0, 0}, error));
+        const sim::KinematicResource* resource = sim::findResource(scene.resources, names[i]);
+        REQUIRE(resource != nullptr);
+        REQUIRE(resource->joints.size() == 6);
+        REQUIRE(resource->source.find("http") != std::string::npos);
+        REQUIRE(resource->source.find("待核实") != std::string::npos);
+        for (const sim::KinJoint& joint : resource->joints) {
+            REQUIRE(joint.motion == sim::JointMotion::Revolute);
+            REQUIRE(joint.accelSource == "velocity");
+            REQUIRE(sim::jointAccelLimit(*resource, joint).source == "velocity");
+            REQUIRE(sim::jointAccelLimit(*resource, joint).value > 1.0e8);
+        }
+        sim::KinematicResource loaded;
+        REQUIRE(sim::kinematicsFromJson(sim::kinematicsToJson(*resource), loaded, error));
+        REQUIRE(loaded.source == resource->source);
+        REQUIRE(loaded.joints[1].lower == Catch::Approx(resource->joints[1].lower));
+    }
+    sim::KinematicResource* kr6 = sim::findResource(scene.resources, "KR6_R900");
+    REQUIRE(sim::findJoint(*kr6, "A1")->lower == Catch::Approx(-170));
+    REQUIRE(sim::findJoint(*kr6, "A1")->maxSpeed == Catch::Approx(360));
+    REQUIRE(sim::findJoint(*kr6, "A2")->upper == Catch::Approx(45));
+    REQUIRE(sim::findJoint(*kr6, "A6")->maxSpeed == Catch::Approx(615));
+    auto a3 = scene.find(sim::findLink(*kr6, "A3")->nodeId);
+    REQUIRE(a3);
+    REQUIRE(a3->local.translation.x == Catch::Approx(455));
+
+    const sim::KinematicResource* irb = sim::findResource(scene.resources, "IRB120");
+    REQUIRE(sim::findJoint(*irb, "A3")->lower == Catch::Approx(-110));
+    REQUIRE(sim::findJoint(*irb, "A3")->upper == Catch::Approx(70));
+    REQUIRE(sim::findJoint(*irb, "A6")->lower == Catch::Approx(-400));
+    REQUIRE(sim::findJoint(*irb, "A1")->maxSpeed == Catch::Approx(250));
+
+    const sim::KinematicResource* mate = sim::findResource(scene.resources, "LRMate200iD");
+    REQUIRE(sim::findJoint(*mate, "A3")->lower == Catch::Approx(-70));
+    REQUIRE(sim::findJoint(*mate, "A3")->upper == Catch::Approx(205));
+    REQUIRE(sim::findJoint(*mate, "A1")->maxSpeed == Catch::Approx(450));
+    REQUIRE(mate->source.find("420") != std::string::npos);
+
+    sim::KinematicResource* gp8 = sim::findResource(scene.resources, "GP8");
+    REQUIRE(sim::findJoint(*gp8, "A2")->lower == Catch::Approx(-65));
+    REQUIRE(sim::findJoint(*gp8, "A2")->upper == Catch::Approx(145));
+    REQUIRE(sim::findJoint(*gp8, "A3")->upper == Catch::Approx(190));
+    REQUIRE(sim::findJoint(*gp8, "A1")->maxSpeed == Catch::Approx(455));
+    REQUIRE(sim::findLink(*gp8, "flange") != nullptr);
+
+    auto wrist = scene.find(sim::findLink(*kr6, "A6")->nodeId);
+    REQUIRE(wrist);
+    const double before = wrist->worldMatrix()(3, 2);
+    sim::findJoint(*kr6, "A2")->position = 30;
+    sim::applyResource(scene, *kr6);
+    REQUIRE(std::abs(wrist->worldMatrix()(3, 2) - before) > 1.0);
+
+    std::string error;
+    REQUIRE_FALSE(sim::addCatalogRobot(scene, "no-such-robot", {}, error));
+}
+
+TEST_CASE("joint acceleration comes from torque inertia payload or the user") {
+    sim::Scene scene;
+    sim::KinematicResource& resource = sim::ensureResource(scene, "dyn");
+    sim::addLink(scene, resource, "base", "", {});
+    sim::Transform local;
+    local.translation = {1000, 0, 0};
+    sim::addLink(scene, resource, "arm", "base", local);
+    sim::KinJoint& joint = sim::addJoint(resource, scene, "j", "base", "arm", sim::JointMotion::Revolute, {0, 0, 1}, {0, 0, 0});
+    joint.effort = 10;
+    joint.accelSource = "dynamics";
+    joint.maxAccel = 0;
+    joint.maxSpeed = 1000;
+    sim::KinLink* arm = sim::findLink(resource, "arm");
+    REQUIRE(arm != nullptr);
+    arm->hasInertia = true;
+    arm->mass = 2;
+    const sim::JointAccelLimit unloaded = sim::jointAccelLimit(resource, joint);
+    REQUIRE(unloaded.source == "dynamics");
+    REQUIRE(unloaded.value == Catch::Approx(10.0 / 2.0 * 180.0 / 3.14159265358979323846));
+
+    resource.payload = 2;
+    const sim::JointAccelLimit loaded = sim::jointAccelLimit(resource, joint);
+    REQUIRE(loaded.source == "dynamics");
+    REQUIRE(loaded.payloadScaled);
+    REQUIRE(loaded.value == Catch::Approx(10.0 / 4.0 * 180.0 / 3.14159265358979323846));
+    REQUIRE(loaded.value < unloaded.value);
+
+    joint.accelSource = "user";
+    joint.maxAccel = 100;
+    const sim::JointAccelLimit typed = sim::jointAccelLimit(resource, joint);
+    REQUIRE(typed.source == "user");
+    REQUIRE(typed.payloadScaled);
+    REQUIRE(typed.value == Catch::Approx(50));
+
+    joint.accelSource = "velocity";
+    joint.effort = 0;
+    const sim::JointAccelLimit speedOnly = sim::jointAccelLimit(resource, joint);
+    REQUIRE(speedOnly.source == "velocity");
+    REQUIRE(speedOnly.value > 1.0e8);
+
+    joint.accelSource = "dynamics";
+    joint.effort = 10;
+    resource.payload = 2;
+    sim::ActiveMove move;
+    std::string error;
+    REQUIRE(sim::beginJointMove(resource, {90}, sim::ProfileKind::Trapezoid, move, error));
+    REQUIRE(move.duration == Catch::Approx(sim::profileDuration(sim::ProfileKind::Trapezoid, 0, 90, 1000, loaded.value)));
+
+    joint.accelSource = "velocity";
+    REQUIRE(sim::beginJointMove(resource, {90}, sim::ProfileKind::Trapezoid, move, error));
+    REQUIRE(move.duration < 1.0);
+    REQUIRE(move.duration == Catch::Approx(0.09).margin(0.02));
+}
+
+TEST_CASE("the public example cell covers layout welds path clamp signals and cycle time") {
+    sim::Scene scene;
+    sim::buildPublicCell(scene);
+    REQUIRE(sim::findResource(scene.resources, "kr420") == nullptr);
+    sim::KinematicResource* robot = sim::findResource(scene.resources, "IRB120");
+    REQUIRE(robot != nullptr);
+    REQUIRE(robot->payload == Catch::Approx(3));
+    REQUIRE(sim::jointAccelLimit(*robot, robot->joints.front()).source == "velocity");
+    sim::KinematicResource* clamp = sim::findResource(scene.resources, "clamp");
+    REQUIRE(clamp != nullptr);
+    const sim::JointAccelLimit slide = sim::jointAccelLimit(*clamp, *sim::findJoint(*clamp, "slide"));
+    REQUIRE(slide.source == "dynamics");
+    REQUIRE(slide.value == Catch::Approx(5000));
+    REQUIRE(scene.layout.stations.size() == 3);
+    REQUIRE(scene.welds.size() == 3);
+    REQUIRE(scene.robotPaths.size() == 1);
+    REQUIRE(scene.robotPaths.front().name == "weld");
+    REQUIRE(scene.logicBlocks.size() == 1);
+    REQUIRE(scene.findSignal("part_seen") != nullptr);
+    REQUIRE(scene.findSignal("weld_done") != nullptr);
+    REQUIRE(scene.findSignal("clamp") != nullptr);
+    const sim::ScheduleReport report = sim::scheduleSequence(scene.operations, scene.sequence, scene.layout);
+    REQUIRE(report.error.empty());
+    const sim::ScheduleBar* unload = nullptr;
+    for (const sim::ScheduleBar& bar : report.bars) {
+        if (bar.id == "unload") {
+            unload = &bar;
+        }
+    }
+    REQUIRE(unload != nullptr);
+    const sim::ScheduleBar* weld = nullptr;
+    for (const sim::ScheduleBar& bar : report.bars) {
+        if (bar.id == "weld") {
+            weld = &bar;
+        }
+    }
+    REQUIRE(weld != nullptr);
+    REQUIRE(unload->start == Catch::Approx(weld->finish + 0.4));
+    REQUIRE(report.makespan > weld->finish);
 }
