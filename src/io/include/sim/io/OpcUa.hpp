@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sim/core/Scene.hpp"
+#include "sim/core/Socket.hpp"
 
 #include <cstdint>
 #include <string>
@@ -51,7 +52,7 @@ public:
     void close();
 
 private:
-    int listenFd_ = -1;
+    SocketFd listenFd_ = kInvalidSocket;
     int port_ = 0;
     bool partSeen_ = false;
     std::uint32_t monitoredHandle_ = 7;
@@ -94,7 +95,7 @@ public:
     void close();
 
 private:
-    int fd_ = -1;
+    SocketFd fd_ = kInvalidSocket;
     std::uint32_t channelId_ = 0;
     std::uint32_t tokenId_ = 0;
     std::uint32_t sequence_ = 1;

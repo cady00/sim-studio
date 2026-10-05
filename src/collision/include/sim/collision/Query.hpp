@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sim/collision/Likelihood.hpp"
 #include "sim/core/Mesh.hpp"
 #include "sim/core/Scene.hpp"
 
@@ -116,6 +117,11 @@ public:
     // `from` and `to` are the node's local translation in millimeters. The node is restored.
     virtual SweepHit sweep(Scene& scene, const std::string& name, Vec3 from, Vec3 to) = 0;
     virtual void commitCache(Scene& scene) const = 0;
+    // True when the exhaustive contact query would return at least one hit.
+    // Candidates are ordered by likelihood and the walk stops at the first confirmed hit.
+    virtual bool overlaps(const Scene& scene, double clearanceMm) = 0;
+    // Empty pointer restores the distance-and-previous heuristic.
+    virtual void setLikelihood(std::shared_ptr<ICollisionLikelihood> model) = 0;
 };
 
 // Empty seam. A later GPU LBVH backend would write the same SoA node arrays

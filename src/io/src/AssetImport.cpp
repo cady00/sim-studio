@@ -1323,6 +1323,7 @@ std::unique_ptr<AssetRegistry> createBuiltinRegistry() {
     registry->add(std::make_unique<ObjAssetImporter>());
     registry->add(std::make_unique<PlyImporter>());
     registry->add(std::make_unique<GltfAssetImporter>());
+    registry->add(createUsdaImporter());
     registry->add(std::make_unique<UrdfImporter>());
     registry->add(std::make_unique<DxfAssetImporter>());
     registry->add(std::make_unique<ImageImporter>());

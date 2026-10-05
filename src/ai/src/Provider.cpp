@@ -2,13 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "sim/core/Socket.hpp"
 
 #include <sstream>
 
@@ -49,8 +43,9 @@ bool parseLocalHttp(const std::string& endpoint, int& port, std::string& path, s
 }
 
 std::string postLocalhost(int port, const std::string& path, const std::string& body, std::string& error) {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
+    startupSockets();
+    const SocketFd fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (!socketOk(fd)) {
         error = "localhost socket was not opened";
         return {};
     }
@@ -58,35 +53,28 @@ std::string postLocalhost(int port, const std::string& path, const std::string& 
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<uint16_t>(port));
     if (inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1) {
-        ::close(fd);
+        closeSocket(fd);
         error = "localhost address was not parsed";
         return {};
     }
-    const int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    setBlocking(fd, false);
     const int connected = ::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address));
-    if (connected != 0 && errno != EINPROGRESS) {
-        ::close(fd);
+    if (connected != 0 && !socketInProgress(lastSocketError())) {
+        closeSocket(fd);
         error = "localhost model was not reached";
         return {};
     }
-    pollfd wait{};
-    wait.fd = fd;
-    wait.events = POLLOUT;
-    if (poll(&wait, 1, 200) <= 0 || (wait.revents & (POLLERR | POLLHUP)) != 0) {
-        ::close(fd);
+    if (pollSocket(fd, true, 200) <= 0) {
+        closeSocket(fd);
         error = "localhost model was not reached";
         return {};
     }
-    int soError = 0;
-    socklen_t length = sizeof(soError);
-    getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &length);
-    if (soError != 0) {
-        ::close(fd);
+    if (socketSoError(fd) != 0) {
+        closeSocket(fd);
         error = "localhost model was not reached";
         return {};
     }
-    fcntl(fd, F_SETFL, flags);
+    setBlocking(fd, true);
     std::ostringstream request;
     request << "POST " << path << " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
             << body.size() << "\r\n\r\n"
@@ -94,9 +82,9 @@ std::string postLocalhost(int port, const std::string& path, const std::string& 
     const std::string bytes = request.str();
     std::size_t sent = 0;
     while (sent < bytes.size()) {
-        const ssize_t wrote = ::send(fd, bytes.data() + sent, bytes.size() - sent, 0);
+        const SocketCount wrote = socketSend(fd, bytes.data() + sent, bytes.size() - sent);
         if (wrote <= 0) {
-            ::close(fd);
+            closeSocket(fd);
             error = "localhost model was not reached";
             return {};
         }
@@ -105,13 +93,10 @@ std::string postLocalhost(int port, const std::string& path, const std::string& 
     std::string response;
     char buffer[4096];
     for (;;) {
-        pollfd incoming{};
-        incoming.fd = fd;
-        incoming.events = POLLIN;
-        if (poll(&incoming, 1, 200) <= 0) {
+        if (pollSocket(fd, false, 200) <= 0) {
             break;
         }
-        const ssize_t got = ::recv(fd, buffer, sizeof(buffer), 0);
+        const SocketCount got = socketRecv(fd, buffer, sizeof(buffer));
         if (got <= 0) {
             break;
         }
@@ -120,7 +105,7 @@ std::string postLocalhost(int port, const std::string& path, const std::string& 
             break;
         }
     }
-    ::close(fd);
+    closeSocket(fd);
     const auto split = response.find("\r\n\r\n");
     if (split == std::string::npos) {
         error = "localhost model returned no body";

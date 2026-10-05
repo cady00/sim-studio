@@ -58,7 +58,7 @@ OCCT 的 Draw 模块没有链接。`ldd` 里没有 `TKDraw`、`TKTopTest`。
 | libstdc++ / libgcc | GCC 运行时 | 系统 | GPL-3.0 **带 GCC Runtime Library Exception** | 动态 | 例外允许专有程序链接这些运行时。保留例外文本即可。 |
 | glibc | 系统 | 系统 | LGPL-2.1 | 动态 | 使用系统 C 库，不静态链接。 |
 
-没有链接 NVIDIA PhysX、Bullet、bgfx、Diligent、CoACD、V-HACD、libccd、OpenUSD、open62541。ZIP 容器自己写存储法，不调用 zlib。JT 的 zlib 与 LZMA 段才链接 `libz` 和 `liblzma`。`src/io/src/OpcUa.cpp` 自己写了 OPC UA 二进制分块（Hello/Acknowledge、OpenSecureChannel、CreateSession、ActivateSession、Browse、Read、Write、CreateSubscription、CreateMonitoredItems、Publish）。SecurityPolicy None 不加密。Basic256Sha256 的 Sign 与 SignAndEncrypt 用 OpenSSL 3 做 RSA-SHA256、RSA-OAEP-SHA1、AES-256-CBC 和 HMAC-SHA256，自签证书可写成 PEM。对测对象是本仓库的回环服务器，没有和 open62541 或 PLCSIM 互通。PLCSIM Advanced 没有安装，卡片不打开那一路套接字。OCCT 的 CMake 配置把 `HAVE_RAPIDJSON` 传进了编译定义。本机 `ldd` 没有加载 RapidJSON，我们的源文件也不包含它。RapidJSON 若被 OCCT 以头文件用到，许可证是 MIT。
+没有链接 NVIDIA PhysX、Bullet、bgfx、Diligent、CoACD、V-HACD、libccd、OpenUSD、open62541。`.usda` 的读写在 `src/io/src/UsdStage.cpp`，不调用 OpenUSD。写出前用 `validateUsdaText` 核对 defaultPrim、毫米单位、Z 轴向上、面索引和 UsdPreviewSurface。本机另装的 `usd-core` 26.8 只用来打开舞台做对照，不进 `simstudio`，也没有 `usdchecker` 可执行文件。该轮子的许可证是 Tomorrow Open Source Technology License 1.0：正文按 Apache-2.0，第 6 节商标条款与 Apache-2.0 不同。ZIP 容器自己写存储法，不调用 zlib。JT 的 zlib 与 LZMA 段才链接 `libz` 和 `liblzma`。`src/io/src/OpcUa.cpp` 自己写了 OPC UA 二进制分块（Hello/Acknowledge、OpenSecureChannel、CreateSession、ActivateSession、Browse、Read、Write、CreateSubscription、CreateMonitoredItems、Publish）。SecurityPolicy None 不加密。Basic256Sha256 的 Sign 与 SignAndEncrypt 用 OpenSSL 3 做 RSA-SHA256、RSA-OAEP-SHA1、AES-256-CBC 和 HMAC-SHA256，自签证书可写成 PEM。对测对象是本仓库的回环服务器，没有和 open62541 或 PLCSIM 互通。PLCSIM Advanced 没有安装，卡片不打开那一路套接字。OCCT 的 CMake 配置把 `HAVE_RAPIDJSON` 传进了编译定义。本机 `ldd` 没有加载 RapidJSON，我们的源文件也不包含它。RapidJSON 若被 OCCT 以头文件用到，许可证是 MIT。
 
 界面字体栈按顺序尝试 HarmonyOS Sans SC、思源黑体、Noto Sans CJK SC，然后是系统里已有的微软雅黑或苹方。**没有把 HarmonyOS Sans 打进安装包。** 若以后嵌入该字体，须保留版权与许可、不得修改字形、不得把字体文件单独再分发，并在软件关于页声明使用。思源黑体与 Inter、JetBrains Mono 若以后嵌入，许可证是 SIL OFL 1.1。当前二进制不包含这些字体文件。
 
@@ -77,8 +77,11 @@ Qt Advanced Docking System 是 LGPL-2.1。闭源产品可以动态链接它，�
 | `actions/checkout@v4` | GitHub Action | MIT | CI。 |
 | `actions/upload-artifact@v4` | GitHub Action | MIT | 仅手动 `workflow_dispatch` 的 Windows 作业。 |
 | `actions/github-script@v7` | GitHub Action | MIT | 同上。 |
+| `actions/cache@v4` | GitHub Action | MIT | 缓存 vcpkg 工具本身。端口二进制仍走 vcpkg 的 GitHub Actions 二进制缓存。 |
 | `jurplel/install-qt-action@v4` | GitHub Action | 以该仓库许可证为准，安装的是官方预编译 Qt | 只下载 Qt，不把 Action 源码链进产品。 |
 | git | CI 拉 Jolt 标签 | GPL-2.0 | 构建机工具，不发行。 |
+| Windows `workflow_dispatch` | vcpkg 基线 `cd61e1e2` | 各端口自身许可 | 清单里的直接依赖：OpenSSL 3.6.3、zlib、liblzma 5.8.3、curl 8.21.0、Open CASCADE 8.0.0、Jolt、Python 3、pybind11、nlohmann-json、Catch2。Qt 6.8.3 是预编译包，不从源码编。Windows 上 curl 默认用 schannel，OPC UA 仍链接 OpenSSL。作业没有在这次整理里启动。 |
+| usd-core | 26.8，仅本机 `pip install --user` | TOST-1.0（Apache-2.0，商标条款不同） | 测试时用 `pxr.Usd.Stage.Open` 打开自写 USDA。不链接，不随产品发布。轮子里没有 `usdchecker`。 |
 
 ## 自写代码，不是拷来的片段
 

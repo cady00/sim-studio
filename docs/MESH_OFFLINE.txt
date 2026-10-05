@@ -1,0 +1,17 @@
+目录网格离线开关
+
+KR6 R900、IRB 120、LR Mate 200iD、GP8 的连杆网格来自 ROS-Industrial 公开仓库。包许可证没有单独写明可以再分发这些 STL，所以安装包里不带这些文件。
+
+默认行为：第一次把型号放进场景时，程序用 libcurl 从公开 raw 地址下载到
+%LOCALAPPDATA%\SimStudio\catalog-meshes
+（Linux 上是 ~/.local/share/SimStudio/catalog-meshes，也认 XDG_DATA_HOME）。
+
+两个环境变量：
+
+SIM_CATALOG_MESH_DIR
+    指向已经放好 STL 的目录。程序只读这个目录，不再访问网络。
+
+SIM_CATALOG_MESH_OFFLINE=1
+    不访问网络。缓存里没有的连杆保持方盒。
+
+KR 280 R3080 没有公开网格，双机演示里第二台保持橙色方盒。KR420 的 STEP 若放在本机 testdata/local，也不在这个安装包里。

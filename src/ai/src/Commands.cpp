@@ -105,7 +105,7 @@ nlohmann::json CommandExecutor::catalog() {
         op("ems_import", "Read eBOP-style XML into operations, resources, parts, welds, paths, and placements.", {"path"}, true),
         op("ems_export", "Write operations, resources, parts, welds, paths, and placements to eBOP-style XML.", {"path"}, true),
         op("asset_import", "Import a file through the asset registry. Format is chosen by extension, then by content.", {"path"}, true),
-        op("asset_export", "Export visible meshes as gltf, glb, or stl.", {"path", "format"}, true),
+        op("asset_export", "Export the scene as gltf, glb, stl, or usda.", {"path", "format"}, true),
         op("logic_upsert", "Create or replace a logic block. steps is a list of actions.", {"name", "steps", "repeat"}, true),
         op("line_set_cyclic", "Turn the operation list into a repeating production cycle.", {"value"}, true),
         op("nl_to_logic", "Offline rules turn a sentence into logic commands. An optional localhost model can replace the commands.", {"text"}, true),
@@ -839,8 +839,12 @@ CommandResult CommandExecutor::execute(const nlohmann::json& command) const {
             const ScheduleReport report = scheduleOperations(scene_.operations, scene_.layout);
             error = report.error;
             ok = error.empty() && exportScheduleXlsx(report, path, error);
+        } else if (format == "usda" || format == "usd") {
+            const UsdIoResult written = exportSceneUsda(scene_, path);
+            ok = written.ok;
+            error = written.message;
         } else {
-            return fail("export format is gltf, glb, stl, csv, or xlsx");
+            return fail("export format is gltf, glb, stl, usda, csv, or xlsx");
         }
         if (!ok) {
             return fail(error.empty() ? "export failed" : error);

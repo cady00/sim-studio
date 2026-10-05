@@ -67,6 +67,10 @@ TEST_CASE("fuzz importers reject empty truncated and oversized files") {
         {"empty.jt", ""},
         {"truncated.jt", "Version 9.5"},
         {"noise.jt", std::string("JTNOISE", 7) + std::string(4096, '\x5a')},
+        {"empty.usda", ""},
+        {"broken.usda", "#usda 1.0\n(\n"},
+        {"noise.usda", std::string("#usda 1.0\n", 10) + blob},
+        {"crate.usd", std::string("PXR-USDC", 8) + std::string(64, '\0')},
     };
     {
         std::string claimed(84, '\0');

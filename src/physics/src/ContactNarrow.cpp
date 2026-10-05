@@ -1,7 +1,10 @@
 #include "sim/physics/ContactNarrow.hpp"
 
+#include "sim/collision/Likelihood.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <queue>
 #include <utility>
 #include <vector>
 
@@ -30,6 +33,21 @@ void expand(Vec3& bmin, Vec3& bmax, Vec3 point) {
     bmax.x = std::max(bmax.x, point.x);
     bmax.y = std::max(bmax.y, point.y);
     bmax.z = std::max(bmax.z, point.z);
+}
+
+void meshLocalQueryBox(const Mat4& world, Vec3 boxCenter, Vec3 boxHalf, Vec3& localMin, Vec3& localMax) {
+    localMin = {1e300, 1e300, 1e300};
+    localMax = {-1e300, -1e300, -1e300};
+    const Mat4 inverse = inverseAffine(world);
+    for (int corner = 0; corner < 8; ++corner) {
+        const Vec3 worldCorner{boxCenter.x + ((corner & 1) ? boxHalf.x : -boxHalf.x),
+                               boxCenter.y + ((corner & 2) ? boxHalf.y : -boxHalf.y),
+                               boxCenter.z + ((corner & 4) ? boxHalf.z : -boxHalf.z)};
+        expand(localMin, localMax, transformPoint(inverse, worldCorner));
+    }
+    const Vec3 pad{0.5, 0.5, 0.5};
+    localMin = localMin - pad;
+    localMax = localMax + pad;
 }
 
 bool separatedOn(Vec3 axis, Vec3 center, Vec3 half, const Vec3 tri[3], double& overlap) {
@@ -200,23 +218,15 @@ TriangleBvh buildTriangleBvh(const MeshData& mesh) {
     return bvh;
 }
 
-std::vector<NarrowContact> queryBoxMesh(const TriangleBvh& bvh, const Mat4& world, Vec3 boxCenter, Vec3 boxHalf, int limit) {
+std::vector<NarrowContact> queryBoxMesh(const TriangleBvh& bvh, const Mat4& world, Vec3 boxCenter, Vec3 boxHalf, int limit,
+                                                   int* satTests) {
     std::vector<NarrowContact> hits;
     if (bvh.root < 0 || limit <= 0) {
         return hits;
     }
-    const Mat4 inverse = inverseAffine(world);
-    Vec3 localMin{1e300, 1e300, 1e300};
-    Vec3 localMax{-1e300, -1e300, -1e300};
-    for (int corner = 0; corner < 8; ++corner) {
-        const Vec3 worldCorner{boxCenter.x + ((corner & 1) ? boxHalf.x : -boxHalf.x),
-                               boxCenter.y + ((corner & 2) ? boxHalf.y : -boxHalf.y),
-                               boxCenter.z + ((corner & 4) ? boxHalf.z : -boxHalf.z)};
-        expand(localMin, localMax, transformPoint(inverse, worldCorner));
-    }
-    const Vec3 pad{0.5, 0.5, 0.5};
-    localMin = localMin - pad;
-    localMax = localMax + pad;
+    Vec3 localMin;
+    Vec3 localMax;
+    meshLocalQueryBox(world, boxCenter, boxHalf, localMin, localMax);
 
     std::vector<int> stack{bvh.root};
     while (!stack.empty()) {
@@ -238,6 +248,9 @@ std::vector<NarrowContact> queryBoxMesh(const TriangleBvh& bvh, const Mat4& worl
             const Vec3 b = transformPoint(world, bvh.triangles[base + 1]);
             const Vec3 c = transformPoint(world, bvh.triangles[base + 2]);
             NarrowContact contact;
+            if (satTests != nullptr) {
+                ++(*satTests);
+            }
             if (!satBoxTriangle(boxCenter, boxHalf, a, b, c, contact)) {
                 continue;
             }
@@ -281,6 +294,101 @@ std::vector<NarrowContact> queryBoxMesh(const TriangleBvh& bvh, const Mat4& worl
     }
     std::sort(hits.begin(), hits.end(), [](const NarrowContact& left, const NarrowContact& right) { return left.depth > right.depth; });
     return hits;
+}
+
+bool detectBoxMesh(const TriangleBvh& bvh, const Mat4& world, Vec3 boxCenter, Vec3 boxHalf, const ICollisionLikelihood* model,
+                   NarrowMemory& memory, NarrowDetectStats* stats) {
+    NarrowDetectStats local;
+    if (stats == nullptr) {
+        stats = &local;
+    }
+    *stats = {};
+    if (bvh.root < 0) {
+        memory.triangle = -1;
+        return false;
+    }
+    Vec3 localMin;
+    Vec3 localMax;
+    meshLocalQueryBox(world, boxCenter, boxHalf, localMin, localMax);
+    const Vec3 localCenter = (localMin + localMax) * 0.5;
+    const Vec3 localHalf = (localMax - localMin) * 0.5;
+    DistancePreviousLikelihood fallback;
+    const ICollisionLikelihood& ranker = model != nullptr ? *model : fallback;
+    const int remembered = memory.triangle;
+
+    auto consider = [&](int triangle) {
+        const std::size_t base = static_cast<std::size_t>(triangle) * 3;
+        if (base + 2 >= bvh.triangles.size()) {
+            return false;
+        }
+        const Vec3 a = transformPoint(world, bvh.triangles[base]);
+        const Vec3 b = transformPoint(world, bvh.triangles[base + 1]);
+        const Vec3 c = transformPoint(world, bvh.triangles[base + 2]);
+        ++stats->tested;
+        NarrowContact contact;
+        if (!satBoxTriangle(boxCenter, boxHalf, a, b, c, contact)) {
+            return false;
+        }
+        stats->hit = true;
+        stats->triangle = triangle;
+        memory.triangle = triangle;
+        return true;
+    };
+
+    // The default score puts a previous hit strictly ahead of any geometric gap.
+    // A learned ranker that returns a higher score for that hit keeps it in the walk below.
+    if (remembered >= 0) {
+        const double forced = ranker.score(0, true);
+        const double other = ranker.score(-1.0e9, false);
+        if (forced < other && consider(remembered)) {
+            stats->candidates = 1;
+            return true;
+        }
+    }
+
+    struct Task {
+        double score = 0;
+        int index = -1;
+        bool operator>(const Task& rhs) const {
+            if (score != rhs.score) {
+                return score > rhs.score;
+            }
+            return index > rhs.index;
+        }
+    };
+    std::priority_queue<Task, std::vector<Task>, std::greater<Task>> queue;
+    auto enqueue = [&](int index) {
+        if (index < 0 || index >= static_cast<int>(bvh.nodes.size())) {
+            return;
+        }
+        const TriangleBvh::Node& node = bvh.nodes[static_cast<std::size_t>(index)];
+        if (!boxOverlapsBounds(localCenter, localHalf, node.bmin, node.bmax)) {
+            return;
+        }
+        const double gap = aabbSeparation(node.bmin, node.bmax, localMin, localMax);
+        const bool previous = node.triangle >= 0 && node.triangle == remembered;
+        const double score = node.triangle >= 0 ? ranker.score(gap, previous) : gap;
+        if (node.triangle >= 0) {
+            ++stats->candidates;
+        }
+        queue.push(Task{score, index});
+    };
+    enqueue(bvh.root);
+    while (!queue.empty()) {
+        const Task task = queue.top();
+        queue.pop();
+        const TriangleBvh::Node& node = bvh.nodes[static_cast<std::size_t>(task.index)];
+        if (node.triangle >= 0) {
+            if (consider(node.triangle)) {
+                return true;
+            }
+            continue;
+        }
+        enqueue(node.left);
+        enqueue(node.right);
+    }
+    memory.triangle = -1;
+    return false;
 }
 
 namespace {

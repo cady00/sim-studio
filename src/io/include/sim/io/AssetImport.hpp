@@ -51,4 +51,20 @@ bool exportSceneStl(const Scene& scene, const std::string& path, std::string& er
 // .glb is binary. Any other path is a glTF JSON file with an embedded buffer.
 bool exportSceneGltf(const Scene& scene, const std::string& path, std::string& error);
 
+// ASCII USD written by this repository. Lengths stay millimeters and metersPerUnit is 0.001.
+// OpenUSD is not linked. `validateUsdaText` checks the subset the writer emits.
+struct UsdIoResult {
+    bool ok = false;
+    std::string message;
+    int nodeCount = 0;
+    int meshCount = 0;
+    int triangleCount = 0;
+    int jointCount = 0;
+    int sampleCount = 0;
+};
+
+UsdIoResult exportSceneUsda(const Scene& scene, const std::string& path);
+bool validateUsdaText(const std::string& text, std::string& error);
+std::unique_ptr<IAssetImporter> createUsdaImporter();
+
 }  // namespace sim
