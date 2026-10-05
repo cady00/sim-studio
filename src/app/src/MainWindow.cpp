@@ -1415,7 +1415,13 @@ void MainWindow::importJt(const QString& path) {
     projectPath_.clear();
     viewport_->setStandardView(StandardView::Iso);
     viewport_->fitAll();
-    statusLabel_->setText(trk("msg.importOk").arg(result.nodeCount).arg(result.meshCount).arg(result.triangleCount).arg(0));
+    QString status = trk("msg.importOk").arg(result.nodeCount).arg(result.meshCount).arg(result.triangleCount).arg(0);
+    const auto cojt = result.message.find("cojt ");
+    if (cojt != std::string::npos) {
+        status += QStringLiteral(" · ");
+        status += QString::fromStdString(result.message.substr(cojt));
+    }
+    statusLabel_->setText(status);
     if (!screenshotPath_.isEmpty()) {
         resizeDocks({treeDock_, propertyDock_}, {460, 280}, Qt::Horizontal);
         QTimer::singleShot(1000, this, &MainWindow::captureScreenshot);
