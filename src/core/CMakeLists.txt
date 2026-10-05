@@ -12,6 +12,7 @@ add_library(sim_core
     src/EmsXml.cpp
     src/Dxf.cpp
     src/DemoScene.cpp
+    src/Plc.cpp
     src/Weld.cpp
     src/Envelope.cpp
     src/Pick.cpp

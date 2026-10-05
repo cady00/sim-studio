@@ -10,12 +10,15 @@
 #include <vector>
 
 class QCheckBox;
+class QComboBox;
+class QDoubleSpinBox;
 class QGraphicsScene;
 class QGraphicsView;
 class QLabel;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QTableWidget;
 
 namespace sim {
 class Scene;
@@ -138,16 +141,36 @@ public:
     bool connectOpcUa();
     // Loopback Basic256Sha256 session with a username, plus a sample signal table.
     bool demonstrateSecure();
+    // Copies the mapping table, forces, scan period, and backend into the scene.
+    void commit();
+    // Fills the debug cards from the scene document.
+    void reload();
+    // Refreshes the monitor column and the scan log without rewriting edits.
+    void showRuntime(const std::vector<std::string>& log);
+    // Decimal node id, bool only. False when the client has no session.
+    bool exchangeOpc(const std::string& nodeId, bool write, bool& value, std::string& error);
 
 signals:
     void signalsImported();
 
 private:
     bool importText(const QString& text);
+    void commitBindings();
+    void commitForces();
     Scene& scene_;
     QLabel* opcState_ = nullptr;
+    QLabel* plcsimState_ = nullptr;
+    QLabel* ladderLabel_ = nullptr;
+    QCheckBox* enabledBox_ = nullptr;
+    QDoubleSpinBox* scanSpin_ = nullptr;
+    QComboBox* backendBox_ = nullptr;
+    QTableWidget* mapTable_ = nullptr;
+    QTableWidget* forceTable_ = nullptr;
+    QPlainTextEdit* logView_ = nullptr;
     OpcUaClient* client_ = nullptr;
     OpcUaServer* secureServer_ = nullptr;
+    bool filling_ = false;
+    bool opcReady_ = false;
 };
 
 }  // namespace sim

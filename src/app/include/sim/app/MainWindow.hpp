@@ -4,6 +4,7 @@
 #include "sim/core/Scene.hpp"
 #include "sim/io/EditHistory.hpp"
 #include "sim/motion/Motion.hpp"
+#include "sim/motion/SoftPlc.hpp"
 #include "sim/physics/PhysicsEngine.hpp"
 #include "sim/scripting/ScriptHost.hpp"
 
@@ -130,6 +131,10 @@ private:
     std::unique_ptr<Simulation> simulation_;
     std::unique_ptr<BuiltinRobotSolver> robot_;
     LogicMachine logic_;
+    SoftPlcRuntime softPlc_;
+    PlcSimAdvancedBackend plcSim_;
+    IPlcBackend* plcBackend_ = nullptr;
+    bool plcActive_ = false;
     class MotionPanel* motion_ = nullptr;
     class CollisionPanel* collision_ = nullptr;
     class WeldPanel* weld_ = nullptr;
@@ -141,6 +146,7 @@ private:
     bool meshDemo_ = false;
     bool slipDemo_ = false;
     bool mcdDemo_ = false;
+    bool commissionDemo_ = false;
     bool shelfReload_ = true;
     std::string demoPath_;
     std::string pendingPath_;
