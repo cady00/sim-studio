@@ -830,7 +830,28 @@ std::uint32_t hash16(const std::uint16_t* words, int count, std::uint32_t seed) 
 struct Face {
     std::vector<int> verts;
     std::uint64_t mask = 0;
+    // Set only when the dual face degree exceeds 64. Words are the published
+    // high-degree mask: LSB of word 0 is slot 0, and each face occupies
+    // ceil(degree/32) words.
+    std::vector<std::uint32_t> wideMask;
 };
+
+bool faceMaskBit(const Face& face, int slot) {
+    if (slot < 0) {
+        return false;
+    }
+    if (!face.wideMask.empty()) {
+        const int word = slot >> 5;
+        if (word >= static_cast<int>(face.wideMask.size())) {
+            return false;
+        }
+        return ((face.wideMask[static_cast<std::size_t>(word)] >> (slot & 31)) & 1u) != 0;
+    }
+    if (slot >= 64) {
+        return false;
+    }
+    return ((face.mask >> slot) & 1ull) != 0;
+}
 
 struct DualMesh {
     std::vector<std::vector<int>> verts;
@@ -847,6 +868,14 @@ struct DualMesh {
         Face face;
         face.verts.assign(static_cast<std::size_t>(degree), -1);
         face.mask = mask;
+        faces.push_back(std::move(face));
+        return static_cast<int>(faces.size()) - 1;
+    }
+
+    int newFaceWide(int degree, std::vector<std::uint32_t> words) {
+        Face face;
+        face.verts.assign(static_cast<std::size_t>(degree), -1);
+        face.wideMask = std::move(words);
         faces.push_back(std::move(face));
         return static_cast<int>(faces.size()) - 1;
     }
@@ -914,6 +943,8 @@ struct SymbolCursor {
     std::vector<std::uint64_t> masks[8];
     std::vector<std::int32_t> splits;
     std::vector<std::int32_t> positions;
+    // Masks for dual faces whose degree exceeds 64. Consumed in walker order.
+    std::vector<std::uint32_t> largeMasks;
     int degreeAt[8]{};
     int maskAt[8]{};
     int valenceAt = 0;
@@ -921,6 +952,7 @@ struct SymbolCursor {
     int flagAt = 0;
     int splitAt = 0;
     int positionAt = 0;
+    int largeAt = 0;
 };
 
 bool readSymbols(ByteReader& reader, int generation, SymbolCursor& symbols, std::string& error) {
@@ -980,14 +1012,15 @@ bool readSymbols(ByteReader& reader, int generation, SymbolCursor& symbols, std:
         error = "high-degree face mask count is invalid";
         return false;
     }
-    std::vector<std::uint32_t> large(static_cast<std::size_t>(largeCount));
+    symbols.largeMasks.resize(static_cast<std::size_t>(largeCount));
     for (int i = 0; i < largeCount; ++i) {
-        large[static_cast<std::size_t>(i)] = reader.u32();
+        symbols.largeMasks[static_cast<std::size_t>(i)] = reader.u32();
     }
-    if (!large.empty()) {
-        error = "high-degree face masks are not used by this mesh";
+    if (!reader.ok) {
+        error = "high-degree face mask is truncated";
         return false;
     }
+    const std::vector<std::uint32_t>& large = symbols.largeMasks;
     if (!readCdp(reader, generation, 0, symbols.splits, error) || !readCdp(reader, generation, 0, symbols.positions, error)) {
         return false;
     }
@@ -1099,7 +1132,10 @@ bool walkDual(SymbolCursor& symbols, DualMesh& dual, std::string& error) {
         const int flag = symbols.flagAt < static_cast<int>(symbols.flags.size())
                              ? symbols.flags[static_cast<std::size_t>(symbols.flagAt++)]
                              : 0;
-        if (valence <= 0 || valence > 256) {
+        // Cover faces on a boundary can have a high primal degree, which is
+        // this dual vertex's valence. 65536 is a corruption guard, not a
+        // format limit.
+        if (valence <= 0 || valence > 65536) {
             return -2;
         }
         return dual.newVertex(valence, flag);
@@ -1114,9 +1150,23 @@ bool walkDual(SymbolCursor& symbols, DualMesh& dual, std::string& error) {
         if (degree == 0) {
             return -1;
         }
-        if (degree < 0 || degree > 64) {
+        if (degree < 0 || degree > 65536) {
             error = "face degree is outside the decoded mask";
             return -2;
+        }
+        // ISO 14306 / JT reference Annex D: degrees above 64 are not in the
+        // eight fixed-width contexts. Their masks are a word-aligned run of
+        // UInt32, ceil(degree/32) words, taken in the order faces are created.
+        if (degree > 64) {
+            const int words = (degree + 31) >> 5;
+            if (words > static_cast<int>(symbols.largeMasks.size()) - symbols.largeAt) {
+                error = "high-degree face mask is exhausted";
+                return -2;
+            }
+            const auto begin = symbols.largeMasks.begin() + symbols.largeAt;
+            std::vector<std::uint32_t> wide(begin, begin + words);
+            symbols.largeAt += words;
+            return dual.newFaceWide(degree, std::move(wide));
         }
         const int maskContext = std::min(7, std::max(0, degree - 2));
         const std::uint64_t mask = nextMask(maskContext);
@@ -1331,7 +1381,8 @@ bool walkDual(SymbolCursor& symbols, DualMesh& dual, std::string& error) {
     }
     if (symbols.valenceAt != static_cast<int>(symbols.valences.size()) ||
         symbols.splitAt != static_cast<int>(symbols.splits.size()) ||
-        symbols.positionAt != static_cast<int>(symbols.positions.size())) {
+        symbols.positionAt != static_cast<int>(symbols.positions.size()) ||
+        symbols.largeAt != static_cast<int>(symbols.largeMasks.size())) {
         error = "topology symbols were not consumed";
         return false;
     }
@@ -1611,9 +1662,8 @@ bool buildMesh(const DualMesh& dual, const std::vector<float>& coords, const std
     for (std::size_t face = 0; face < dual.faces.size(); ++face) {
         const int degree = dual.degree(static_cast<int>(face));
         attribute[face].assign(static_cast<std::size_t>(degree), -1);
-        const std::uint64_t mask = dual.faces[face].mask;
         for (int slot = 0; slot < degree; ++slot) {
-            if (((mask >> slot) & 1ull) != 0) {
+            if (faceMaskBit(dual.faces[face], slot)) {
                 attribute[face][static_cast<std::size_t>(slot)] = cursor++;
             }
         }

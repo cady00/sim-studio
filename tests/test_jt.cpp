@@ -743,6 +743,7 @@ TEST_CASE("private cojt jt files report version and triangles", "[jt]") {
         if (note != nullptr && note[0] != '\0') {
             REQUIRE(result.message.find(note) != std::string::npos);
         }
+        REQUIRE(result.message.find("were not decoded") == std::string::npos);
         REQUIRE(result.message.find("not reachable from the LSG") == std::string::npos);
         if (triangles <= 0) {
             return;
@@ -784,17 +785,23 @@ TEST_CASE("private cojt jt files report version and triangles", "[jt]") {
         REQUIRE(cloud.valid);
         REQUIRE(cloud.diagonal() > 400.0);
         REQUIRE(centers.diagonal() > 100.0);
+        // IRB6700 already has a non-finite parent rotation repaired to identity,
+        // plus one translated subtree whose world Y is not a robot coordinate.
+        // The machines whose LOD set changed in this decoder stay inside a cell.
+        if (path.filename().string().find("IRB6700") == std::string::npos) {
+            REQUIRE(std::isfinite(cloud.diagonal()));
+            REQUIRE(cloud.diagonal() < 20000.0);
+        }
     };
     expect(root / "kr210_r2700_2.cojt" / "kr210_r2700_2.jt", 387479, "decoded JT 10.5 topologically compressed tri-strips");
-    expect(root / "kr210_r2700_2.cojt" / "kr210_r2700_2.jt", 387479, "high-degree face masks are not used by this mesh");
     expect(root / "kr6_r900sixx.cojt" / "kr6_r900sixx.jt", 21915, "decoded topologically compressed tri-strips");
-    expect(root / "kr420r3080_4.cojt" / "kr420r3080_4.jt", 301973, "8 tri-strip LOD(s) were not decoded");
-    expect(root / "kr280r3080_4.cojt" / "kr280r3080_4.jt", 301977, "8 tri-strip LOD(s) were not decoded");
+    expect(root / "kr420r3080_4.cojt" / "kr420r3080_4.jt", 418625, "decoded topologically compressed tri-strips");
+    expect(root / "kr280r3080_4.cojt" / "kr280r3080_4.jt", 418625, "decoded topologically compressed tri-strips");
     expect(root / "irb120_3_0_58.cojt" / "irb120_3_0_58.jt", 44948, "decoded topologically compressed tri-strips");
     expect(root / "irbt6004_0_d_10m_01.cojt" / "irbt6004_0_d_10m_01.jt", 30236, "decoded topologically compressed tri-strips");
     expect(root / "r2000ib210f.cojt" / "r2000ib210f.jt", 30261, "decoded topologically compressed tri-strips");
     expect(root / "IRB6700_235-265_IRC5_Grey_Rev1.cojt" / "IRB6700_235-265_IRC5_Grey_Rev1.jt", 111545,
-           "1 tri-strip LOD(s) were not decoded");
+           "decoded topologically compressed tri-strips");
 }
 
 std::vector<std::uint8_t> hexBytes(const char* text) {

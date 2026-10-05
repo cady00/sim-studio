@@ -360,7 +360,7 @@ TEST_CASE("private cojt components calibrate kinematics", "[cojt]") {
     const sim::AssetImportResult kr420Result = sim::importCojt((root / "kr420r3080_4.cojt").string(), kr420);
     INFO(kr420Result.message);
     REQUIRE(kr420Result.ok);
-    REQUIRE(kr420Result.triangleCount == 301973);
+    REQUIRE(kr420Result.triangleCount == 418625);
     sim::KinematicResource* heavy = sim::findResource(kr420.resources, "kr420r3080_4");
     REQUIRE(heavy != nullptr);
     REQUIRE(heavy->joints.empty());
