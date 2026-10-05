@@ -47,9 +47,13 @@ struct PlcContact {
 // One rung. Contacts in one branch are AND. branches are OR.
 // series is the first branch. parallel holds the other branches.
 // With no parallel branches, an empty series is always true.
-// action: out, set, reset, ton, move, ctu, ctr.
+// action: out, set, reset, ton, tof, move, ctu, ctd, ctr.
 // move writes literal into an int or real tag.
-// ctu counts up on the rising edge of the rung. ctr clears the count while the rung is true.
+// ctu counts up on the rising edge of the rung and is done at or above the preset.
+// ctd counts down on the rising edge and is done at or below zero.
+// ctr clears the count while the rung is true and then applies the ctu done test.
+// ton is an on-delay. tof is an off-delay: the coil stays done after power drops
+// until the preset elapses. A timer that has not yet seen power stays off.
 struct PlcRung {
     std::vector<PlcContact> series;
     std::vector<std::vector<PlcContact>> parallel;

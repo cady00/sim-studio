@@ -140,6 +140,9 @@ int main(int argc, char* argv[]) {
     QCommandLineOption bench("bench", "Draw a 100000-part field, print BENCH, and save a screenshot.", "png");
     QCommandLineOption plc("plc", "Open the commission cards and connect OPC UA on 127.0.0.1:4840.");
     QCommandLineOption about("about", "Open the about dialog.");
+    QCommandLineOption robotLibrary("robot-library", "Browse a local Process Simulate .cojt library.", "dir");
+    QCommandLineOption libraryImport("library-import", "Import library components by model name, comma-separated.", "names");
+    QCommandLineOption librarySelect("library-select", "Select a library row before a screenshot.", "name");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
@@ -154,6 +157,9 @@ int main(int argc, char* argv[]) {
     parser.addOption(bench);
     parser.addOption(plc);
     parser.addOption(about);
+    parser.addOption(robotLibrary);
+    parser.addOption(libraryImport);
+    parser.addOption(librarySelect);
     parser.process(application);
 
     QSplashScreen splash(splashCard());
@@ -208,7 +214,11 @@ int main(int argc, char* argv[]) {
         }
         window.showPlcConnection();
     }
-    if (parser.isSet(importStep)) {
+    if (parser.isSet(libraryImport)) {
+        window.importNamedRobots(parser.value(robotLibrary), parser.value(libraryImport).split(QLatin1Char(','), Qt::SkipEmptyParts));
+    } else if (parser.isSet(robotLibrary)) {
+        window.presentRobotLibrary(parser.value(robotLibrary), parser.value(librarySelect));
+    } else if (parser.isSet(importStep)) {
         const QString path = parser.value(importStep);
         if (path.endsWith(QStringLiteral(".jt"), Qt::CaseInsensitive) ||
             path.endsWith(QStringLiteral(".usda"), Qt::CaseInsensitive) ||

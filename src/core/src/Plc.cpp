@@ -205,7 +205,8 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
             rung.action = item.value("action", std::string("out"));
             rung.literal = item.value("literal", 0.0);
             if (rung.action != "out" && rung.action != "set" && rung.action != "reset" && rung.action != "ton" &&
-                rung.action != "move" && rung.action != "ctu" && rung.action != "ctr") {
+                rung.action != "tof" && rung.action != "move" && rung.action != "ctu" && rung.action != "ctd" &&
+                rung.action != "ctr") {
                 error = "unknown plc rung action";
                 return false;
             }

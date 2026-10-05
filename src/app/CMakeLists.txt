@@ -1,6 +1,7 @@
 qt_add_executable(simstudio
     src/main.cpp
     src/MainWindow.cpp
+    src/RobotLibraryDialog.cpp
     src/MotionPanel.cpp
     src/CollisionPanel.cpp
     src/ChromeBar.cpp
@@ -14,6 +15,7 @@ qt_add_executable(simstudio
     include/sim/app/SceneTree.hpp
     include/sim/app/PhysicsShelf.hpp
     include/sim/app/MainWindow.hpp
+    include/sim/app/RobotLibraryDialog.hpp
     include/sim/app/MotionPanel.hpp
     include/sim/app/CollisionPanel.hpp
     include/sim/app/ChromeBar.hpp
@@ -44,6 +46,7 @@ target_compile_definitions(simstudio PRIVATE SIM_SOURCE_DIR="${CMAKE_SOURCE_DIR}
 qt_add_executable(simstudio_e2e
     src/e2e_main.cpp
     src/MainWindow.cpp
+    src/RobotLibraryDialog.cpp
     src/MotionPanel.cpp
     src/CollisionPanel.cpp
     src/ChromeBar.cpp
@@ -57,6 +60,7 @@ qt_add_executable(simstudio_e2e
     include/sim/app/SceneTree.hpp
     include/sim/app/PhysicsShelf.hpp
     include/sim/app/MainWindow.hpp
+    include/sim/app/RobotLibraryDialog.hpp
     include/sim/app/MotionPanel.hpp
     include/sim/app/CollisionPanel.hpp
     include/sim/app/ChromeBar.hpp

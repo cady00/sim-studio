@@ -958,10 +958,14 @@ void PlcCards::reload() {
             action = QStringLiteral("复位");
         } else if (rung.action == "ton") {
             action = QStringLiteral("定时");
+        } else if (rung.action == "tof") {
+            action = QStringLiteral("断开延时");
         } else if (rung.action == "move") {
             action = QStringLiteral("传送 ") + QString::number(rung.literal);
         } else if (rung.action == "ctu") {
             action = QStringLiteral("计数");
+        } else if (rung.action == "ctd") {
+            action = QStringLiteral("减计数");
         } else if (rung.action == "ctr") {
             action = QStringLiteral("计数复位");
         }

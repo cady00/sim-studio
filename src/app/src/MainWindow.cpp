@@ -10,6 +10,7 @@
 #include "sim/app/LinePanels.hpp"
 #include "sim/app/SceneTree.hpp"
 #include "sim/app/MotionPanel.hpp"
+#include "sim/app/RobotLibraryDialog.hpp"
 #include "sim/app/TaskPanels.hpp"
 #include "sim/app/WeldPanel.hpp"
 #include "sim/motion/Envelope.hpp"
@@ -18,7 +19,9 @@
 #include "sim/core/DemoScene.hpp"
 #include "sim/core/Version.hpp"
 #include "sim/io/AssetImport.hpp"
+#include "sim/io/Cojt.hpp"
 #include "sim/io/ObjImporter.hpp"
+#include "sim/io/RobotLibrary.hpp"
 #include "sim/io/ProjectStore.hpp"
 #include "sim/io/StepImporter.hpp"
 #include "sim/render/ViewportWidget.hpp"
@@ -29,6 +32,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QDebug>
+#include <QDialog>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QEventLoop>
@@ -43,6 +47,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFrame>
+#include <filesystem>
 #include <QFileDialog>
 #include <QSurfaceFormat>
 #include <QFormLayout>
@@ -543,6 +548,7 @@ void MainWindow::buildUi() {
     saveAsAction_ = new QAction(this);
     importStepAction_ = new QAction(this);
     importObjAction_ = new QAction(this);
+    robotLibraryAction_ = new QAction(this);
     quitAction_ = new QAction(this);
     fitAction_ = new QAction(this);
     moveAction_ = new QAction(this);
@@ -585,6 +591,7 @@ void MainWindow::buildUi() {
     fileMenu->addSeparator();
     fileMenu->addAction(importStepAction_);
     fileMenu->addAction(importObjAction_);
+    fileMenu->addAction(robotLibraryAction_);
     fileMenu->addSeparator();
     fileMenu->addAction(quitAction_);
     auto* editMenu = menuBar()->addMenu("edit");
@@ -663,6 +670,7 @@ void MainWindow::buildUi() {
     connect(saveAction_, &QAction::triggered, this, &MainWindow::saveProjectInteractive);
     connect(saveAsAction_, &QAction::triggered, this, &MainWindow::saveProjectAsInteractive);
     connect(importStepAction_, &QAction::triggered, this, &MainWindow::importStepInteractive);
+    connect(robotLibraryAction_, &QAction::triggered, this, &MainWindow::openRobotLibrary);
     connect(importObjAction_, &QAction::triggered, this, &MainWindow::importObjInteractive);
     connect(quitAction_, &QAction::triggered, this, &QWidget::close);
     connect(fitAction_, &QAction::triggered, viewport_, &ViewportWidget::fitAll);
@@ -831,6 +839,7 @@ void MainWindow::retranslate() {
     saveAsAction_->setText(trk("action.saveAs"));
     importStepAction_->setText(trk("action.importStep"));
     importObjAction_->setText(trk("action.importObj"));
+    robotLibraryAction_->setText(trk("action.robotLibrary"));
     quitAction_->setText(trk("action.quit"));
     fitAction_->setText(trk("action.fit"));
     const char* viewKeys[7] = {"action.view.front", "action.view.back", "action.view.left", "action.view.right",
@@ -1460,6 +1469,208 @@ void MainWindow::importObjInteractive() {
     }
 }
 
+QString MainWindow::importLibraryEntries(const std::vector<RobotLibraryEntry>& entries) {
+    if (entries.empty()) {
+        return trk("library.none");
+    }
+    QStringList notes;
+    int added = 0;
+    int triangles = 0;
+    const std::filesystem::path scratchRoot = std::filesystem::temp_directory_path() / "ondot-cojt-import";
+    int index = 0;
+    for (const RobotLibraryEntry& entry : entries) {
+        const std::filesystem::path scratch = scratchRoot / ("part-" + std::to_string(index++));
+        std::string folder;
+        bool scratchUsed = false;
+        std::string error;
+        const bool materialized = materializeRobotComponent(entry, scratch.string(), folder, scratchUsed, error);
+        if (!materialized) {
+            notes << QString::fromStdString(entry.model + ": " + error);
+            std::error_code ec;
+            std::filesystem::remove_all(scratch, ec);
+            continue;
+        }
+        Scene side;
+        const AssetImportResult result = importCojt(folder, side);
+        if (scratchUsed) {
+            std::error_code ec;
+            std::filesystem::remove_all(scratch, ec);
+        }
+        if (!result.ok) {
+            notes << QString::fromStdString(entry.model + ": " + result.message);
+            continue;
+        }
+        const Aabb incoming = side.worldBounds();
+        const Aabb existing = scene_.worldBounds();
+        const double deltaY = existing.valid && incoming.valid ? existing.max.y - incoming.min.y + 800.0 : 0.0;
+        std::unordered_map<std::string, std::string> meshMap;
+        std::unordered_map<std::string, std::string> idMap;
+        std::function<void(const std::shared_ptr<SceneNode>&, const std::shared_ptr<SceneNode>&, bool)> copy =
+            [&](const std::shared_ptr<SceneNode>& from, const std::shared_ptr<SceneNode>& parent, bool top) {
+                if (!from) {
+                    return;
+                }
+                for (const auto& child : from->children) {
+                    auto node = scene_.makeNode(child->kind, child->name);
+                    node->local = child->local;
+                    if (top) {
+                        node->local.translation.y += deltaY;
+                    }
+                    node->color = child->color;
+                    node->metallic = child->metallic;
+                    node->roughness = child->roughness;
+                    node->visible = child->visible;
+                    node->faceAxes = child->faceAxes;
+                    node->mech = child->mech;
+                    if (!child->meshId.empty()) {
+                        if (meshMap.count(child->meshId) == 0) {
+                            meshMap[child->meshId] = scene_.addMesh(side.mesh(child->meshId));
+                        }
+                        node->meshId = meshMap[child->meshId];
+                    }
+                    idMap[child->id] = node->id;
+                    scene_.addChild(parent, node);
+                    copy(child, node, false);
+                }
+            };
+        scene_.beginEdit();
+        if (side.root()) {
+            copy(side.root(), scene_.root(), true);
+        }
+        for (KinematicResource resource : side.resources) {
+            for (KinLink& link : resource.links) {
+                const auto mapped = idMap.find(link.nodeId);
+                if (mapped != idMap.end()) {
+                    link.nodeId = mapped->second;
+                }
+            }
+            bool replaced = false;
+            for (KinematicResource& have : scene_.resources) {
+                if (have.name == resource.name) {
+                    have = resource;
+                    replaced = true;
+                }
+            }
+            if (!replaced) {
+                scene_.resources.push_back(std::move(resource));
+            }
+        }
+        scene_.endEdit();
+        ++added;
+        triangles += result.triangleCount;
+        notes << QString::fromStdString(entry.model) + QStringLiteral(" ") + QString::number(result.triangleCount);
+    }
+    viewport_->setStandardView(StandardView::Iso);
+    viewport_->fitAll();
+    updateWelcome();
+    const QString summary = trk("msg.importOk")
+                                .arg(scene_.nodeCount())
+                                .arg(static_cast<int>(scene_.meshes().size()))
+                                .arg(triangles)
+                                .arg(0);
+    statusLabel_->setText(added == 0 ? notes.join(QStringLiteral(" · ")) : summary);
+    if (!screenshotPath_.isEmpty()) {
+        if (added == 0) {
+            QTimer::singleShot(0, qApp, [] { QApplication::exit(2); });
+        } else {
+            resizeDocks({treeDock_, propertyDock_}, {460, 280}, Qt::Horizontal);
+            QTimer::singleShot(1200, this, &MainWindow::captureScreenshot);
+        }
+    }
+    return added == 0 ? notes.join(QStringLiteral(" · ")) : summary + QStringLiteral(" · ") + notes.join(QStringLiteral(" · "));
+}
+
+QString MainWindow::importNamedRobots(const QString& root, const QStringList& names) {
+    std::string error;
+    const std::vector<RobotLibraryEntry> catalog = scanRobotLibrary(root.toStdString(), error);
+    if (catalog.empty() && !error.empty()) {
+        statusLabel_->setText(QString::fromStdString(error));
+        if (!screenshotPath_.isEmpty()) {
+            QTimer::singleShot(0, qApp, [] { QApplication::exit(2); });
+        }
+        return QString::fromStdString(error);
+    }
+    std::vector<RobotLibraryEntry> chosen;
+    QStringList missing;
+    for (const QString& raw : names) {
+        const QString wanted = raw.trimmed();
+        if (wanted.isEmpty()) {
+            continue;
+        }
+        const RobotLibraryEntry* best = nullptr;
+        bool mixed = false;
+        for (const RobotLibraryEntry& entry : catalog) {
+            const QString model = QString::fromStdString(entry.model);
+            const bool hit = model.compare(wanted, Qt::CaseInsensitive) == 0 ||
+                             QString::fromStdString(entry.name).compare(wanted, Qt::CaseInsensitive) == 0 ||
+                             model.contains(wanted, Qt::CaseInsensitive);
+            if (!hit) {
+                continue;
+            }
+            if (best != nullptr && best->model != entry.model) {
+                mixed = true;
+                break;
+            }
+            if (best == nullptr || (entry.kind == "directory" && best->kind != "directory")) {
+                best = &entry;
+            }
+        }
+        if (best == nullptr || mixed) {
+            missing << trk("library.missing").arg(wanted);
+            continue;
+        }
+        chosen.push_back(*best);
+    }
+    if (chosen.empty()) {
+        const QString summary = missing.isEmpty() ? trk("library.none") : missing.join(QStringLiteral(" · "));
+        statusLabel_->setText(summary);
+        if (!screenshotPath_.isEmpty()) {
+            QTimer::singleShot(0, qApp, [] { QApplication::exit(2); });
+        }
+        return summary;
+    }
+    QString summary = importLibraryEntries(chosen);
+    if (!missing.isEmpty()) {
+        summary = missing.join(QStringLiteral(" · ")) + QStringLiteral(" · ") + summary;
+        statusLabel_->setText(summary);
+    }
+    return summary;
+}
+
+void MainWindow::openRobotLibrary() {
+    if (robotLibrary_ == nullptr) {
+        robotLibrary_ = new RobotLibraryDialog([this](const char* key) { return trk(key); }, this);
+        robotLibrary_->setImporter([this](const std::vector<RobotLibraryEntry>& chosen) {
+            return importLibraryEntries(chosen);
+        });
+    }
+    robotLibrary_->show();
+    robotLibrary_->raise();
+    robotLibrary_->activateWindow();
+}
+
+void MainWindow::presentRobotLibrary(const QString& root, const QString& selectName) {
+    openRobotLibrary();
+    if (!root.isEmpty()) {
+        robotLibrary_->setRoot(root, false);
+    }
+    if (!selectName.isEmpty()) {
+        robotLibrary_->setFilter(selectName);
+        robotLibrary_->selectName(selectName);
+    }
+    robotLibrary_->show();
+    robotLibrary_->raise();
+    robotLibrary_->activateWindow();
+    if (!screenshotPath_.isEmpty()) {
+        QTimer::singleShot(800, this, [this, selectName] {
+            if (robotLibrary_ != nullptr && !selectName.isEmpty()) {
+                robotLibrary_->selectName(selectName);
+            }
+            captureScreenshot();
+        });
+    }
+}
+
 void MainWindow::showAbout() {
     auto* box = new QMessageBox(this);
     box->setWindowTitle(trk("dialog.about.title"));
@@ -1567,11 +1778,11 @@ void MainWindow::captureScreenshot() {
         stamp(intent_);
         stamp(welcome_);
         for (QWidget* widget : QApplication::topLevelWidgets()) {
-            auto* box = qobject_cast<QMessageBox*>(widget);
-            if (box == nullptr || !box->isVisible()) {
+            auto* dialogWidget = qobject_cast<QDialog*>(widget);
+            if (dialogWidget == nullptr || dialogWidget == static_cast<QWidget*>(this) || !dialogWidget->isVisible()) {
                 continue;
             }
-            const QPixmap dialog = box->grab();
+            const QPixmap dialog = dialogWidget->grab();
             const QRectF target((window.width() - dialog.width() * dpr) / 2.0, (window.height() - dialog.height() * dpr) / 2.0,
                                 dialog.width() * dpr, dialog.height() * dpr);
             painter.drawPixmap(target, dialog, QRectF(dialog.rect()));
@@ -2980,6 +3191,8 @@ void MainWindow::runUiCommand(const std::string& id) {
         importStepInteractive();
     } else if (id == "ui.import_obj") {
         importObjInteractive();
+    } else if (id == "ui.robot_library") {
+        openRobotLibrary();
     } else if (id == "ui.play" || id == "sim_play") {
         playSimulation();
     } else if (id == "ui.pause" || id == "sim_pause") {
