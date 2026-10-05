@@ -47,6 +47,7 @@ public:
 
     void importStepAsync(const QString& path);
     void importObj(const QString& path);
+    void importJt(const QString& path);
     void openProject(const QString& path);
     bool saveProject(const QString& path);
     const Scene& document() const { return scene_; }

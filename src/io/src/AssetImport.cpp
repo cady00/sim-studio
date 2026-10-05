@@ -1,4 +1,5 @@
 #include "sim/io/AssetImport.hpp"
+#include "JtImporter.hpp"
 
 #include "sim/core/LineModel.hpp"
 #include "sim/core/Mesh.hpp"
@@ -1241,22 +1242,6 @@ public:
         result.ok = imported.ok;
         result.message = imported.message;
         result.nodeCount = static_cast<int>(scene.ppr.products.size() + scene.ppr.processes.size() + scene.ppr.plants.size());
-        return result;
-    }
-};
-
-class JtImporter final : public IAssetImporter {
-public:
-    const char* format() const override { return "jt"; }
-    std::vector<std::string> extensions() const override { return {"jt"}; }
-    bool probeContent(const std::string&) const override { return false; }
-    AssetImportResult importFile(const std::string& path, Scene&) const override {
-        AssetImportResult result;
-        result.format = format();
-        result.message =
-            "JT has no decoder in this build (" + path +
-            "). Siemens JT Open Toolkit is commercial, and XT B-rep plus LOD segments are not implemented here. "
-            "Register an IAssetImporter named jt to replace this slot.";
         return result;
     }
 };

@@ -13,6 +13,7 @@ add_executable(simstudio_tests
     test_contact.cpp
     test_line.cpp
     test_assets.cpp
+    test_jt.cpp
     test_opcua.cpp
     test_weld.cpp
     test_olp.cpp
