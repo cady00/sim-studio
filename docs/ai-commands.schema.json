@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "simstudio://ai/command",
-  "title": "Sim Studio command",
+  "title": "Ondot Sim command",
   "description": "One operation for CommandExecutor. Scripts and logic blocks still share only signals. Hooks marked executable=false in the catalog are not implemented.",
   "type": "object",
   "required": ["op"],

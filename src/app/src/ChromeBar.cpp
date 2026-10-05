@@ -26,9 +26,10 @@ ChromeBar::ChromeBar(QWidget* parent) : QWidget(parent) {
     mark->setCursor(Qt::PointingHandCursor);
     connect(mark, &QPushButton::clicked, this, &ChromeBar::aboutRequested);
     layout->addWidget(mark);
-    auto* brand = new QLabel("Sim Studio");
-    brand->setStyleSheet("font-weight: 600;");
-    layout->addWidget(brand);
+    brand_ = new QLabel(QString::fromUtf8("应点仿真"));
+    brand_->setObjectName("chrome.brand");
+    brand_->setStyleSheet("font-weight: 600;");
+    layout->addWidget(brand_);
 
     layout->addStretch(1);
     modes_ = new QButtonGroup(this);
@@ -81,6 +82,12 @@ void ChromeBar::setMode(int mode) {
 
 void ChromeBar::setAiEnabled(bool enabled) {
     aiButton_->setText(enabled ? "AI 本地" : "AI 已关闭");
+}
+
+void ChromeBar::setProductName(const QString& name) {
+    if (brand_ != nullptr) {
+        brand_->setText(name);
+    }
 }
 
 void ChromeBar::setLocaleZh(bool zh) {

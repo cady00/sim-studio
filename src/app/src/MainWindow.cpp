@@ -107,7 +107,7 @@ MainWindow::MainWindow(QString locale) {
     scripting_->setPhysicsHooks([this](const std::string& id) { physics_->adoptSpawned(id); },
                                 [this](const std::string& id) { physics_->releaseBody(id); });
     if (QCoreApplication::applicationName().isEmpty()) {
-        QCoreApplication::setApplicationName(QStringLiteral("Sim Studio"));
+        QCoreApplication::setApplicationName(QString::fromLatin1(kSettingsName));
     }
     recoveryDir_ = (QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/recovery")).toStdString();
     if (ProjectStore::sessionInterrupted(recoveryDir_)) {
@@ -122,12 +122,12 @@ MainWindow::MainWindow(QString locale) {
     auto loadCatalog = [this](const QString& name) {
         QFile file(":/i18n/" + name + ".json");
         if (!file.open(QIODevice::ReadOnly)) {
-            qWarning("Sim Studio catalog %s was not found in resources", qPrintable(name));
+            qWarning("Ondot Sim catalog %s was not found in resources", qPrintable(name));
             return;
         }
         std::string error;
         if (!i18n_.loadJson(name.toStdString(), file.readAll().toStdString(), error)) {
-            qWarning("Sim Studio catalog %s failed: %s", qPrintable(name), error.c_str());
+            qWarning("Ondot Sim catalog %s failed: %s", qPrintable(name), error.c_str());
         }
     };
     loadCatalog("en");
@@ -417,6 +417,8 @@ void MainWindow::buildUi() {
     auto* welcomeLayout = new QVBoxLayout(welcome_);
     auto* welcomeTitle = new QLabel(welcome_);
     welcomeTitle->setObjectName("welcome.title");
+    welcomeTitle->setAlignment(Qt::AlignCenter);
+    welcomeTitle->setStyleSheet(QStringLiteral("font-size: 22px; font-weight: 600;"));
     auto* welcomeBody = new QLabel(welcome_);
     welcomeBody->setObjectName("welcome.body");
     welcomeBody->setWordWrap(true);
@@ -429,7 +431,7 @@ void MainWindow::buildUi() {
     welcome_->setStyleSheet(QStringLiteral("QFrame#welcome { background: #1b2133; border: 1px solid #2a3550; border-radius: 8px; }"));
 
     tray_ = new QSystemTrayIcon(QIcon(":/branding/tray.ico"), this);
-    tray_->setToolTip(QStringLiteral("Sim Studio"));
+    tray_->setToolTip(QString::fromUtf8("应点仿真"));
     if (tray_->icon().isNull()) {
         tray_->setIcon(QIcon(":/branding/logo_256.png"));
     }
@@ -890,6 +892,12 @@ void MainWindow::retranslate() {
     }
     if (auto* dock = findChild<QDockWidget*>("dock.sequence")) {
         dock->setWindowTitle(trk("dock.sequence"));
+    }
+    if (chrome_ != nullptr) {
+        chrome_->setProductName(trk("welcome.title"));
+    }
+    if (tray_ != nullptr) {
+        tray_->setToolTip(trk("welcome.title"));
     }
     if (auto* title = findChild<QLabel*>("welcome.title")) {
         title->setText(trk("welcome.title"));
@@ -1437,11 +1445,17 @@ void MainWindow::importObjInteractive() {
 }
 
 void MainWindow::showAbout() {
-    QMessageBox box(this);
-    box.setWindowTitle(trk("dialog.about.title"));
-    box.setIconPixmap(QPixmap(":/branding/logo.png").scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    box.setText(trk("dialog.about.body").arg(QString::fromLatin1(kVersion)));
-    box.exec();
+    auto* box = new QMessageBox(this);
+    box->setWindowTitle(trk("dialog.about.title"));
+    box->setIconPixmap(QPixmap(":/branding/logo.png").scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    box->setText(trk("dialog.about.body").arg(QString::fromLatin1(kVersion)));
+    if (!screenshotPath_.isEmpty()) {
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->open();
+        return;
+    }
+    box->exec();
+    delete box;
 }
 
 void MainWindow::showPhysics() {
@@ -1536,6 +1550,16 @@ void MainWindow::captureScreenshot() {
         stamp(palette_);
         stamp(intent_);
         stamp(welcome_);
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            auto* box = qobject_cast<QMessageBox*>(widget);
+            if (box == nullptr || !box->isVisible()) {
+                continue;
+            }
+            const QPixmap dialog = box->grab();
+            const QRectF target((window.width() - dialog.width() * dpr) / 2.0, (window.height() - dialog.height() * dpr) / 2.0,
+                                dialog.width() * dpr, dialog.height() * dpr);
+            painter.drawPixmap(target, dialog, QRectF(dialog.rect()));
+        }
     }
     const QImage& output = window.isNull() ? view : window;
     const bool saved = !output.isNull() && output.save(screenshotPath_);

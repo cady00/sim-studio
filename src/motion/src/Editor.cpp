@@ -319,7 +319,7 @@ bool loadLibrary(Scene& scene, const std::string& path, std::string& error) {
         return false;
     }
     if (json.value("format", "") != "simstudio.library") {
-        error = "not a Sim Studio library";
+        error = "not an Ondot Sim library";
         return false;
     }
     KinematicResource resource;

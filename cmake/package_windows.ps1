@@ -4,7 +4,7 @@
 param(
     [string]$BuildDir = "out/build/windows-msvc",
     [string]$Config = "Release",
-    [string]$OutDir = "dist/SimStudio"
+    [string]$OutDir = "dist/OndotSim"
 )
 
 $ErrorActionPreference = "Stop"
@@ -187,7 +187,7 @@ if (Test-Path $versionHeader) {
         $version = $Matches[1]
     }
 }
-$zip = Join-Path "dist" "SimStudio-$version-win64.zip"
+$zip = Join-Path "dist" "OndotSim-$version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path $OutDir -DestinationPath $zip
 Write-Host "Wrote $zip"

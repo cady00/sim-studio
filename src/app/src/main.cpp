@@ -8,10 +8,14 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
 #include <QIcon>
+#include <QPainter>
 #include <QPalette>
+#include <QPixmap>
+#include <QSplashScreen>
 #include <QStyleFactory>
 #include <QSurfaceFormat>
 #include <QTimer>
@@ -59,6 +63,33 @@ void applyCjkFont(QApplication& app) {
     }
 }
 
+QPixmap splashCard() {
+    QPixmap canvas(520, 300);
+    canvas.fill(QColor(18, 24, 42));
+    QPainter painter(&canvas);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QPixmap logo(QStringLiteral(":/branding/logo_256.png"));
+    if (!logo.isNull()) {
+        painter.drawPixmap(QRect(210, 28, 100, 100), logo);
+    }
+    painter.setPen(QColor(230, 232, 242));
+    QFont title = painter.font();
+    title.setPixelSize(32);
+    title.setBold(true);
+    painter.setFont(title);
+    painter.drawText(QRect(0, 142, 520, 44), Qt::AlignCenter, QString::fromUtf8("应点仿真"));
+    QFont sub = title;
+    sub.setPixelSize(16);
+    sub.setBold(false);
+    painter.setFont(sub);
+    painter.setPen(QColor(176, 196, 224));
+    painter.drawText(QRect(0, 190, 520, 28), Qt::AlignCenter, QString::fromUtf8(sim::kAppName));
+    painter.setPen(QColor(120, 146, 184));
+    painter.drawText(QRect(0, 222, 520, 24), Qt::AlignCenter, QString::fromUtf8("应点 Ondot"));
+    return canvas;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -71,7 +102,7 @@ int main(int argc, char* argv[]) {
     QSurfaceFormat::setDefaultFormat(format);
 
     QApplication application(argc, argv);
-    QApplication::setApplicationName(QString::fromLatin1(sim::kAppName));
+    QApplication::setApplicationName(QString::fromLatin1(sim::kSettingsName));
     QApplication::setOrganizationName(QString::fromLatin1("SimStudio"));
     QApplication::setApplicationVersion(QString::fromLatin1(sim::kVersion));
     QIcon icon;
@@ -92,7 +123,7 @@ int main(int argc, char* argv[]) {
 #endif
 
     QCommandLineParser parser;
-    parser.setApplicationDescription("Sim Studio");
+    parser.setApplicationDescription(QString::fromUtf8("应点仿真 (Ondot Sim)"));
     parser.addHelpOption();
     parser.addVersionOption();
     QCommandLineOption importStep("import", "Import a STEP file on startup.", "file");
@@ -108,6 +139,7 @@ int main(int argc, char* argv[]) {
     QCommandLineOption intent("intent", "Open the AI intent bar before a screenshot.");
     QCommandLineOption bench("bench", "Draw a 100000-part field, print BENCH, and save a screenshot.", "png");
     QCommandLineOption plc("plc", "Open the commission cards and connect OPC UA on 127.0.0.1:4840.");
+    QCommandLineOption about("about", "Open the about dialog.");
     parser.addOption(importStep);
     parser.addOption(openProject);
     parser.addOption(screenshot);
@@ -121,7 +153,12 @@ int main(int argc, char* argv[]) {
     parser.addOption(intent);
     parser.addOption(bench);
     parser.addOption(plc);
+    parser.addOption(about);
     parser.process(application);
+
+    QSplashScreen splash(splashCard());
+    splash.show();
+    application.processEvents();
 
     sim::MainWindow window(parser.value(language));
     window.setWindowIcon(icon);
@@ -138,6 +175,9 @@ int main(int argc, char* argv[]) {
     }
     if (parser.isSet(screenshot)) {
         window.setScreenshotPath(parser.value(screenshot));
+        const QFileInfo shot(parser.value(screenshot));
+        splash.pixmap().save(shot.dir().filePath(shot.completeBaseName() + "-splash.png"));
+        splash.finish(&window);
     }
     if (parser.isSet(simSeconds)) {
         window.setHeadlessSeconds(parser.value(simSeconds).toDouble());
@@ -150,6 +190,9 @@ int main(int argc, char* argv[]) {
     }
     if (parser.isSet(intent)) {
         window.showIntentBar();
+    }
+    if (parser.isSet(about)) {
+        QTimer::singleShot(250, &window, [&window] { window.showAbout(); });
     }
     if (parser.isSet(plc)) {
         auto* server = new sim::OpcUaServer;
@@ -177,7 +220,12 @@ int main(int argc, char* argv[]) {
     } else if (parser.isSet(play)) {
         window.beginHeadlessPlayback();
     } else if (parser.isSet(screenshot)) {
-        QTimer::singleShot(400, &window, [&window] { window.captureScreenshot(); });
+        if (!parser.isSet(about)) {
+            splash.finish(&window);
+        }
+        QTimer::singleShot(parser.isSet(about) ? 700 : 400, &window, [&window] { window.captureScreenshot(); });
+    } else {
+        QTimer::singleShot(700, &splash, [&splash, &window] { splash.finish(&window); });
     }
     return application.exec();
 }

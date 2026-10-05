@@ -1555,7 +1555,7 @@ std::string writeStage(const Scene& scene, UsdIoResult& result) {
     file.line("#usda 1.0");
     file.line("(");
     file.indent++;
-    file.line("doc = \"Sim Studio USDA. Coordinates are millimeters. metersPerUnit 0.001. OpenUSD is not linked.\"");
+    file.line("doc = \"Ondot Sim USDA. Coordinates are millimeters. metersPerUnit 0.001. OpenUSD is not linked.\"");
     file.line("defaultPrim = \"World\"");
     file.line("metersPerUnit = 0.001");
     file.line("upAxis = \"Z\"");

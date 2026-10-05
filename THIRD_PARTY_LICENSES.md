@@ -1,6 +1,6 @@
 # 第三方许可证
 
-Sim Studio 本体是专有软件，见 `LICENSE.txt`。完整清单、传递依赖、链接方式和闭源发行义务在 `docs/DEPENDENCIES.md`。下面的组件保留各自许可证。本仓库不包含只以 GPL 授权、没有可替代许可的库。私有商业使用在下列条件下允许。
+应点仿真（Ondot Sim）本体是专有软件，见 `LICENSE.txt`。完整清单、传递依赖、链接方式和闭源发行义务在 `docs/DEPENDENCIES.md`。下面的组件保留各自许可证。本仓库不包含只以 GPL 授权、没有可替代许可的库。私有商业使用在下列条件下允许。
 
 双许可库按非 GPL 条款选用：FreeImage 选 FIPL-1.0，D-Bus 库选 AFL-2.1，Graphite2 选 LGPL-2.1。不链接 OCCT Draw。
 

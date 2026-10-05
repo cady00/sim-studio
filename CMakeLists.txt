@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(SimStudio
     VERSION 0.4.0
-    DESCRIPTION "Sim Studio — private automotive production-line simulation"
+    DESCRIPTION "Ondot Sim (应点仿真) — private automotive production-line simulation"
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -47,7 +47,7 @@ foreach(lib IN LISTS SIM_OCCT_CANDIDATES)
         endif()
     endif()
 endforeach()
-message(STATUS "Sim Studio OCCT libraries: ${SIM_OCCT_LINK}")
+message(STATUS "Ondot Sim OCCT libraries: ${SIM_OCCT_LINK}")
 
 file(TO_CMAKE_PATH "${OpenCASCADE_RESOURCE_DIR}" SIM_OCCT_RESOURCE_PATH)
 
@@ -87,13 +87,13 @@ endif()
 install(DIRECTORY samples/ DESTINATION ${CMAKE_INSTALL_DATADIR}/simstudio/samples)
 install(FILES README.md THIRD_PARTY_LICENSES.md LICENSE.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/simstudio)
 
-set(CPACK_PACKAGE_NAME "SimStudio")
-set(CPACK_PACKAGE_VENDOR "Sim Studio")
+set(CPACK_PACKAGE_NAME "OndotSim")
+set(CPACK_PACKAGE_VENDOR "应点 Ondot")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_FILE_NAME "SimStudio-${PROJECT_VERSION}-win64")
+set(CPACK_PACKAGE_FILE_NAME "OndotSim-${PROJECT_VERSION}-win64")
 set(CPACK_GENERATOR "ZIP")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE.txt")
-set(CPACK_NSIS_DISPLAY_NAME "Sim Studio")
-set(CPACK_NSIS_PACKAGE_NAME "Sim Studio")
+set(CPACK_NSIS_DISPLAY_NAME "应点仿真")
+set(CPACK_NSIS_PACKAGE_NAME "应点仿真")
 set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
 include(CPack)

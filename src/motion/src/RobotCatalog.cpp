@@ -259,7 +259,7 @@ bool downloadHttps(const std::string& url, std::vector<std::uint8_t>& bytes) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "SimStudio");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "OndotSim");
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeDownload);

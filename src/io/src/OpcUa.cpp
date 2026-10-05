@@ -430,7 +430,7 @@ void readApplication(Reader& reader) {
 
 void writeEndpoint(Writer& writer) {
     writer.string("opc.tcp://127.0.0.1:4840");
-    writeApplication(writer, "urn:simstudio:server", "Sim Studio", 0);
+    writeApplication(writer, "urn:simstudio:server", "Ondot Sim", 0);
     writer.byteString(nullptr, -1);
     writer.i32(1);
     writer.string(kPolicyNone);
@@ -1111,7 +1111,7 @@ bool OpcUaClient::createSession(std::string& error) {
     Writer body;
     body.nodeId(kCreateSessionRequest);
     body.requestHeader(0, requestId_);
-    writeApplication(body, "urn:simstudio:client", "Sim Studio", 1);
+    writeApplication(body, "urn:simstudio:client", "Ondot Sim", 1);
     body.string(nullptr);
     body.string("opc.tcp://127.0.0.1:4840");
     body.string("simstudio");

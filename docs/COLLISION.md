@@ -126,4 +126,4 @@ Catch2，`linux-system` 预设（RelWithDebInfo）。本次完整运行：**44 �
 - 三角形确认有 512 对的上限，而且只在凸包距离已经小于 1 mm 时才跑。
 - 界面只编辑两个碰撞集和一对。
 - 机器人扫掠的时间除以 60，不读路径自己的 `dt`。`zone` 仍是关节空间重叠。
-- Windows 的 `SimStudio-win64` 这次没有编。KUKA STEP 不在仓库里，也没有自动对上连杆。
+- Windows 的 `OndotSim-win64` 这次没有编。KUKA STEP 不在仓库里，也没有自动对上连杆。

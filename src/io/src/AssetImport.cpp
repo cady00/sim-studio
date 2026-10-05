@@ -1381,7 +1381,7 @@ bool exportSceneStl(const Scene& scene, const std::string& path, std::string& er
         return false;
     }
     char header[80] = {};
-    std::snprintf(header, sizeof(header), "Sim Studio STL");
+    std::snprintf(header, sizeof(header), "Ondot Sim STL");
     out.write(header, 80);
     out.write(reinterpret_cast<const char*>(&triangles), 4);
     if (!body.empty()) {

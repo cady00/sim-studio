@@ -312,7 +312,7 @@ ProjectResult ProjectStore::load(const std::string& path, Scene& scene) {
         return result;
     }
     if (json.value("format", "") != kProjectFormatId) {
-        result.message = "not a Sim Studio project";
+        result.message = "not an Ondot Sim project";
         return result;
     }
     const int version = json.value("version", 0);
