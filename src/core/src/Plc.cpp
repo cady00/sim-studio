@@ -169,6 +169,7 @@ nlohmann::json softPlcToJson(const SoftPlcDocument& doc) {
         for (const PlcCycleRule& rule : doc.cycles) {
             json["cycles"].push_back(nlohmann::json{{"id", rule.id},
                                                     {"name", rule.name},
+                                                    {"resource", rule.resource},
                                                     {"station", rule.station},
                                                     {"stationName", rule.stationName},
                                                     {"startSignal", rule.startSignal},
@@ -386,6 +387,7 @@ bool softPlcFromJson(const nlohmann::json& json, SoftPlcDocument& doc, std::stri
             PlcCycleRule rule;
             rule.id = item.value("id", std::string{});
             rule.name = item.value("name", std::string{});
+            rule.resource = item.value("resource", std::string{});
             rule.station = item.value("station", std::string{});
             rule.stationName = item.value("stationName", std::string{});
             rule.startSignal = item.value("startSignal", std::string{});

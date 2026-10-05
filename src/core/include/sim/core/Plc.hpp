@@ -86,9 +86,14 @@ struct PlcZoneWatch {
 // startEdge and endEdge are "rising" or "falling". An empty busySignal means the
 // end edge can close the operation immediately. While blockSignal is true, that
 // interval is a blocking segment. An empty id is ignored.
+// resource is the Gantt row. Rules that name the same resource share that row.
+// An empty resource keeps the older station row. When resource names a cylinder
+// node, or the scene has one cylinder and a rule watches resource_Extending,
+// each scan writes that bit while the rod is still short of the commanded end.
 struct PlcCycleRule {
     std::string id;
     std::string name;
+    std::string resource;
     std::string station;
     std::string stationName;
     std::string startSignal;

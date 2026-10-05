@@ -79,6 +79,7 @@ private:
     };
 
     void oneScan(Scene& scene, double simTime, double period);
+    void noteResourceMotion(Scene& scene);
     void trackCycles(Scene& scene, double simTime);
     void note(const std::string& line);
     bool readOpc(const std::string& node, bool& value);
