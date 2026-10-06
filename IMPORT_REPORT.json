@@ -1,0 +1,35 @@
+{
+  "note": "Produced by StepImporter on Linux OCCT 7.6.3 from the F04 test. Not a full section-5 report.",
+  "baseline_parent": "cursor/g1-repro-and-bench-edd5",
+  "samples": [
+    {
+      "bytes": 1724,
+      "elapsedMs": 1.381408,
+      "format": "step",
+      "meshes": 0,
+      "message": "structure_only",
+      "nodes": 1,
+      "notes": [
+        "no triangles; this is not a simulation model"
+      ],
+      "parser": "Open CASCADE STEPCAFControl_Reader",
+      "simulatable": false,
+      "source": "synthetic:vertex-only AP214, written by tests/test_g1_defects.cpp, not a committed CAD file",
+      "status": "structure_only",
+      "triangles": 0
+    },
+    {
+      "bytes": 24300,
+      "elapsedMs": 10.546404,
+      "format": "step",
+      "meshes": 2,
+      "message": "imported",
+      "nodes": 4,
+      "parser": "Open CASCADE STEPCAFControl_Reader",
+      "simulatable": true,
+      "source": "/workspace/samples/step/sample_fixture.step",
+      "status": "complete",
+      "triangles": 136
+    }
+  ]
+}

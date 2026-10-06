@@ -1511,6 +1511,7 @@ ImportResult GltfImporter::importFile(const std::string& path, Scene& scene) {
     result.nodeCount = imported.nodeCount;
     result.meshCount = imported.meshCount;
     result.triangleCount = imported.triangleCount;
+    classifyImportResult(result);
     return result;
 }
 

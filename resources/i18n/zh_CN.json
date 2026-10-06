@@ -72,6 +72,7 @@
   "progress.cancel": "导入已取消",
   "msg.importOk": "已导入 %1 个节点，%2 个网格，%3 个三角形，用时 %4 ms",
   "msg.importFail": "导入失败：%1",
+  "msg.structureOnly": "只读入结构，%1 个节点，没有三角形。这不是可仿真模型，原工程未替换。",
   "msg.objFail": "OBJ 导入失败：%1",
   "msg.saveOk": "已保存 %1",
   "msg.recovered": "已从上次自动保存恢复",

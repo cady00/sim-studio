@@ -20,6 +20,7 @@ public:
         result.nodeCount = asset.nodeCount;
         result.meshCount = asset.meshCount;
         result.triangleCount = asset.triangleCount;
+        classifyImportResult(result);
         return result;
     }
 };

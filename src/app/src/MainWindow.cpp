@@ -1357,16 +1357,18 @@ void MainWindow::importStepAsync(const QString& path) {
                     Qt::QueuedConnection);
             },
             &cancelImport_);
-        auto scene = result.ok ? imported : std::shared_ptr<Scene>{};
-        const bool ok = result.ok;
+        auto scene = result.simulatable() ? imported : std::shared_ptr<Scene>{};
+        const bool ok = result.simulatable();
+        const QString status = QString::fromUtf8(importStatusName(result.status));
         const QString error = QString::fromStdString(result.message);
+        const QString report = QString::fromStdString(result.report);
         const int nodes = result.nodeCount;
         const int meshes = result.meshCount;
         const int triangles = result.triangleCount;
         const double elapsed = result.elapsedMs;
         QMetaObject::invokeMethod(
             this,
-            [this, alive, scene, ok, error, nodes, meshes, triangles, elapsed] {
+            [this, alive, scene, ok, status, error, report, nodes, meshes, triangles, elapsed] {
                 if (!alive->load()) {
                     return;
                 }
@@ -1376,7 +1378,7 @@ void MainWindow::importStepAsync(const QString& path) {
                     }
                     scene_.steal(*scene);
                 }
-                onImportFinished(ok, error, nodes, meshes, triangles, elapsed);
+                onImportFinished(ok, status, report.isEmpty() ? error : report, nodes, meshes, triangles, elapsed);
             },
             Qt::QueuedConnection);
     });
@@ -1396,7 +1398,8 @@ void MainWindow::onImportProgress(int percent, const QString& stageKey, int curr
     statusLabel_->setText(text);
 }
 
-void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs) {
+void MainWindow::onImportFinished(bool ok, const QString& status, const QString& error, int nodes, int meshes, int triangles,
+                                  double elapsedMs) {
     importing_ = false;
     importStepAction_->setEnabled(true);
     importObjAction_->setEnabled(true);
@@ -1405,12 +1408,16 @@ void MainWindow::onImportFinished(bool ok, const QString& error, int nodes, int 
     if (importThread_.joinable()) {
         // The worker has already queued this call, so it is about to exit.
     }
+    if (status == QLatin1String("structure_only")) {
+        statusLabel_->setText(trk("msg.structureOnly").arg(nodes));
+        return;
+    }
     if (!ok) {
-        const QString message = error == "cancelled" ? trk("progress.cancel") : trk("msg.importFail").arg(error);
+        const QString message = status == QLatin1String("cancelled") ? trk("progress.cancel") : trk("msg.importFail").arg(error);
         statusLabel_->setText(message);
         if (!screenshotPath_.isEmpty()) {
             QTimer::singleShot(0, qApp, [] { QApplication::exit(2); });
-        } else if (error != "cancelled") {
+        } else if (status != QLatin1String("cancelled")) {
             QMessageBox::warning(this, trk("action.importStep"), message);
         }
         return;
