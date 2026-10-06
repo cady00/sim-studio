@@ -26,8 +26,11 @@ add_executable(simstudio_tests
     test_fuzz.cpp
     test_undo.cpp
     test_perf.cpp
+    test_g1_defects.cpp
+    test_g0_bench.cpp
 )
 target_link_libraries(simstudio_tests PRIVATE sim_core sim_io sim_physics sim_scripting sim_ai sim_motion sim_collision Catch2::Catch2WithMain)
 target_include_directories(simstudio_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/render/include)
+target_include_directories(simstudio_tests SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 target_compile_definitions(simstudio_tests PRIVATE "SIM_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
 add_test(NAME simstudio_tests COMMAND simstudio_tests)
