@@ -47,7 +47,7 @@ src/app         Qt 主窗口、导入线程、命令行
 | Diligent Engine | Apache-2.0，可私有商用 | 本基线没有官方 vcpkg 端口，需要整棵 vendored CMake（glslang、SPIRV-Cross） | 不采用。同样要和 Qt 的 OpenGL 上下文共存，依赖体积大。 |
 | 自有薄接口 `IRenderer` | 仓库自己的代码 | 不增加第三方库 | 采用。OpenGL 3.3 是现在的后端。Vulkan 或 Direct3D 12 以后实现同一个类，视口的输入和相机不用改。 |
 
-`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`selectLodLevel` 按距离选细节级别，当前每个零件只有一级网格，钩子先在提交路径里调用。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。同一网格的多个实例按记录逐个设置模型矩阵再画。软件 OpenGL 上实例化矩阵属性没有把平移送进着色器，所以这条路径用 uniform。Qt 类型只出现在 `src/app` 和 `src/render`（视口是 `QOpenGLWidget`）。`IRenderer` 本身没有 Qt 头文件。
+`IRenderer` 负责：上传网格、提交实例、画线框与 gizmo、读回 RGBA。拾取默认仍走 CPU 射线，接口留了 `pick` 以便以后改成 GPU。`OpenGLRenderer::drawInstances` 使用 `glDrawElementsInstanced`，实例矩阵、颜色和 LOD 因子走实例属性，不是逐个 uniform。`selectLodLevel` 只按距离选级（3 m / 8 m）。三角形多于 8 个时，视口会按对角线的 20% 或 55% 做显示用粗网格，放在绘制缓存里，不替换场景里的测量和碰撞网格。`intersectsClipFrustum` 在提交前丢掉视锥外的包围盒。遮挡用包围盒屏幕矩形写深度，镂空框架可能被当成实心，见 `KNOWN_ISSUES.md` 的 F01。Qt 类型只出现在 `src/app` 和 `src/render`（视口是 `QOpenGLWidget`）。`IRenderer` 本身没有 Qt 头文件。
 
 离屏读回是 `captureRgba`。截图时视口先走这个接口，失败再退回 Qt 的 `grabFramebuffer`。
 
@@ -75,7 +75,7 @@ Jolt 5.5（vcpkg 端口 `joltphysics`；Linux 用同一 git 标签 FetchContent 
 
 没有转台、滑台、辊床、升降机、堆垛机的预制组件。用户在「运动学」页把选中零件收成连杆，加转动副或移动副，用数字或视口上的两个拾取点定轴，设限位、速度、加速度和耦合比，再记录命名姿态。转台加升降、或行走/升降/货叉三轴，都是同一套关节，不是单独的设备类。
 
-- 运动学资源、逻辑块、机器人路径和碰撞集写在项目 JSON 里（格式版本 7，节点可带 `faceAxes`，关节可带外部轴名，文档可带物理材料和电机）。连杆节点仍在场景图里。`Mech` 继续描述刚体、关节和输送面。
+- 运动学资源、逻辑块、机器人路径和碰撞集写在项目 JSON 里（当前格式版本 11。版本 7 起节点可带 `faceAxes`，关节可带外部轴名，文档可带物理材料和电机。版本 10 增加焊点，版本 11 增加软 PLC）。连杆节点仍在场景图里。`Mech` 继续描述刚体、关节和输送面。
 - 逻辑块有输入、输出、参数、动作（到姿态、点动、置位/复位、等待）和条件。条件读信号或本块参数。块与块之间只走信号。块上的 Python 文本会保存，但块运行器不执行它；要跑就放进现有脚本编辑器，脚本也只看见信号表。
 - 到姿态的时间按各关节梯形或 S 曲线里最慢的一轴拉齐。S 曲线是五次多项式，端点速度和加速度为零。
 
