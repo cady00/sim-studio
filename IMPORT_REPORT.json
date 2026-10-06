@@ -1,0 +1,39 @@
+{
+  "note": "This is not the import-report schema from section 5. The importer does not emit that report yet. Fields below are only what this G0 run actually observed.",
+  "baseline": "eadee91a1b26267a578af61f3c2e4911f8b9bfdd",
+  "parser": "Open CASCADE 7.6.3 STEPCAFControl_Reader",
+  "public_fixture": {
+    "path": "samples/step/sample_fixture.step",
+    "sha256": "59a6e4cbc591ebcf1e585394e559a6e923bbd9f3153fd650935264eb47e1ccc2",
+    "imported_by": "existing Linux tests on eadee91, exit 0"
+  },
+  "synthetic": [
+    {
+      "id": "F04",
+      "input": "AP214 vertex only, written by OCCT in the test, not committed",
+      "ok": true,
+      "message": "imported",
+      "nodes": 1,
+      "triangles": 0
+    },
+    {
+      "id": "F05-depth",
+      "input": "70 nested assemblies plus one box, not committed",
+      "ok": true,
+      "message": "imported",
+      "nodes": 65,
+      "leaf_present": false,
+      "triangles": 0
+    },
+    {
+      "id": "F05-assembly-shape",
+      "input": "assembly label with its own box plus a child box, not committed",
+      "ok": true,
+      "nodes": 2,
+      "parent_mesh": false,
+      "child_present": true,
+      "triangles": 12
+    }
+  ],
+  "not_in_this_file": ["per-face colors", "external references", "PMI", "second-parser comparison", "private CAD"]
+}

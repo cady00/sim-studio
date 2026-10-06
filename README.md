@@ -2,7 +2,7 @@
 
 应点仿真是应点 Ondot 品牌系列中的产线仿真软件，英文名 Ondot Sim。它是一套私有、可离线使用的 Windows 桌面程序。长期目标对齐 Siemens Tecnomatix Process Simulate / Process Designer 与 NX Mechatronics Concept Designer：机器人运动、碰撞、节拍、机电物理、PLC 虚拟调试，以及类似 MELSOFT Gemini / Visual Components 的 Python 脚本。
 
-当前仓库是 **0.4**：场景图、三维视口、STEP 装配导入、Jolt 刚体与关节、信号表、嵌入的 Python 脚本、用户定义的运动学和逻辑块、SCARA / 球腕六轴路径，以及默认关闭的命令 / AI 接口。没有遥测，运行时不访问网络。请保持仓库私有。
+当前仓库的 CMake / vcpkg 版本字符串是 **0.4.0**。`Version.hpp` 里的 `kVersion` 是 **0.7.0**，两者不是同一个数，以源代码里的常量为准，不要把 README 的旧说法当成发布号。场景图、三维视口、STEP 装配导入、Jolt 刚体与关节、信号表、嵌入的 Python 脚本、用户定义的运动学和逻辑块、SCARA / 球腕六轴路径，以及默认关闭的命令 / AI 接口都在。没有遥测，运行时不访问网络。请保持仓库私有。
 
 ## 现在能做什么
 
@@ -17,7 +17,7 @@
   - 「移动」「旋转」操作器，或在属性面板里改 X/Y/Z（mm）和 RX/RY/RZ（度）
 - 导入 STEP（`.stp` / `.step`），装配层级进入左侧树，曲面细分后显示。
 - 导入 OBJ。
-- 保存 / 打开 `.simproj`（JSON + 显示网格缓存，格式版本 6，仍能打开版本 1 到 5）。说明见 [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md)。
+- 保存 / 打开 `.simproj`（JSON + 显示网格缓存，格式版本 11，仍能打开版本 1 到 10）。说明见 [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md)。
 - 示例装配 `samples/step/sample_fixture.step`（底板 + 两个共用网格的销）。
 - 示例产线 `samples/conveyor_line.simproj`：发生器、输送面、光栅、气动式移动副推杆、销毁器，由 Python 脚本 `pusher` 驱动。脚本副本在 `samples/scripts/`。
 - 工具栏：运行、暂停、停止、复位，速度倍率（0–16），仿真时间。复位与停止相同，恢复按下运行前的变换并删掉运行中生成的零件。
@@ -130,7 +130,7 @@ ctest --preset linux-system --output-on-failure
 - STEP 的 `ReadFile` / `Transfer` 没有逐实体进度，这两段时间状态栏是不确定进度。取消不能打断正在进行的 OCCT 调用。
 - 关闭窗口时如果导入还在跑，进程会等该线程结束。
 - 导入会替换整个场景。
-- glTF 导入接口在，Phase 1 返回未实现。
+- glTF / GLB 有一个自写子集（三角形、节点矩阵或 TRS、data URI、GLB、PBR 因子、一份蒙皮和形态目标）。不是完整的 glTF 2.0。范围见 [docs/ASSETS.md](docs/ASSETS.md)。
 - 项目包是 store（不压缩）ZIP，单文件约 4 GiB 上限，无 ZIP64。
 - 操作器是局部轴的平移箭头和旋转环，不是完整 CAD 三元组。
 - Windows 上的 Open CASCADE 8 与 Linux 软件包里的 7.6 若 API 不一致，需要在导入代码里加版本分支。

@@ -1,0 +1,265 @@
+Randomness seeded to: 2518257896
+0.003 s: quaternion rotates X toward Y about Z
+0.000 s: transform translation is applied in millimeters
+0.000 s: parent world matrix composes with the local matrix
+0.000 s: affine inverse undoes a rigid transform
+0.000 s: euler XYZ round-trips
+0.000 s: length units convert to millimeters
+0.000 s: point to segment distance
+0.000 s: child world transform includes the parent
+0.000 s: ray hits a triangle on the ground
+0.000 s: hidden parent hides the child from picking
+0.101 s: collectNames finds one part among a hundred thousand
+0.000 s: a nearer rectangle hides the box behind it
+0.000 s: the gpu frustum shader names its invocation
+0.000 s: catalog falls back from Chinese to English
+0.001 s: project zip round-trips hierarchy and meshes
+0.000 s: obj importer triangulates a quad
+0.000 s: gltf importer reads a triangle instead of refusing the format
+Total number of loaded entities 49.
+
+0.052 s: geometry kernel names occt and keeps obj on the in-house parser
+0.047 s: sample fixture STEP keeps the assembly and shared pin mesh
+0.000 s: optional local robot STEP exposes the NX assembly
+**** ERR StepFile : Undefined Parsing: Line 2: Incorrect syntax: unexpected TYPE, expecting STEP    ****
+0.004 s: nx prt teaching parts are not step files
+*** ERR StepReaderData : Unresolved Reference : Fails Count : 1 ***
+gantry nodes=696 meshes=106 triangles=289932 ms=8992.77
+9.237 s: cartesian gantry step imports a real mesh
+0.001 s: slider position drive reaches the target and honors the upper limit
+0.001 s: hinge position drive stays inside its limit
+0.000 s: light barrier and collision sensor write boolean signals
+0.002 s: project file keeps mechanisms, signals, and scripts
+0.105 s: python api writes signals, joint targets, and can spawn
+0.000 s: simulation speed and pause do not advance time while paused
+0.001 s: physics backend is jolt and a positive axis is not flipped
+0.000 s: jolt slider velocity drive moves along the authored axis
+0.000 s: jolt accepts a convex hull body
+0.001 s: builtin solver drives a slider, senses a beam, and rests a box on the floor
+0.001 s: command catalog is executable without a model
+0.000 s: offline hooks edit through commands and a remote model is refused
+0.000 s: ai provider stays offline unless a future transport is compiled
+0.000 s: lod and frustum hooks keep a near box and drop a far one
+0.000 s: command palette matches chinese, pinyin initials, english, objects, and signals
+0.000 s: trapezoid and s-curve profiles finish at the target
+0.000 s: scara and spherical wrist forward kinematics round trip
+0.000 s: inverse kinematics reports a joint limit
+0.000 s: coupled joints follow the master and a stacker crane reaches a pose
+0.001 s: logic block, save, and repeat are deterministic
+2.598 s: robot path reports cycle time and a collision pair
+1.326 s: command layer covers kinematics logic and planning
+0.000 s: flat solids can be grouped and a cylinder face supplies an axis
+kr420 note: 分组按半径不小于 40 mm、且接近坐标轴方向的圆柱。平行且相距小于 220 mm 的弱轴并进更强的那根。A1 是最强竖直轴，其余从底座往外逐个接最近的锚点。包围盒相邻不能切开这台机器人。
+fitted d1 390.631 shoulder 515.693 a2 1302.87 a3 1277.33 d6 317.587 a1ToA2 515.693
+base parts 114 cylinders 0 r 0 origin 0 0 0 axis 0 0 1
+A1 parts 8 cylinders 7 r 514.962 origin 2.77556e-14 -1.44329e-12 654.369 axis -0 -0 1
+A2 parts 9 cylinders 6 r 285 origin 500 -126.252 1045 axis -0 1 -0
+A3 parts 19 cylinders 6 r 220 origin 500 -39.8621 2345 axis 0 1 0
+A4 parts 6 cylinders 19 r 390 origin 1585.62 10 2283.5 axis 1 -0 -0
+A5 parts 2 cylinders 9 r 148.5 origin 1775 14.195 2290 axis 0 1 0
+A6 parts 5 cylinders 7 r 61 origin 1948.62 101 2541.36 axis 1 0 0
+numerical ok 1 warning 
+numerical gap mm 0.025445
+analytic ok 1 warning 
+cycle seconds 3.2 samples 193 collisions 1 sweep 1
+home clearance mm 12 near 1
+weld tour points 4
+weld tour seconds 5.96667
+9.576 s: kr420 flat step becomes a six axis chain
+0.000 s: external track shifts the chain and mounts the arm
+travel external 200
+midrange external 0
+manipulability external 100
+0.003 s: redundancy resolution can hold, shorten travel, center joints, or open the elbow
+sync seconds 6.33333 samples 381
+0.004 s: synchronised linear motion keeps the tcp on the segment and waits for the track
+0.003 s: positioner sync keeps the tcp on the workpiece and a track reports partial reach
+kr420 track seconds 6.33333 samples 381
+scene part x 0 -> 8000 track 8000
+5.063 s: kr420 on a ten metre track follows a line longer than its reach
+0.000 s: zone blend keeps joint velocity continuous and inside the limits
+0.000 s: logic text, wires, and the running step stay in sync
+0.000 s: editor devices are built from links joints and poses
+0.005 s: scope records signals, joint velocity, and csv
+0.002 s: robot catalog copies published limits and link origins
+0.000 s: joint acceleration comes from torque inertia payload or the user
+0.374 s: the public example cell covers layout welds path clamp signals and cycle time
+0.021 s: a provided catalog stl replaces the link box and collides
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+simstudio_tests is a Catch2 v3.4.0 host application.
+Run with -? for options
+
+-------------------------------------------------------------------------------
+public catalog meshes keep the example cycle
+-------------------------------------------------------------------------------
+/workspace/tests/test_motion.cpp:1441
+...............................................................................
+
+/workspace/tests/test_motion.cpp:1443: SKIPPED:
+explicitly with message:
+  set SIM_CATALOG_MESH_LIVE=1 to download the public meshes
+
+0.000 s: public catalog meshes keep the example cycle
+0.000 s: gjk matches analytic sphere and box distances
+0.004 s: epa reports a known sphere and box penetration
+0.000 s: sweep catches a thin wall that endpoint samples miss
+0.000 s: concave mesh decomposes into more than one hull
+0.000 s: narrow band sdf gradient points out of a sphere
+0.002 s: robot sweep reports a thin obstacle between two samples
+0.005 s: collision commands and python see distance and clearance
+0.001 s: proximity setup round trips in a project
+BENCH parts=3200 build_ms=3.12124 overlap_ms=0.734911 overlaps=0 neighbor200_ms=1.0527 neighbor_sum=11600.6
+0.006 s: broadphase benchmark on a few thousand boxes
+0.000 s: motion profile, friction pairs, and encoder pulses
+0.000 s: old mechanism json infers motion and round-trips the new fields
+0.000 s: surface ride keeps friction order and hands a load to free motion
+0.000 s: joined child stays with its ancestor while a free sibling falls
+0.000 s: bounded numeric ik reaches a two link target
+0.000 s: commands and python edit motion, pairs, and motors
+0.000 s: mesh triangles leave a hole that the bounding box would have filled
+0.198 s: convex cache uses the mesh hull instead of the box extents
+0.000 s: coulomb friction keeps a slick box behind a high-friction box
+0.000 s: restitution sends a dropped box back up
+0.000 s: a ball joint can spin about an axis that is not its hinge axis
+0.000 s: contact notices are visible to python
+0.000 s: two meshes report contacts on both sides
+0.000 s: the solver pushes one mesh out of another
+0.000 s: a box on two pads keeps both contact points
+0.000 s: a fast box stops on a thin plate instead of jumping through
+0.000 s: a ball joint swing stays inside its cone
+0.000 s: stations snap, align, and distribute on the plan grid
+0.000 s: ascii dxf lines and polylines become plan segments
+0.000 s: sequence and parallel operations expose the critical path
+0.004 s: cycle report writes csv and a spreadsheet
+0.002 s: ppr xml import and project version 9 keep the line
+0.000 s: example weld line links the kr420 path and logic block
+0.000 s: line commands and python read the same schedule
+0.000 s: gantt drag writes wait and a pinned finish
+0.000 s: dxf arc spline insert and a binary line
+0.000 s: dxf hatch patterns, dimension text, and nested inserts
+0.000 s: logic blocks and the operation list can cycle
+LINE_JPH output=297 jph=297 weld_util=0.995556 weld_block=0 weld_starve=16 source_block=1192
+0.000 s: the example line keeps feeding for an hour
+0.000 s: sequence transitions and signal waits shift the timeline
+0.001 s: ems xml round-trips operations resources parts welds paths and placements
+0.001 s: asset registry reads stl ply obj urdf image and leaves a jt slot
+0.001 s: urdf package URIs and gltf morph targets
+
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******
+
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******
+******        Transferring Shape, ShapeType = 2                      ******
+** WorkSession : Sending all data
+ Step File Name : /tmp/simstudio_sample.step(350 ents)  Write  Done
+Total number of loaded entities 49.
+
+0.014 s: stl export counts triangles and occt samples round trip
+0.001 s: measured times follow the planner logic and a conveyor
+0.014 s: frustum culling and mesh lod drop work at field scale
+0.000 s: urdf reads cylinder sphere mesh and inertia
+0.000 s: gltf reads pbr factors and a skinned vertex
+0.000 s: a collision sensor measures an inspect operation
+0.001 s: xacro import builds a robot resource and a mesh
+0.002 s: jt header toc and every segment type are recognized
+0.003 s: jt version 8 9 and 10 headers round trip compression
+0.000 s: jt quantized tri strips decode null and bitlength vertices and deering normals
+0.000 s: jt damaged files fail closed
+0.157 s: public jt samples open with an honest mesh fallback
+1.984 s: private cojt jt files report version and triangles
+0.000 s: jt int32 codecs and predictors round-trip published layouts
+0.000 s: cojt parsers read links edges speeds and machine data
+0.001 s: machine data builds a numerical chain and a speed-limited move
+0.000 s: a graph edge without machine data keeps the tooltip axis
+kr210 JT Version 10.0 JT  DM 8.3.7.1 segments=627 types=1,3,4,7,8,9,10,11,31 nodes=532 triangles=387479 xt=no. decoded JT 10.5 topologically compressed tri-strips. cojt kr210_r2700_2: links=7 edges=0 joints=6 matched=10 axis-frames=0
+kr210 matched speeds A1 -185..185 v 116.796 axis 0,0,1 world 0,0,1 A2 -140..-5 v 111.451 axis 0,1,0 world 0,1,0 A3 -120..168 v 112 axis 0,1,0 world 0,1,0 A4 -350..350 v 179 axis 1,0,2.22045e-16 world 0.996195,0,0.0871557 A5 -125..125 v 172 axis 0,-1,2.22045e-16 world -1.93525e-17,-1,2.212e-16 A6 -350..350 v 220 axis 0,1,2.22045e-16 world -1.93525e-17,1,2.212e-16
+kr420 cojt joints 0 source-has-zone yes
+step fitted d1 390.631 shoulder 515.693 a2 1302.87 a3 1277.33 d6 317.587
+kr420 cycle datasheet 3.2 cojt-zone 3.2 medium 20
+6.996 s: private cojt components calibrate kinematics
+0.000 s: zip reader inflates method 8
+0.001 s: robot library indexes a nested cojt zip and refuses path escape
+0.047 s: private cojt library lists kr210 preview and imports kr6 from a zip
+0.000 s: soft plc scans bool int real and timer on the simulation clock
+0.000 s: plcsim advanced adapter refuses to start and does not scan
+0.000 s: soft plc opc exchange is optional and logged when disconnected
+0.000 s: soft plc document round trips through the project file
+0.000 s: conveyor run signal stops the belt and an empty signal does not
+0.000 s: commission line runs the soft plc ahead of the logic block
+0.000 s: soft plc or branches edges and count up
+0.000 s: soft plc ctd counts down and tof holds after power drops
+0.000 s: soft plc or sits inside an and branch
+0.000 s: imported robot drafts unwired plc tags
+0.397 s: commission robot cycle is started by the photoeye latch
+0.138 s: forcing R1_Start moves the robot without the photoeye
+0.000 s: a watched sphere writes Z1_Occupied and can reset start
+0.002 s: mesh collision writes R1_Collision
+0.000 s: a box and a vertical cylinder write occupied bits
+0.000 s: cycle edges refresh a pick bar and a blocking bar
+0.000 s: cycle resources share a row and the busiest resource is the bottleneck
+0.000 s: a cylinder resource writes the extending bit for the stroke
+0.295 s: commission gantt shows the pick and the zone block
+0.001 s: mcd compat line extends the cylinder and turns the suction on
+0.000 s: scan log exports time, scan number, and signals
+0.001 s: usda export round trips hierarchy mesh material physics and samples
+0.000 s: usda import is best effort and rejects crate bytes
+0.000 s: likelihood score prefers the previous hit and a learned ranker can replace it
+0.000 s: ordered box detection matches the exhaustive manifold and stops on the previous hit
+0.011 s: overlap early exit matches the full contact query
+NARROW_SPEEDUP bvh_hit=1153.97 bvh_hit_ms=11.7036/0.010142 bvh_sat=64000/40 bvh_miss=1.04839 rrt=893.201 rrt_ms=50.5677/0.056614 rrt_sat=281600/176 rrt_calls=176/176
+0.063 s: bvh detection and rrt connect report a measured speedup
+0.001 s: opc ua none session browses reads writes and publishes
+0.455 s: opc ua basic256 signs encrypts logs in and reconnects
+0.000 s: opc ua signal table imports csv and tia exports
+0.000 s: weld csv and xml keep layers and the electrode group
+0.001 s: a weld point projects onto the sheet and the gun aligns around the normal
+0.000 s: example weld spots are marked and land on a plate
+0.005 s: reachability, base coverage, weld order, and rrt avoid a joint slab
+0.000 s: the tcp sweep becomes a collision set and two robots interlock
+0.000 s: each link sweeps between the two joint poses
+0.012 s: a shared zone holds the station and unreachable spots name a fix
+0.000 s: an empty project records the weld tour as a station task
+0.000 s: kuka abb and fanuc posts round trip a path with external axes
+0.000 s: an inline kuka aggregate imports without a dat file
+0.000 s: kuka src keeps tool base spline interrupt and outputs
+0.000 s: mcd gear cam and electronic cam copy the master
+0.000 s: mcd position and velocity controllers follow real signals
+0.000 s: mcd distance sensor reports the hit and a limit switch follows the joint
+0.000 s: mcd cylinder throttle and cushion do not jump onto the stop
+0.000 s: mcd gripper attaches the nearest body and releases it
+0.000 s: mcd source waits for its signal and the sink counts a removal
+0.000 s: mcd logic and opc ua signals drive a cylinder and a position axis
+0.000 s: mcd mechanism file keeps couple controller and gripper fields
+**** ERR StepFile : Undefined Parsing: Line 2: Incorrect syntax: unexpected QUID, expecting STEP    ****
+0.018 s: fuzz importers reject empty truncated and oversized files
+0.001 s: fuzz a dead session restores the autosave
+0.001 s: undo restores a transform, a weld, and a signal
+0.004 s: undo ignores simulation ticks and caps the stack
+0.001 s: undo restores command edits for transform, signal, and motor
+LINE_HOUR progress sim_s=602 wall_s=0.195444
+LINE_HOUR progress sim_s=1204 wall_s=0.390522
+LINE_HOUR progress sim_s=1806 wall_s=0.586005
+LINE_HOUR progress sim_s=2406 wall_s=0.780641
+LINE_HOUR progress sim_s=3006 wall_s=0.975287
+LINE_HOUR sim_s=3600 wall_s=1.16787 realtime_factor=3082.53 rss_start_kb=367736 rss_mid_kb=367736 rss_end_kb=367736 rss_peak_kb=367736 nodes=10 backend=builtin
+1.168 s: example line simulates one production hour
+KR420_HOUR progress sim_s=300 wall_s=3.20371 nodes=180 contact_steps=15576
+KR420_HOUR progress sim_s=602 wall_s=6.42382 nodes=180 contact_steps=31230
+KR420_HOUR progress sim_s=904 wall_s=9.65337 nodes=180 contact_steps=46906
+KR420_HOUR progress sim_s=1206 wall_s=12.8734 nodes=180 contact_steps=62568
+KR420_HOUR progress sim_s=1508 wall_s=16.0934 nodes=180 contact_steps=78232
+KR420_HOUR progress sim_s=1810 wall_s=19.3202 nodes=180 contact_steps=93908
+KR420_HOUR progress sim_s=2110 wall_s=22.5324 nodes=180 contact_steps=109464
+KR420_HOUR progress sim_s=2410 wall_s=25.749 nodes=180 contact_steps=125021
+KR420_HOUR progress sim_s=2710 wall_s=29.0071 nodes=180 contact_steps=140589
+KR420_HOUR progress sim_s=3010 wall_s=32.2804 nodes=180 contact_steps=156159
+KR420_HOUR progress sim_s=3310 wall_s=35.55 nodes=180 contact_steps=171715
+KR420_HOUR sim_s=3600 wall_s=38.6489 realtime_factor=93.1463 rss_start_kb=367744 rss_mid_kb=367744 rss_end_kb=367744 mesh_bodies=7 contact_steps=186751 contacts=594022 output=299 jph=299 shipped=300 nodes=180
+45.071 s: kr420 mesh line simulates one production hour
+================================================================================
+test cases:  179 |  178 passed | 1 skipped
+assertions: 4804 | 4804 passed
+
+EXIT:0

@@ -1,0 +1,52 @@
+Ondot Sim / 应点仿真 — G0 source identity
+Recorded 2026-10-06. This file describes the trees that were built. It is not a claim that any acceptance target is met.
+
+repository: cady00/sim-studio (private)
+long-lived branch: development
+development commit: eadee91a1b26267a578af61f3c2e4911f8b9bfdd
+development tracks: origin/main
+main commit: eadee91a1b26267a578af61f3c2e4911f8b9bfdd
+main subject: Merge pull request #19 from cady00/cursor/mcd-compat-edd5
+
+PR #21 was NOT merged. It is a candidate only.
+PR #21 branch: cursor/step-assembly-complete-edd5
+PR #21 commit: 83d5ba33dfe0cd139808b3851e89e29410af13e1
+PR #21 subject: Aim the import camera away from the gantry side plates.
+PR #21 is 8 commits ahead of main (53eff1d..83d5ba3), 28 files, +1962/-118.
+Those commits also change COJT commission mounting, builtin gripper transfer, lighting, shadows, AO, and the import camera. They are not a STEP-only fix.
+
+Version strings in the main tree (they do not agree):
+- CMake project VERSION: 0.4.0 (CMakeLists.txt, vcpkg.json version-string)
+- README prose: 0.4
+- src/core/include/sim/core/Version.hpp kVersion: 0.7.0
+- kProjectFormatVersion: 11
+- kProjectFormatId: simstudio.project
+
+Toolchain used for both Linux builds (system packages, not the Windows vcpkg build):
+- uname: Linux 6.12.94+ x86_64
+- CPU: 4 logical processors
+- RAM: 15 GiB
+- g++: Ubuntu 13.3.0-6ubuntu2~24.04.1 (13.3.0)
+- gcc: /usr/bin/gcc (preset CMAKE_C_COMPILER)
+- cmake: 3.28.3
+- ninja: 1.11.1
+- preset: linux-system, CMAKE_BUILD_TYPE=RelWithDebInfo
+- Qt6: 6.4.2 (qt6-base-dev 6.4.2+dfsg-21.1build5, pkg-config Qt6Core 6.4.2)
+- Open CASCADE: 7.6.3+dfsg1-7.1build1
+- Catch2: 3.4.0-1build1
+- nlohmann-json: 3.11.3-1
+- pybind11: 2.11.1-2
+- Python: 3.12.3
+- TBB: 2021.11.0-2ubuntu2
+- Jolt: fetched tag v5.5.0 (JPH_VERSION 5.5.0), source under out/build/linux-system/_deps/joltphysics-src
+- OpenSSL, zlib, liblzma: distro packages linked by sim_io
+- OpenGL: Mesa 25.2.8 llvmpipe (LLVM 20.1.2), Accelerated: no. Unit tests did not open a window. Screenshots were not part of this G0 run.
+
+Windows toolchain was not installed and was not run.
+vcpkg baseline in vcpkg.json: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+vcpkg ports (not built here): opencascade, nlohmann-json, catch2, joltphysics, python3, pybind11, openssl, zlib, liblzma, curl
+Qt on the Windows workflow file is 6.8.3 via jurplel/install-qt-action. That job was not started.
+
+Public sample hashes (these files are in git; private CAD was not hashed into this record and was not uploaded):
+- samples/step/sample_fixture.step sha256 59a6e4cbc591ebcf1e585394e559a6e923bbd9f3153fd650935264eb47e1ccc2
+- samples/conveyor_line.simproj sha256 c6fc00799632d10191d601004d7858b899b0890ac8c7a6ec2ee2413423f582d6

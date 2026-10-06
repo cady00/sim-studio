@@ -1,0 +1,34 @@
+Filters: [bench]
+Randomness seeded to: 3288669118
+G0_BENCH,B01,0,create_ms,60.5511,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,0,world_walk_ms,15.7225,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,0,rss_kb,152924,kb,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,0,instances,100000,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,0,assets,100,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,1,create_ms,43.8447,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,1,world_walk_ms,8.0471,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,1,rss_kb,152996,kb,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,1,instances,100000,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,1,assets,100,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,2,create_ms,36.9813,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,2,world_walk_ms,6.0507,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,2,rss_kb,152996,kb,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,2,instances,100000,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B01,2,assets,100,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,0,create_ms,0.026102,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,0,leaf_world_ms,0.013192,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,0,rss_kb,38128,kb,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,0,depth,128,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,1,create_ms,0.017135,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,1,leaf_world_ms,0.003245,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,1,rss_kb,38128,kb,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,1,depth,128,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,2,create_ms,0.01553,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,2,leaf_world_ms,0.003218,ms,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,2,rss_kb,38128,kb,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH,B05,2,depth,128,count,synthetic,linux,cpu,no-window,llvmpipe-not-used
+G0_BENCH_SUMMARY,B01,create_ms,p50,43.8447,p95,58.8805,p99,60.217,n,3,synthetic,targets_not_claimed
+===============================================================================
+All tests passed (9 assertions in 1 test case)
+
+EXIT:0
