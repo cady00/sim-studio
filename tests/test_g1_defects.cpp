@@ -144,7 +144,7 @@ TEST_CASE("F03 corrupt STEP returns an error and the worker still has no catch",
                  "ReadFile/Transfer/tessellation; this input returned an error instead of throwing\n";
 }
 
-TEST_CASE("F04 a vertex-only STEP is reported imported with zero triangles", "[g1][f04]") {
+TEST_CASE("F04 a vertex-only STEP is structure_only and not simulatable", "[g1][f04]") {
     const auto path = std::filesystem::temp_directory_path() / "sim-g1-vertex.stp";
     REQUIRE(writeStep(path, [](const Handle(XCAFDoc_ShapeTool)& shapes) {
         TopoDS_Shape vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(0, 0, 0)).Shape();
@@ -153,12 +153,28 @@ TEST_CASE("F04 a vertex-only STEP is reported imported with zero triangles", "[g
     }));
     sim::Scene scene;
     const sim::ImportResult result = sim::StepImporter{}.importFile(path.string(), scene);
-    std::cout << "G1 F04 REPRODUCED ok=" << result.ok << " message=" << result.message << " nodes=" << result.nodeCount
+    std::cout << "G1 F04 status=" << sim::importStatusName(result.status) << " ok=" << result.ok
+              << " simulatable=" << result.simulatable() << " nodes=" << result.nodeCount
               << " tris=" << result.triangleCount << "\n";
-    REQUIRE(result.ok);
-    REQUIRE(result.message == "imported");
+    std::cout << "G1 F04 REPORT " << result.report << "\n";
+    REQUIRE(result.status == sim::ImportStatus::StructureOnly);
+    REQUIRE_FALSE(result.ok);
+    REQUIRE_FALSE(result.simulatable());
+    REQUIRE(result.message == "structure_only");
     REQUIRE(result.nodeCount > 0);
     REQUIRE(result.triangleCount == 0);
+    REQUIRE(result.report.find("\"status\": \"structure_only\"") != std::string::npos);
+    REQUIRE(scene.findByName("OnlyVertex") != nullptr);
+
+    const auto fixture = std::filesystem::path(SIM_SOURCE_DIR) / "samples/step/sample_fixture.step";
+    sim::Scene fixtureScene;
+    const sim::ImportResult fixtureResult = sim::StepImporter{}.importFile(fixture.string(), fixtureScene);
+    std::cout << "G1 F04 FIXTURE status=" << sim::importStatusName(fixtureResult.status)
+              << " tris=" << fixtureResult.triangleCount << "\n";
+    std::cout << "G1 F04 FIXTURE_REPORT " << fixtureResult.report << "\n";
+    REQUIRE(fixtureResult.status == sim::ImportStatus::Complete);
+    REQUIRE(fixtureResult.simulatable());
+    REQUIRE(fixtureResult.triangleCount > 0);
 }
 
 TEST_CASE("F05 depth past 64 drops the leaf without a warning", "[g1][f05]") {

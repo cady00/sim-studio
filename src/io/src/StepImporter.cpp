@@ -41,12 +41,15 @@
 #include <Poly_Triangle.hxx>
 #include <Poly_Triangulation.hxx>
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 
 namespace sim {
@@ -294,6 +297,7 @@ struct ImportContext {
     int tessellated = 0;
     int partBudget = 1;
     int created = 0;
+    int depthTruncations = 0;
 };
 
 bool cancelled(const ImportContext& context) { return context.cancel != nullptr && context.cancel->load(); }
@@ -331,7 +335,11 @@ std::string meshFor(ImportContext& context, const TDF_Label& geometryLabel) {
 }
 
 int importLabel(ImportContext& context, const TDF_Label& label, const std::shared_ptr<SceneNode>& parent, int depth) {
-    if (label.IsNull() || !parent || depth > 64 || cancelled(context)) {
+    if (depth > 64) {
+        ++context.depthTruncations;
+        return 0;
+    }
+    if (label.IsNull() || !parent || cancelled(context)) {
         return 0;
     }
 
@@ -492,15 +500,37 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
                                       std::atomic<bool>* cancel) {
     const auto started = std::chrono::steady_clock::now();
     ImportResult result;
-    auto finish = [&](bool ok, const std::string& message) {
-        result.ok = ok;
+    auto finish = [&](ImportStatus status, const std::string& message) {
+        result.status = status;
+        result.ok = status == ImportStatus::Complete || status == ImportStatus::Partial;
         result.message = message;
         result.elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        nlohmann::json report = {
+            {"format", "step"},
+            {"parser", "Open CASCADE STEPCAFControl_Reader"},
+            {"status", importStatusName(result.status)},
+            {"message", result.message},
+            {"simulatable", result.simulatable()},
+            {"source", path},
+            {"nodes", result.nodeCount},
+            {"meshes", result.meshCount},
+            {"triangles", result.triangleCount},
+            {"elapsedMs", result.elapsedMs},
+        };
+        std::error_code sizeError;
+        const auto bytes = std::filesystem::file_size(path, sizeError);
+        if (!sizeError) {
+            report["bytes"] = bytes;
+        }
+        if (result.status == ImportStatus::StructureOnly) {
+            report["notes"] = nlohmann::json::array({"no triangles; this is not a simulation model"});
+        }
+        result.report = report.dump(2);
         return result;
     };
 
     if (cancel != nullptr && cancel->load()) {
-        return finish(false, "cancelled");
+        return finish(ImportStatus::Cancelled, "cancelled");
     }
     if (progress) {
         progress(ImportProgress{-1, "progress.reading", 0, 0});
@@ -519,10 +549,10 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     reader.SetLayerMode(true);
     const IFSelect_ReturnStatus status = reader.ReadFile(path.c_str());
     if (status != IFSelect_RetDone) {
-        return finish(false, "STEP reader could not read " + path);
+        return finish(ImportStatus::Failed, "STEP reader could not read " + path);
     }
     if (cancel != nullptr && cancel->load()) {
-        return finish(false, "cancelled");
+        return finish(ImportStatus::Cancelled, "cancelled");
     }
     if (progress) {
         progress(ImportProgress{-1, "progress.transfer", 0, 0});
@@ -532,17 +562,17 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     Handle(TDocStd_Document) document;
     application->NewDocument("BinXCAF", document);
     if (document.IsNull()) {
-        return finish(false, "OCCT could not create an XCAF document. Check that OCCT resource files are installed.");
+        return finish(ImportStatus::Failed, "OCCT could not create an XCAF document. Check that OCCT resource files are installed.");
     }
     XcafDocumentGuard closeDocument(application, document);
     if (!reader.Transfer(document)) {
-        return finish(false, "STEP transfer into the XCAF document failed");
+        return finish(ImportStatus::Failed, "STEP transfer into the XCAF document failed");
     }
 
     const Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(document->Main());
     const Handle(XCAFDoc_ColorTool) colors = XCAFDoc_DocumentTool::ColorTool(document->Main());
     if (shapes.IsNull()) {
-        return finish(false, "STEP document has no shape tool");
+        return finish(ImportStatus::Failed, "STEP document has no shape tool");
     }
     shapes->UpdateAssemblies();
 
@@ -560,7 +590,7 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     TDF_LabelSequence roots;
     shapes->GetFreeShapes(roots);
     if (roots.IsEmpty()) {
-        return finish(false, "STEP file does not contain a shape");
+        return finish(ImportStatus::Failed, "STEP file does not contain a shape");
     }
 
     ImportContext context{scene, shapes, colors, toMillimeters, &progress, cancel, {}, 0, 1, 0};
@@ -585,10 +615,10 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     scene.name = std::filesystem::path(path).stem().string();
 
     if (cancelled(context)) {
-        return finish(false, "cancelled");
+        return finish(ImportStatus::Cancelled, "cancelled");
     }
     if (context.created == 0) {
-        return finish(false, "STEP transfer produced no assembly nodes");
+        return finish(ImportStatus::Failed, "STEP transfer produced no assembly nodes");
     }
 
     result.nodeCount = context.created;
@@ -602,7 +632,10 @@ ImportResult StepImporter::importFile(const std::string& path, Scene& scene, con
     if (progress) {
         progress(ImportProgress{100, "progress.done", context.partBudget, context.partBudget});
     }
-    return finish(true, "imported");
+    if (result.triangleCount <= 0 && context.depthTruncations == 0) {
+        return finish(ImportStatus::StructureOnly, "structure_only");
+    }
+    return finish(ImportStatus::Complete, "imported");
 }
 
 }  // namespace sim

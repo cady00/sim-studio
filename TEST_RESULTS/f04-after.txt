@@ -1,0 +1,11 @@
+F04 before (PR #22, eadee91 + repro): ok=1 message=imported nodes=1 tris=0
+F04 after: status=structure_only ok=0 simulatable=0 nodes=1 tris=0
+Public fixture sample_fixture.step: status=complete, triangles > 0, simulatable.
+
+Full suite, Linux RelWithDebInfo, llvmpipe not used by these tests:
+test cases: 188 | 187 passed | 1 skipped
+assertions: 4853 | 4853 passed
+exit: 0
+SKIP: tests/test_motion.cpp:1443 public catalog meshes (SIM_CATALOG_MESH_LIVE is unset). Not a pass.
+
+Limitation: a zero-triangle file that also hit the depth-64 cutoff is still reported complete/imported. F05 changes that. structure_only does not replace the open project (the worker steals only when simulatable()). The library call still fills the Scene object it was given.

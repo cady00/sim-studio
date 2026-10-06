@@ -159,6 +159,7 @@ ImportResult ObjImporter::importFile(const std::string& path, Scene& scene) {
     result.meshCount = 1;
     result.triangleCount = static_cast<int>(mesh->triangleCount());
     result.message = "imported";
+    classifyImportResult(result);
     return result;
 }
 

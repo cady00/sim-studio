@@ -72,6 +72,7 @@
   "progress.cancel": "Import cancelled",
   "msg.importOk": "Imported %1 nodes, %2 meshes, %3 triangles in %4 ms",
   "msg.importFail": "Import failed: %1",
+  "msg.structureOnly": "Structure only: %1 nodes and no triangles. Not a simulation model. The open project was not replaced.",
   "msg.objFail": "OBJ import failed: %1",
   "msg.saveOk": "Saved %1",
   "msg.recovered": "Restored the last autosave",

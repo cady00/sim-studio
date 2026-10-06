@@ -87,7 +87,8 @@ private slots:
     void importObjInteractive();
     void openRobotLibrary();
     void onImportProgress(int percent, const QString& stageKey, int current, int total);
-    void onImportFinished(bool ok, const QString& error, int nodes, int meshes, int triangles, double elapsedMs);
+    void onImportFinished(bool ok, const QString& status, const QString& error, int nodes, int meshes, int triangles,
+                          double elapsedMs);
     void onTreeCurrentChanged(const QModelIndex& current, const QModelIndex& previous);
     void onViewportSelection(const QString& id);
     void onTransformEdited();
